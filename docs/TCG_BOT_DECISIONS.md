@@ -35,6 +35,15 @@ This file records the agreed product behavior, separates unresolved questions fr
 - **Time anchor confirmed:** both the DM reminder and check-in countdown target the **scheduled tournament start time**. Actual table/match start still depends on both players confirming readiness; it is not the countdown target.
 - A reminder/countdown is not authorization to auto-start a match, impose a setup cutoff, or create a global deadline. Unlimited setup, both-player readiness, and the agreed match-clock/pause rules remain unchanged.
 
+### Late check-in exception (confirmed)
+
+- After normal attendance check-in closes, admitting a late arrival is at the admin's discretion.
+- Provide a **Late check-in** button in the admin panel.
+- An admitted late player enters the **next unpaired Swiss round**.
+- Do not alter existing matches or already-created pairings to insert the late player.
+- Do not recalculate or increase the round count locked at round one, including when **Auto** originally selected it.
+- Preserve unlimited camera/SIM setup at each table.
+
 ## 2. Match setup and readiness
 
 - Use a shared bot match card in the voice/video channel's chat.
@@ -151,7 +160,8 @@ These items remain unresolved and must not be silently implemented as approved p
 - The exact Swiss attendance-to-round-count suggestion table, minimums, maximums, and any alternate event profiles; the checked-in-attendance suggestion, pre-start organizer editing, and fixed-after-start default are confirmed above.
 - **Pending next question:** should Swiss end with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff? This is a recommendation awaiting the user's decision, not approved behavior. Top-cut inclusion, size, and format remain open.
 - Standings tiebreakers.
-- Bye-assignment policy.
+- **Bye-assignment proposal, not yet approved:** choose a lowest-scoring eligible player, avoiding a second bye until all eligible players have received one; award the configured bye points (default 3), make no ELO adjustment, and log the assignment. Only the configurable default bye score of 3 is already confirmed; assignment rules and no-ELO treatment remain pending.
+- **Late-arrival missed-round proposal, not yet approved:** give 0 points for rounds missed before admission and make no ELO adjustment.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
 - Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
 - Exact live-countdown presentation, refresh precision, and implementation.
@@ -160,6 +170,10 @@ These items remain unresolved and must not be silently implemented as approved p
 - CAM-versus-SIM room/channel policy, privacy, and simulator-room creation choices.
 - Whether the bot operates as a Battlefy companion or as an independent tournament system.
 - Detailed safe handling of corrected Swiss standings and pairings that have already been created.
+
+### Odd-player pairing clarification
+
+An odd number of players in a round calls for an unpaired player/bye, not an additional Swiss round. For example, 101 players produce 50 matches and one bye. This arithmetic does not select who receives the bye or approve its ELO treatment; those policies remain open above. Late admission must preserve the already-locked round count.
 
 ## 9. Research and proposals are not decisions
 
@@ -245,6 +259,8 @@ The user approved suggesting the Swiss round count from checked-in attendance, a
 The next proposal remains pending: finish Swiss with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff.
 
 ## 11. Change history
+
+- **2026-10-10 (late check-in approval):** Confirmed admin-discretion late admission through an admin-panel Late check-in button, entering the next unpaired Swiss round without modifying existing matches, created pairings, or the round count locked at round one. Recorded the odd-player/bye clarification and kept bye-assignment, ELO, and missed-round scoring proposals pending.
 
 - **2026-10-10 (round-count selector approval):** Confirmed Auto as the default round-count selector, calculated from checked-in attendance and locked at round one, with a manual count dropdown available beforehand. The optional Top 4 / Top 8 / Top 16 playoff proposal remains pending.
 
