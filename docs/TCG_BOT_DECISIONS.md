@@ -117,6 +117,10 @@ The shared card initially offers:
 - Correcting a result must recalculate its ELO impact without double-counting the original and corrected result.
 - The ELO formula itself has not been decided.
 - ELO is separate from Swiss tournament pairing and scoring.
+- ELO is a persistent rating across tournaments; it does not reset for each new event.
+- Played-match results update ELO according to actual versus expected outcome. The exact formula and parameters remain undecided.
+- **Byes and missed rounds produce no ELO change.** This does not determine the tournament-point award for a missed round.
+- Initial ELO-based seeding was discussed as a possible use, not approved as the default seeding policy.
 
 ## 6. Tournament progression
 
@@ -145,6 +149,15 @@ The shared card initially offers:
 
 All listed scoring fields are editable. These approved defaults supersede earlier screenshot values of 1 / 0.5 / 1. The presence of a configurable draw score does not authorize automatic draws when time expires.
 
+### Event standings and points (confirmed)
+
+- At the end of Swiss, determine standings first by **tournament points**, then by **ordered tiebreakers**, with the goal of establishing a winner.
+- This standings-based finish is the current default. A regular Top 4 / Top 8 / Top 16 elimination stage has not been approved.
+- The tiebreaker sequence, formulas, and final fallback for a remaining exact tie have not been selected. Reapplying identical exhausted criteria cannot resolve an exact tie.
+- Tournament points are specific to one event. Each new tournament starts at zero; points do not carry into the next event.
+- Preserve historical tournament results, standings, and audit history. Resetting points for a new event does not mean deleting old results.
+- Keep the configured scoring defaults above: win 3, draw 1, loss 0, bye 3, with editable fields. These event points are distinct from persistent ELO.
+
 ### Round-count default (confirmed)
 
 - Suggest the Swiss round count from **checked-in attendance**, not merely the number registered.
@@ -158,22 +171,23 @@ All listed scoring fields are editable. These approved defaults supersede earlie
 These items remain unresolved and must not be silently implemented as approved policy:
 
 - The exact Swiss attendance-to-round-count suggestion table, minimums, maximums, and any alternate event profiles; the checked-in-attendance suggestion, pre-start organizer editing, and fixed-after-start default are confirmed above.
-- **Pending next question:** should Swiss end with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff? This is a recommendation awaiting the user's decision, not approved behavior. Top-cut inclusion, size, and format remain open.
-- Standings tiebreakers.
-- **Bye-assignment proposal, not yet approved:** choose a lowest-scoring eligible player, avoiding a second bye until all eligible players have received one; award the configured bye points (default 3), make no ELO adjustment, and log the assignment. Only the configurable default bye score of 3 is already confirmed; assignment rules and no-ELO treatment remain pending.
-- **Late-arrival missed-round proposal, not yet approved:** give 0 points for rounds missed before admission and make no ELO adjustment.
+- The exact ordered standings tiebreaker sequence and formulas.
+- **Pending exact-first-place-tie proposal:** if all approved tiebreakers are exhausted and first place is still exactly tied, use a tie-only deciding playoff through the existing match/judge flow. This recommendation is not yet approved; its format and final fallback remain open.
+- Whether to offer an optional regular Top 4 / Top 8 / Top 16 elimination stage. No such top cut is approved; the current default is the standings-based Swiss finish.
+- **Bye-assignment proposal, not yet approved:** choose a lowest-scoring eligible player, avoiding a second bye until all eligible players have received one, and log the assignment. The configurable bye score (default 3) and no-ELO treatment are already confirmed; assignment rules remain pending.
+- **Late-arrival missed-round tournament-points proposal, not yet approved:** give 0 tournament points for rounds missed before admission. No ELO change for missed rounds is confirmed independently.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
 - Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
 - Exact live-countdown presentation, refresh precision, and implementation.
 - Auto/manual next-round control UI details; the automatic default and optional organizer-click mode in section 6 are already approved.
-- ELO formula, starting rating, and associated detailed rating policy. Earlier example values of 1000 and K=32 were not approved.
+- ELO formula, K factor, starting rating, and initial seeding policy. Earlier example starting values of 1000 or 1200 and K=32 were not approved.
 - CAM-versus-SIM room/channel policy, privacy, and simulator-room creation choices.
 - Whether the bot operates as a Battlefy companion or as an independent tournament system.
 - Detailed safe handling of corrected Swiss standings and pairings that have already been created.
 
 ### Odd-player pairing clarification
 
-An odd number of players in a round calls for an unpaired player/bye, not an additional Swiss round. For example, 101 players produce 50 matches and one bye. This arithmetic does not select who receives the bye or approve its ELO treatment; those policies remain open above. Late admission must preserve the already-locked round count.
+An odd number of players in a round calls for an unpaired player/bye, not an additional Swiss round. For example, 101 players produce 50 matches and one bye. This arithmetic does not select who receives the bye; assignment remains open above. The separate no-ELO-change rule for byes is now confirmed. Late admission must preserve the already-locked round count.
 
 ## 9. Research and proposals are not decisions
 
@@ -256,9 +270,11 @@ Pokémon counts are per age division. The separate [official September 1, 2026 Q
 
 The user approved suggesting the Swiss round count from checked-in attendance, allowing the organizer to edit it before starting, and keeping the selected count fixed once the event starts. This supersedes the earlier undecided fixed-versus-variable proposal. Variable stopping criteria and wholesale adoption of official event profiles were not approved. The reference tables above must not silently become application defaults.
 
-The next proposal remains pending: finish Swiss with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff.
+The Swiss standings-based finish is now confirmed: tournament points first, then ordered tiebreakers. Exact tiebreaker rules and a tie-only deciding playoff after an unresolved first-place tie remain pending. A regular Top 4 / Top 8 / Top 16 elimination stage has not been approved.
 
 ## 11. Change history
+
+- **2026-10-10 (Swiss finish and rating clarification):** Confirmed a Swiss standings-based finish using tournament points then ordered tiebreakers, per-event points starting at zero without deleting history, persistent ELO, and no ELO change for byes or missed rounds. Left exact tiebreakers, final tied-first-place fallback, bye assignment, missed-round tournament points, rating parameters, and seeding unresolved.
 
 - **2026-10-10 (late check-in approval):** Confirmed admin-discretion late admission through an admin-panel Late check-in button, entering the next unpaired Swiss round without modifying existing matches, created pairings, or the round count locked at round one. Recorded the odd-player/bye clarification and kept bye-assignment, ELO, and missed-round scoring proposals pending.
 
