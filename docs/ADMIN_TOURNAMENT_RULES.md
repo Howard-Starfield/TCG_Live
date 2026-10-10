@@ -165,9 +165,9 @@ The off-PC destination and detailed safety procedures remain open. No backups, c
 
 ### Local backup copies and cloud status
 
-Documents is **not cloud-synced yet**. The user asked about keeping one project copy and one Documents copy.
+Documents is **not cloud-synced yet**. Keeping one project copy and one verified Documents copy is now confirmed.
 
-**Recommended layout, still a proposal:** finish one export in `TCG_Live/backups`, then verify a copy in `Documents/TCG_Live Backups`. Apply the agreed retention/protection rules to both sets and exclude backups from Git. Exact paths and checksum/copy mechanics have not been implemented or newly approved.
+**Confirmed layout:** finish one export in `TCG_Live/backups`, then make and verify a copy in `Documents/TCG_Live Backups`. Apply the agreed retention/protection rules to both sets and exclude backups from Git. The workflow and paths are approved; checksum/copy mechanics have not been implemented.
 
 Show **local-only** status until cloud synchronization is actually verified. Two copies on one PC do not protect against losing that PC; copies on one drive also share its failure risk. No cloud setup, upload, or backup copy has been performed here.
 
@@ -181,7 +181,7 @@ Do not treat these as implemented rules or silently choose defaults:
 - Initial ELO-based seeding policy; the 1200 starting value and logistic K=32 calculation are approved.
 - Scoped keep-awake implementation and detailed recovery safety procedures; native runtime and the toolkit/page scope are selected.
 - PostgreSQL schema, provisioning, and implementation details.
-- Exact project/Documents backup paths and copy procedure, an off-PC destination, and remaining implementation details, including how long pre-upgrade backups are kept. Documents is currently unsynced, so the proposed two copies are local-only. Frequent backups: 24 hours; daily backups: 30 days; latest successfully test-restored backup: protected. Settings are editable.
+- An off-PC destination and remaining verification/retention implementation details, including how long pre-upgrade backups are kept. Project/Documents paths and the verified-copy workflow are confirmed; both copies are local-only while Documents is unsynced. Frequent backups: 24 hours; daily backups: 30 days; latest successfully test-restored backup: protected. Settings are editable.
 - Implementation details for correction/voiding and replay of dependent ratings. Disqualification and suspension are outside the current scope.
 - Rematch fallback; detailed handling of corrected standings and already-created pairings.
 - Remaining registration/authentication, room/privacy, and control/countdown UI details.
