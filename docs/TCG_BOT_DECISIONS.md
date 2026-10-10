@@ -28,10 +28,10 @@ This file records the agreed product behavior, separates unresolved questions fr
 - DM reminders are supplementary and link players to that canonical message. Check-in must work without successful DM delivery or DM access.
 - Give each player a private acknowledgment of their check-in.
 - Check-in is idempotent: repeat clicks do not count the same player twice.
-- The default DM reminder lead time is **five minutes before the intended start time**.
+- The default DM reminder lead time is **10 minutes before the scheduled tournament start time**. This replaces the earlier five-minute default.
 - Let the organizer/admin configure the reminder lead time when creating the tournament.
 - Show a live time countdown in both the DM reminder and the canonical check-in message.
-- **Time anchor unresolved:** the user called this “match start time.” The proposed interpretation is the scheduled tournament start, but that interpretation is awaiting confirmation. Actual match start depends on both players confirming readiness and cannot be predicted as a fixed scheduled timestamp.
+- **Time anchor confirmed:** both the DM reminder and check-in countdown target the **scheduled tournament start time**. Actual table/match start still depends on both players confirming readiness; it is not the countdown target.
 - A reminder/countdown is not authorization to auto-start a match, impose a setup cutoff, or create a global deadline. Unlimited setup, both-player readiness, and the agreed match-clock/pause rules remain unchanged.
 
 ## 2. Match setup and readiness
@@ -152,7 +152,7 @@ These items remain unresolved and must not be silently implemented as approved p
 - Bye-assignment policy.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
 - Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
-- Reminder/countdown time anchor: scheduled tournament start is recommended, but the user's “match start time” wording still needs clarification.
+- **Pending attendance check-in question:** should tournament attendance check-in close when the organizer publishes round one? This is a recommendation awaiting confirmation, not an approved deadline. Table setup remains unlimited.
 - Exact live-countdown presentation, refresh precision, and implementation.
 - Auto/manual next-round control UI details; the automatic default and optional organizer-click mode in section 6 are already approved.
 - ELO formula, starting rating, and associated detailed rating policy. Earlier example values of 1000 and K=32 were not approved.
@@ -170,6 +170,10 @@ These items remain unresolved and must not be silently implemented as approved p
 - The existing prototype is a frontend-only Discord message designer with 12 editable templates, embed/button/select/modal previews, Legacy/V2 validation and JSON export, and static/GIF media support. It has no live Discord, OAuth, SIM, or media-service integration. This context does not authorize implementation of those integrations.
 
 ### Technical reference notes (not approved integration design)
+
+- [Discord timestamp formatting](https://docs.discord.com/developers/reference#message-formatting) supports Unix-seconds timestamps and the `R` relative-time style, rendered by the client. A live relative countdown plus an absolute start time displayed in the viewer's locale/time zone is a possible presentation, not a guaranteed second-by-second stopwatch.
+- A Discord relative timestamp becomes a past-time indication after its target passes. It does not itself close check-in, start a match, impose a penalty, or trigger another action.
+- Pausable match timers require authoritative remaining-time state and a revised deadline after resume; a fixed relative timestamp alone cannot enforce the agreed pause behavior.
 
 - Discord supports updating the shared interaction message. Shared visibility does not replace backend checks that the acting user is the eligible opponent.
 - A simulator room code routes players to a room; it is not proof of player identity. A Joined/Ready indication is self-reported unless a verified integration later supplies stronger evidence.
@@ -240,6 +244,8 @@ The user approved suggesting the Swiss round count from checked-in attendance, a
 The next proposal remains pending: finish Swiss with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff.
 
 ## 11. Change history
+
+- **2026-10-10 (reminder anchor and lead-time clarification):** Confirmed that reminders and check-in countdowns target the scheduled tournament start. Changed the default DM reminder lead from five to **10 minutes**, still configurable at tournament creation. Left attendance check-in closure at round-one publication pending. Added Discord timestamp implementation caveats without changing match-start, setup, or pause rules.
 
 - **2026-10-10 (check-in and reminder approval):** Recorded pinned canonical channel check-in, supplementary DM links, private acknowledgments, idempotent attendance counting, a default five-minute DM lead time configurable at tournament creation, and live countdowns in DM/check-in messages. Kept the countdown's start-time anchor unresolved and preserved readiness-based match starts and unlimited setup.
 
