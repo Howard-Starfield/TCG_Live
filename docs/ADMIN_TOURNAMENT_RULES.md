@@ -45,16 +45,16 @@ An odd active-player count before pairing leaves one player without an opponent.
 
 Selection order:
 
-1. Consider eligible players with **no previous pairing bye**.
+1. Choose eligible players with the **fewest previous pairing byes**.
 2. Choose the **lowest tournament points** within that group.
-3. If players are equally eligible, choose randomly.
+3. If still tied, choose randomly.
 4. Record the bye, award the configured bye points (default 3), and leave ELO unchanged.
 
-**Why:** the no-prior-bye rule spreads pairing byes before repeating them; points determine priority within the eligible group; random choice resolves otherwise equal candidates.
+**Why:** fewest prior pairing byes gives players with zero byes priority and distributes repeats fairly when needed. Points determine priority within that group; random choice resolves the final tie. One rule covers both first and repeat byes, without extra settings or admin screens.
 
 **Example:** 101 active players produce 50 matches and one pairing bye. Ava and Ben both have 0 points and no prior pairing bye; Chen has 0 points but already received one. Choose randomly between Ava and Ben. Chen is excluded from that selection even though all three have equal points.
 
-If everyone eligible has already received a pairing bye, another bye may be necessary. **The exact repeat-bye selection fallback is not decided yet.**
+**Repeat-bye example:** if everyone has already had a pairing bye, use the same sequence. A player with one prior pairing bye has priority over a player with two, regardless of points. Among players with the fewest prior byes, choose the lowest points, then randomly if still tied. No-show forfeits do not count toward these bye totals.
 
 ## 4. No-shows: an admin decision
 
@@ -62,7 +62,9 @@ If an opponent was assigned but does not attend, use **Call judge**. An admin re
 
 **Example:** Dana is paired with Eli, who never arrives. A judge may award Dana a forfeit win. This is not Dana's pairing bye, so it does not consume bye eligibility. A later justified forfeit win is not blocked by an earlier forfeit.
 
-**Important:** no-show/forfeit ELO treatment is still undecided. Do not copy the pairing-bye no-ELO rule onto forfeits. Late-arrival missed-round tournament points are also still undecided; missed rounds already have no ELO change.
+**Important:** no-show/forfeit ELO treatment is still undecided. The proposal is normal configured win points with both players' ELO unchanged because no game was played; it awaits approval. Do not copy the pairing-bye no-ELO rule onto forfeits.
+
+**Missed rounds before late admission:** award 0 tournament points, label each **Missed round**, and make no ELO change. Do not record these as played losses.
 
 ## 5. Run each match
 
@@ -121,8 +123,6 @@ The exact tiebreakers and playoff details remain open. Do not repeatedly apply i
 Do not treat these as implemented rules or silently choose defaults:
 
 - Exact Auto attendance-to-round-count table, limits, and alternate event profiles.
-- Repeat-bye selection when every eligible player has already had one.
-- Tournament points and recording details for rounds missed before late admission.
 - ELO treatment of no-show forfeits.
 - Ordered tiebreakers and the final fallback for an exact first-place tie.
 - Playoff cut sizes, bracket/qualification rules, and explicit finish-selector default.
