@@ -46,6 +46,44 @@ For the plain-language administrator guide, see [Admin Tournament Rules](ADMIN_T
 - Do not recalculate or increase the round count locked at round one, including when **Auto** originally selected it.
 - Preserve unlimited camera/SIM setup at each table.
 
+### Technology, hosting, and admin correction scope (confirmed; not implemented)
+
+- Use **TypeScript** with intended **personal-PC hosting** for the bot and admin website/API.
+- The admin website/API is **loopback-only (localhost)**, with no LAN or public binding.
+- The bot uses an **outbound Discord Gateway connection**.
+- No tunnel or router port forwarding now. Remote admin access and public match browsing are deferred; preserve a portable API design.
+- The existing public OpenAI-hosted website remains a disconnected mockup.
+- Run **PostgreSQL locally on the personal PC**. Keep bot code, configuration, live database data, and local backup exports inside one organized project folder for portability. Do not substitute SQLite.
+- Keep secrets, live data, database dumps/exports, and logs out of Git; they must not be published.
+- Move database content safely with **pg_dump / pg_restore** rather than copying a running database directory. Portability still requires compatible runtime dependencies; the folder is not a standalone executable environment.
+- Keep an off-PC backup copy as a desired protection; its destination and setup are not yet specified or configured. Local exports in the project folder do not protect against loss of that PC.
+- **Use native Node.js and native PostgreSQL**, with project-local PostgreSQL data (PGDATA). The explicit native PostgreSQL choice replaces the earlier Docker Compose launcher plan.
+- Organize the project as `apps/server` (one backend for the bot, API, and scheduler), `apps/web` (local admin), `packages/core` (shared rules), `database/migrations`, `data/postgres`, `backups`, `scripts`, and `docs`. Commit placeholder configuration only; keep real secrets private.
+- Provide export/restore scripts as the normal database portability path. Install compatible native Node.js/PostgreSQL runtimes separately on the destination computer. Raw PostgreSQL files are not safe for arbitrary copying while the database is live.
+- The bot must **prevent the PC from sleeping while it runs**. Proposed implementation: acquire a scoped keep-awake request while running, release it on exit, and allow the display to turn off. The request is confirmed; these implementation details remain proposed and do not authorize changing system power settings now.
+- PostgreSQL schema and implementation remain unresolved. No installation or provisioning has been performed.
+- Clearly retain **CAM/SIM mode** on records so admins can distinguish mode-specific abuse and remove affected scores.
+- Admin action scope is **correcting and voiding results only for now**. No disqualification or suspension system.
+- Preserve the original record/history, CAM/SIM mode, and admin reason. Adjust affected tournament points and recalculate/replay ELO without double-counting; do not erase evidence.
+- Existing protection for downstream matches already underway remains: organizer resolution, no automatic player replacement.
+- No installation, deployment, or provisioning is authorized by these documentation updates.
+
+### Database backup, recovery, and admin page (confirmed scope)
+
+- Include a **robust backup/recovery toolkit** and a **Database page** in the localhost admin website.
+- The page shows database health, storage usage, domain-record counts, backup history, last successful backup, and restore-test status. Unavailable statistics must be labeled unavailable rather than presented as zero.
+- Provide guided recovery that preserves the original database/data and requires confirmation before cutting over to a restored database.
+- Keep the maintenance/recovery page available when PostgreSQL is down; store the backup/recovery metadata needed for that view outside the database.
+- Restrict privileged recovery operations to the local admin path and keep them separate from the application's least-privilege database access.
+- **Backup schedule:** default to a configurable **five-minute interval while a tournament is active**, plus a backup **before database upgrades**. Test overhead and prevent overlapping backup jobs.
+- Show the **actual last successful snapshot/recovery point**, dump duration, and failures. A five-minute schedule is not a hard five-minute data-loss guarantee: dump time, failed jobs, or gaps can make the recovery window longer.
+- **Retention (editable):** keep each five-minute active-tournament backup for **24 hours**, retain daily backups for **30 days**, and retain pre-upgrade backups. Protect the latest successfully test-restored backup from automatic cleanup.
+- The 24-hour window is the lifetime of each frequent backup, not a requirement to run five-minute backups while no tournament is active. After 24 hours, a frequent backup becomes eligible for cleanup subject to protection rules.
+- V1 backups are full database exports; show total backup storage use and let admins edit backup settings. Four active hours at a five-minute interval produce about 48 exports, depending on startup timing and successful jobs.
+- Off-device destination, detailed safety procedures, and implementation remain unresolved. No backups, cleanup, restore tests, or recovery actions are claimed as performed.
+
+**Safety-review recommendations (not yet approved implementation details):** keep backup manifests, recovery progress, and maintenance authentication usable independently of PostgreSQL; use separate privileged maintenance credentials; restore into a fresh database while preserving the original; serialize recovery operations; place every mutation entry point behind a maintenance lock and drain in-flight work; reconcile Discord after a rollback before resuming writes. Report connection health, checksum verification, and actual restore-test results as different checks.
+
 ## 2. Match setup and readiness
 
 - Use a shared bot match card in the voice/video channel's chat.
@@ -109,7 +147,7 @@ The shared card initially offers:
 - Enforce opponent identity in the backend even when both players can see the same buttons.
 - Keep **Call judge** available. Update the staff queue after resolution so stale actions cannot resolve the same match again.
 - An admin can award or correct a result at any time.
-- A no-show after an opponent has been assigned uses the existing **Call judge** action and an admin-awarded forfeit/result. It is not a pairing bye, does not consume pairing-bye eligibility, and does not limit additional justified forfeit wins. Its ELO treatment remains unresolved.
+- A no-show after an opponent has been assigned uses the existing **Call judge** action and an admin-awarded forfeit/result. It is not a pairing bye, does not consume pairing-bye eligibility, and does not limit additional justified forfeit wins. Unplayed no-show forfeits award configured tournament match-win points with no ELO change for either player.
 - Do not add a separate elaborate no-show workflow or automatic no-show penalty.
 - If a winner correction occurs after a downstream match has already started, flag the situation for organizer resolution. Do not automatically replace a player in that ongoing match.
 
@@ -117,10 +155,14 @@ The shared card initially offers:
 
 - Log every report, confirmation, dispute, correction, pause, resume, and admin action.
 - Correcting a result must recalculate its ELO impact without double-counting the original and corrected result.
-- The ELO formula itself has not been decided.
+- Each player has **separate persistent ELO per game**, initially **1200**. One Piece and Pokémon ratings remain independent.
+- **CAM and SIM initially share a game's rating**; store and visibly identify CAM/SIM on each match/result for admin review.
+- Use standard logistic ELO with **fixed K=32**: EA = 1 / (1 + 10^((RB - RA) / 400)); RA' = RA + 32 × (SA - EA), where SA is win 1, draw 0.5, loss 0. Update both players from the same pre-match ratings.
+- Apply one update per whole confirmed match, including BO3. Retain fractions internally and round for display.
 - ELO is separate from Swiss tournament pairing and scoring.
 - ELO is a persistent rating across tournaments; it does not reset for each new event.
-- Played-match results update ELO according to actual versus expected outcome. The exact formula and parameters remain undecided.
+- Played-match results, including normal concessions in played matches, update ELO against expected outcome.
+- Unplayed no-show forfeits award the configured tournament match-win points with no ELO change for either player.
 - **Byes and missed rounds produce no ELO change.** This does not determine the tournament-point award for a missed round.
 - Initial ELO-based seeding was discussed as a possible use, not approved as the default seeding policy.
 
@@ -171,7 +213,7 @@ All listed scoring fields are editable. These approved defaults supersede earlie
 - An opponent who fails to attend an **already-assigned match** is a no-show handled through **Call judge** and an admin-awarded forfeit/result. Do not relabel it a pairing bye.
 - A forfeit win does not use up pairing-bye eligibility and does not prevent further justified forfeit wins.
 - Rounds missed before a late entrant is admitted receive **0 tournament points**, are labeled **Missed round** rather than a played loss, and make **no ELO change**.
-- No-show/forfeit ELO treatment remains a separate open decision.
+- Unplayed no-show forfeits award configured tournament match-win points with no ELO change for either player. Normal concessions in played matches remain rated.
 
 ### Round-count default (confirmed)
 
@@ -189,13 +231,16 @@ These items remain unresolved and must not be silently implemented as approved p
 - The exact ordered standings tiebreaker sequence and formulas.
 - **Pending exact-first-place-tie proposal:** if all approved tiebreakers are exhausted and first place is still exactly tied, use a tie-only deciding playoff through the existing match/judge flow. This recommendation is not yet approved; its format and final fallback remain open.
 - Playoff cut size (for example Top 4 / Top 8 / Top 16), bracket format, qualification details, and explicit finish-mode selector default. The admin choice between PLAYOFFS and STANDINGS is approved.
-- **Pending no-show/forfeit proposal:** award the normal configured match-win points but leave both players' ELO unchanged because no actual game was played. This is not approved yet; no-ELO treatment of pairing byes and missed rounds does not settle forfeits.
 - **Scoring question under discussion:** the user asked about win 1 / draw 0.5 / game points 0 / bye 1. This is not approval to replace the current editable win 3 / draw 1 / loss 0 / bye 3 defaults. The recommendation to retain the current defaults awaits the latest combined scoring/bye-policy response.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
 - Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
 - Exact live-countdown presentation, refresh precision, and implementation.
 - Auto/manual next-round control UI details; the automatic default and optional organizer-click mode in section 6 are already approved.
-- ELO formula, K factor, starting rating, and initial seeding policy. Earlier example starting values of 1000 or 1200 and K=32 were not approved.
+- Initial ELO-based seeding policy; 1200 starting rating and standard logistic K=32 are now approved.
+- Scoped keep-awake implementation and detailed recovery safety procedures. The backup/recovery toolkit and Database page are approved scope; no successful recovery or durability guarantee is implied.
+- PostgreSQL schema and implementation details.
+- Off-PC backup destination and remaining implementation details, including pre-upgrade retention duration; no external backup has been configured. Frequent/daily retention, pre-upgrade retention, protection of the latest test-restored backup, and editable settings are confirmed.
+- Detailed implementation of correction/voiding and replay of later affected ratings. No disqualification or suspension system is included.
 - CAM-versus-SIM room/channel policy, privacy, and simulator-room creation choices.
 - Whether the bot operates as a Battlefy companion or as an independent tournament system.
 - Detailed safe handling of corrected Swiss standings and pairings that have already been created.
@@ -212,6 +257,16 @@ An odd number of players in a round calls for an unpaired player/bye, not an add
 - The round-count default workflow in section 7 is approved. Specific official event profiles, research tables, and alternate stopping modes remain reference material unless separately accepted.
 - Unlimited setup and the agreed pause model are custom-format choices, not a claim of compliance with sanctioned tournament rules.
 - The existing prototype is a frontend-only Discord message designer with 12 editable templates, embed/button/select/modal previews, Legacy/V2 validation and JSON export, and static/GIF media support. It has no live Discord, OAuth, SIM, or media-service integration. This context does not authorize implementation of those integrations.
+
+### Rating and database references
+
+Starting at 1200 is a selected baseline; fixed K=32 is a launch choice, not an official TCG requirement.
+
+- [Rating-system context](https://lichess.org/page/rating-systems)
+- [Logistic Elo expected-score reference](https://probability.ca/jeff/ftpdir/chessstreaksadd.pdf)
+- [FIDE rating rules](https://handbook.fide.com/chapter/B022024): unplayed-forfeit and rating-update precedent, not a TCG mandate.
+- [PostgreSQL transactions](https://www.postgresql.org/docs/current/tutorial-transactions.html)
+- [SQLite deployment tradeoffs](https://www.sqlite.org/whentouse.html)
 
 ### Technical reference notes (not approved integration design)
 
@@ -289,6 +344,24 @@ Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. St
 
 ## 11. Change history
 
+- **2026-10-10 (backup retention approval and clarification):** Confirmed editable retention of each five-minute active-event backup for 24 hours, daily backups for 30 days, retained pre-upgrade backups, and protection of the latest successfully test-restored backup. Clarified active-event-only frequency versus per-copy retention and full-export storage costs with visible totals/settings. No actual cleanup authorized or performed.
+
+- **2026-10-10 (backup schedule approval):** Confirmed configurable five-minute backups during active tournaments and before database upgrades, with overhead testing and no overlapping jobs. Require honest display of the successful snapshot recovery point, dump duration, and failures; five minutes is not a guaranteed maximum data-loss window. Added detailed recovery safety-review recommendations as proposals; retention/off-device destination remain open.
+
+- **2026-10-10 (backup/recovery toolkit and Database page):** Confirmed a localhost Database page and robust toolkit covering health/storage/record counts, backup history and last success, restore-test status, and guided recovery preserving originals with confirmation before cutover. Keep recovery UI available during PostgreSQL outage using external metadata and separate privileged local-admin recovery from least-privilege app access. Cadence, retention, off-device destination, and detailed safety review remain open. No implementation claimed.
+
+- **2026-10-10 (native runtime and keep-awake request):** Selected native PostgreSQL with the native Node.js application, replacing the Docker launcher plan, and retained project-local PGDATA/exports. Requested preventing PC sleep while the bot runs; scoped keep-awake/release-on-exit/display-off behavior is a proposed implementation. Corruption/recovery research remains open. No installation, power-setting change, or publishing authorized.
+
+- **2026-10-10 (runtime decision reopened):** Reopened Docker Compose versus native Node.js/PostgreSQL after the user requested a comparison. Native runtime is recommended for consideration, not selected; existing Docker installation status is awaiting confirmation. TypeScript, localhost scope, local PostgreSQL, and the organized project folder remain confirmed.
+
+- **2026-10-10 (Docker Compose and project layout):** Confirmed Docker Compose as the planned launcher, one apps/server backend for bot/API/scheduler, apps/web, packages/core, database/migrations, data/postgres, backups, scripts, and docs. Export/restore scripts are the normal portability route; Docker remains a separate dependency. No installation, implementation, or publishing authorized.
+
+- **2026-10-10 (local PostgreSQL and portable project folder):** Confirmed local PostgreSQL and an organized project folder containing code/configuration, live data, and local exports. Exclude secrets/data/dumps/logs from Git. Use pg_dump/pg_restore for database migration; compatible runtime dependencies remain necessary. Container/native choice and off-PC backup destination remain unresolved; no implementation or installation performed.
+
+- **2026-10-10 (TypeScript and localhost hosting):** Confirmed TypeScript and intended personal-PC bot/admin/API hosting, loopback-only admin/API access, outbound Discord Gateway, and no tunnel or port forwarding now. Remote admin/public browsing are deferred. PostgreSQL deployment/vendor/location remain unresolved; no installation or provisioning authorized.
+- **2026-10-10 (rating, database, and correction decisions):** Confirmed per-game persistent ratings, shared CAM/SIM within each game with mode-visible records, 1200 starting rating, logistic fixed K=32, one whole-match update, fractional internal ratings, no ELO change for unplayed forfeits with configured tournament win points, rated played concessions, and PostgreSQL. Admin actions are correcting/voiding only, preserving mode, reason, history, points adjustment, and ELO replay; no disqualification/suspension system.
+
+
 - **2026-10-10 (missed-round approval):** Confirmed 0 tournament points for rounds missed before late admission, labeled Missed round rather than played loss, with no ELO change. Kept the normal-win-points/no-ELO proposal for no-show forfeits pending.
 
 - **2026-10-10 (unified bye-selection approval):** Replaced separate first-bye and unresolved repeat-bye handling with one sequence: fewest previous pairing byes, then lowest tournament points, then random choice if still tied. Log the assignment; no extra settings or screens. No-show forfeits remain separate and do not count as pairing byes. Missed-round tournament points remain pending.
@@ -312,3 +385,4 @@ Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. St
 - **2026-10-10 (round-count approval):** Recorded the user's approval of checked-in-attendance round suggestions, organizer editing before start, and a fixed count after start. Left the final-standings/default versus optional Top 4 / Top 8 / Top 16 playoff proposal pending.
 
 - **2026-10-10:** Consolidated agreed TCG bot planning decisions into this repository at the user's request. Explicitly recorded that clock expiry flags a judge rather than deciding the winner or declaring a draw. Kept Swiss round count and other unsettled policies open.
+

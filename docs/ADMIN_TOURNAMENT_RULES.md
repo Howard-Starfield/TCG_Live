@@ -28,6 +28,22 @@ The organizer sets the event rules. Players follow those rules and manually chec
 
 **Scoring defaults, all editable:** match win 3, draw 1, loss 0; game/set win 0, game/set tie 0; pairing bye 3. A BO3 score of 2–0 or 2–1 is one match win. The alternative 1 / 0.5 scoring question has not changed these defaults.
 
+### Hosting plan
+
+- Use **TypeScript**, with the bot and admin website/API on the user's personal PC.
+- Admin/API access is **localhost only**, not LAN/public. The bot connects outward to the Discord Gateway.
+- No tunnel or router port forwarding now. Remote admin and public match browsing are future work; keep the API portable.
+- The public website remains a disconnected mockup.
+- Run **PostgreSQL on the same PC**. Keep code/configuration, live database data, and local exports under one organized project folder.
+- Never commit or publish secrets, live data, dumps/exports, or logs.
+- Use **pg_dump / pg_restore** for safe database moves, not a copy of a live database directory. Compatible runtime dependencies are still needed; portability does not make the folder self-running.
+- An off-PC backup copy is desired, but no destination or backup setup is configured.
+- **Native Node.js and PostgreSQL are selected**, replacing Docker Compose. Keep PostgreSQL data in project-local PGDATA. Compatible native runtimes must be installed separately on the destination PC; this documentation does not authorize installation.
+- The bot should prevent PC sleep while running. Proposed implementation: a temporary keep-awake request that releases on exit while allowing the display to turn off. These implementation details remain proposed; no system power settings have been changed.
+- Folder layout: `apps/server` combines bot/API/scheduler; `apps/web` holds the local admin; `packages/core` holds shared rules; `database/migrations`, `data/postgres`, `backups`, `scripts`, and `docs` keep supporting files organized.
+- Export/restore scripts provide the normal move-to-another-PC workflow. Use placeholder configuration in Git and supply private settings locally.
+- These are planning choices, not permission to install, deploy, or provision anything.
+
 ## 2. Check players in and start round one
 
 - Use the pinned tournament-channel check-in message as the single check-in location.
@@ -62,7 +78,7 @@ If an opponent was assigned but does not attend, use **Call judge**. An admin re
 
 **Example:** Dana is paired with Eli, who never arrives. A judge may award Dana a forfeit win. This is not Dana's pairing bye, so it does not consume bye eligibility. A later justified forfeit win is not blocked by an earlier forfeit.
 
-**Important:** no-show/forfeit ELO treatment is still undecided. The proposal is normal configured win points with both players' ELO unchanged because no game was played; it awaits approval. Do not copy the pairing-bye no-ELO rule onto forfeits.
+**Unplayed no-show forfeits:** award the normal configured tournament win points and leave both players' ELO unchanged. A normal concession in a played match remains rated.
 
 **Missed rounds before late admission:** award 0 tournament points, label each **Missed round**, and make no ELO change. Do not record these as played losses.
 
@@ -113,20 +129,52 @@ The exact tiebreakers and playoff details remain open. Do not repeatedly apply i
 ## 8. Points, ratings, and records
 
 - Tournament points belong to one event. Start each new event at zero.
-- ELO persists across events. Played results update it against expected outcome, using a formula still to be selected.
+- Each player has **separate persistent ELO per game**; One Piece and Pokémon ratings stay independent. Tournament points remain separate and reset each event.
+- **CAM and SIM initially share a game's rating**. Store and show the mode on every match/result so admins can review mode-specific abuse.
+- Start at **1200**, using standard logistic ELO with **fixed K=32**. Update once per whole confirmed match, including BO3; keep fractional ratings internally and round for display.
+- Played matches and normal played concessions are rated. Unplayed no-show forfeits award configured tournament win points with no ELO change for either player.
 - Pairing byes and missed rounds do not change ELO.
 - Log reports, confirmations, disputes, corrections, pauses, resumes, bye assignments, and admin actions.
 - Archive results, standings, participant/member lists, and audit history in the database for future lookup. Starting points at zero does not delete prior records.
+
+### Admin corrections and mode-specific review
+
+Show CAM/SIM on each record so an admin can trace mode-specific abuse. Admin actions are **correcting and voiding results only for now**, without a disqualification/suspension system. Record the reason and mode; preserve the original record and history. Adjust affected points and recalculate/replay ELO without double-counting. If a downstream match has started, use organizer review and never automatically replace a player.
+
+### Database health and recovery page
+
+The localhost admin website includes a **Database page** with a robust backup/recovery toolkit:
+
+- Health, storage usage, and domain-record counts.
+- Backup history, last successful backup, and restore-test status.
+- Guided recovery that preserves original data and asks for confirmation before switching to a restored database.
+- A maintenance/recovery view that remains available when PostgreSQL is down, using required metadata stored outside PostgreSQL. Mark unavailable statistics honestly.
+- Privileged recovery available only through the local admin path, separated from the application's least-privilege database access.
+
+**Backup timing:** a configurable five-minute interval while a tournament is active, plus a backup before database upgrades. Test the overhead and never overlap backup jobs.
+
+**Recovery-point warning:** display the actual last successful snapshot time, dump duration, and any failed jobs. A five-minute schedule does not guarantee at most five minutes of lost data; slow or failed backups can widen that window.
+
+**Retention, all editable:** keep each frequent backup for 24 hours, daily backups for 30 days, and retain pre-upgrade backups. Protect the latest successfully test-restored backup from automatic cleanup.
+
+This means a new backup roughly every five minutes **only during an active tournament**. Each frequent copy stays for 24 hours before becoming eligible for cleanup; it does not mean frequent backups run all day without an active event. A four-hour event produces about 48 copies, subject to timing and successful jobs. V1 uses full database exports, so show total backup storage and editable settings.
+
+The off-PC destination and detailed safety procedures remain open. No backups, cleanup, or restore tests have been performed by this documentation work.
+
+**Safety-review proposals:** recovery metadata/authentication must work during a database outage; use separate maintenance credentials; restore fresh and preserve the original; serialize recovery, block all mutation entry points and drain in-flight work, then reconcile Discord before writes resume. Keep connection-health checks, checksum checks, and restore tests clearly separate. These are proposed safeguards, not claims of completed implementation.
 
 ## 9. Still to decide
 
 Do not treat these as implemented rules or silently choose defaults:
 
 - Exact Auto attendance-to-round-count table, limits, and alternate event profiles.
-- ELO treatment of no-show forfeits.
 - Ordered tiebreakers and the final fallback for an exact first-place tie.
 - Playoff cut sizes, bracket/qualification rules, and explicit finish-selector default.
-- ELO starting rating, formula, K factor, and initial seeding policy.
+- Initial ELO-based seeding policy; the 1200 starting value and logistic K=32 calculation are approved.
+- Scoped keep-awake implementation and detailed recovery safety procedures; native runtime and the toolkit/page scope are selected.
+- PostgreSQL schema, provisioning, and implementation details.
+- Off-PC backup destination and remaining implementation details, including how long pre-upgrade backups are kept. Frequent backups: 24 hours; daily backups: 30 days; latest successfully test-restored backup: protected. Settings are editable.
+- Implementation details for correction/voiding and replay of dependent ratings. Disqualification and suspension are outside the current scope.
 - Rematch fallback; detailed handling of corrected standings and already-created pairings.
 - Remaining registration/authentication, room/privacy, and control/countdown UI details.
 
@@ -137,3 +185,8 @@ The earlier standings-based default has not been explicitly revoked; approval of
 **Planned bot responsibilities:** track check-in once per player, display reminders/cards/countdowns, apply configured pairings and scoring, enforce button permissions/readiness, preserve pause state, record actions, block unresolved progression, and archive event records.
 
 **Admin/judge responsibilities:** set the event rules, admit late players at discretion, handle no-shows and expired clocks, grant extensions/overrides, resolve or correct results, and handle corrections affecting matches already underway. Settle the open policies above before relying on them.
+
+## Rating and storage reference
+
+1200 and K=32 are selected launch settings, not an official TCG requirement. See the [exact formula and sources](TCG_BOT_DECISIONS.md#rating-and-database-references). PostgreSQL is the selected technology; no database has been provisioned by this documentation task.
+
