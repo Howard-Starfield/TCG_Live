@@ -5,6 +5,8 @@ Status: Planning decisions, not an implementation-completion report.
 
 This file records the agreed product behavior, separates unresolved questions from decisions, and keeps research from being mistaken for approval. The latest explicit user decisions take precedence over earlier suggestions.
 
+For the plain-language administrator guide, see [Admin Tournament Rules](ADMIN_TOURNAMENT_RULES.md).
+
 ## Critical invariant: expiry requires a judge
 
 **When the match clock expires, the bot flags a judge. It must NEVER automatically assign a winner or a draw.** A judge can resolve the match and grant an extension. Clock expiry is not a result submission, confirmation, or automatic penalty.
@@ -107,7 +109,7 @@ The shared card initially offers:
 - Enforce opponent identity in the backend even when both players can see the same buttons.
 - Keep **Call judge** available. Update the staff queue after resolution so stale actions cannot resolve the same match again.
 - An admin can award or correct a result at any time.
-- A no-show uses the existing **Call judge** action and admin-awarded result.
+- A no-show after an opponent has been assigned uses the existing **Call judge** action and an admin-awarded forfeit/result. It is not a pairing bye, does not consume pairing-bye eligibility, and does not limit additional justified forfeit wins. Its ELO treatment remains unresolved.
 - Do not add a separate elaborate no-show workflow or automatic no-show penalty.
 - If a winner correction occurs after a downstream match has already started, flag the situation for organizer resolution. Do not automatically replace a player in that ongoing match.
 
@@ -160,6 +162,17 @@ All listed scoring fields are editable. These approved defaults supersede earlie
 - Archive tournament results and member/participant lists **in the database** for future lookup and records. Preserve historical standings and audit history as well. Resetting points for a new event does not mean deleting old results or participant records.
 - Keep the configured scoring defaults above: win 3, draw 1, loss 0, bye 3, with editable fields. These event points are distinct from persistent ELO.
 
+### Pairing byes and no-shows (confirmed)
+
+- If the active-player count is odd before pairing, assign one **pairing bye** for that round.
+- Select from eligible players who have **not received a prior pairing bye**.
+- Within that group, choose the player with the **lowest tournament points**; choose randomly among equally eligible players.
+- Award the configured bye score (default **3 points**) and make **no ELO change**. Record the assignment.
+- If everyone eligible has already received a pairing bye, a repeat may be necessary; the selection fallback remains undecided.
+- An opponent who fails to attend an **already-assigned match** is a no-show handled through **Call judge** and an admin-awarded forfeit/result. Do not relabel it a pairing bye.
+- A forfeit win does not use up pairing-bye eligibility and does not prevent further justified forfeit wins.
+- Missed-round tournament points and no-show/forfeit ELO treatment remain separate open decisions.
+
 ### Round-count default (confirmed)
 
 - Suggest the Swiss round count from **checked-in attendance**, not merely the number registered.
@@ -176,7 +189,8 @@ These items remain unresolved and must not be silently implemented as approved p
 - The exact ordered standings tiebreaker sequence and formulas.
 - **Pending exact-first-place-tie proposal:** if all approved tiebreakers are exhausted and first place is still exactly tied, use a tie-only deciding playoff through the existing match/judge flow. This recommendation is not yet approved; its format and final fallback remain open.
 - Playoff cut size (for example Top 4 / Top 8 / Top 16), bracket format, qualification details, and explicit finish-mode selector default. The admin choice between PLAYOFFS and STANDINGS is approved.
-- **Bye-assignment proposal, not yet approved:** prioritize eligible players without a prior bye, choose the lowest score within that group, randomize among equally eligible players, and log the assignment. The fallback when everyone has already had a bye remains undecided. The configurable bye score (default 3) and no-ELO treatment are already confirmed; assignment rules remain pending.
+- Repeat-pairing-bye selection fallback when everyone eligible has already received a pairing bye. A repeat may be necessary, but the exact fallback has not been decided.
+- ELO treatment of an admin-awarded no-show/forfeit. The no-ELO rules for pairing byes and missed rounds do not settle forfeits.
 - **Late-arrival missed-round tournament-points proposal, not yet approved:** give 0 tournament points for rounds missed before admission and record them separately as missed rounds, not played losses. No ELO change for missed rounds is confirmed independently.
 - **Scoring question under discussion:** the user asked about win 1 / draw 0.5 / game points 0 / bye 1. This is not approval to replace the current editable win 3 / draw 1 / loss 0 / bye 3 defaults. The recommendation to retain the current defaults awaits the latest combined scoring/bye-policy response.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
@@ -190,7 +204,7 @@ These items remain unresolved and must not be silently implemented as approved p
 
 ### Odd-player pairing clarification
 
-An odd number of players in a round calls for an unpaired player/bye, not an additional Swiss round. For example, 101 players produce 50 matches and one bye. This arithmetic does not select who receives the bye; assignment remains open above. The separate no-ELO-change rule for byes is now confirmed. Late admission must preserve the already-locked round count.
+An odd number of players in a round calls for an unpaired player/bye, not an additional Swiss round. For example, 101 players produce 50 matches and one bye. Use the confirmed selection order above to choose the pairing-bye recipient; the all-players-already-had-one fallback remains open. The separate no-ELO-change rule for byes is now confirmed. Late admission must preserve the already-locked round count.
 
 ## 9. Research and proposals are not decisions
 
@@ -276,6 +290,8 @@ The user approved suggesting the Swiss round count from checked-in attendance, a
 Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. Standings use tournament points first, then ordered tiebreakers. Exact tiebreaker rules, a tie-only deciding playoff after an unresolved first-place tie, and the regular playoff stage's cut sizes and format remain pending.
 
 ## 11. Change history
+
+- **2026-10-10 (pairing-bye selection and admin guide):** Confirmed one pairing bye for an odd active-player count, selecting players without a prior pairing bye, then lowest points, then random choice among equals. Distinguished no-show forfeits from pairing byes and retained unresolved repeat-bye fallback, missed-round points, and forfeit ELO treatment. Added a plain-language administrator rules guide.
 
 - **2026-10-10 (finish-mode choice and database archive):** Confirmed admin-selectable PLAYOFFS or STANDINGS and database archiving of results plus member/participant lists for future records. Kept playoff details and selector-default clarification open. Refined the pending bye/missed-round proposals and recorded the alternative-scoring question without changing approved scoring defaults.
 
