@@ -151,11 +151,13 @@ All listed scoring fields are editable. These approved defaults supersede earlie
 
 ### Event standings and points (confirmed)
 
-- At the end of Swiss, determine standings first by **tournament points**, then by **ordered tiebreakers**, with the goal of establishing a winner.
-- This standings-based finish is the current default. A regular Top 4 / Top 8 / Top 16 elimination stage has not been approved.
+- Provide an admin choice between **STANDINGS** and **PLAYOFFS** to finish a Swiss tournament. Both modes are approved.
+- In **STANDINGS** mode, finish Swiss using tournament points first, then ordered tiebreakers, with the goal of establishing a winner.
+- In **PLAYOFFS** mode, Swiss leads into a playoff stage. Specific cut sizes, bracket format, and qualification details remain unresolved.
+- The earlier standings-based default has not been explicitly revoked. The latest dual-mode approval does not newly select a default for the finish-mode selector.
 - The tiebreaker sequence, formulas, and final fallback for a remaining exact tie have not been selected. Reapplying identical exhausted criteria cannot resolve an exact tie.
 - Tournament points are specific to one event. Each new tournament starts at zero; points do not carry into the next event.
-- Preserve historical tournament results, standings, and audit history. Resetting points for a new event does not mean deleting old results.
+- Archive tournament results and member/participant lists **in the database** for future lookup and records. Preserve historical standings and audit history as well. Resetting points for a new event does not mean deleting old results or participant records.
 - Keep the configured scoring defaults above: win 3, draw 1, loss 0, bye 3, with editable fields. These event points are distinct from persistent ELO.
 
 ### Round-count default (confirmed)
@@ -173,9 +175,10 @@ These items remain unresolved and must not be silently implemented as approved p
 - The exact Swiss attendance-to-round-count suggestion table, minimums, maximums, and any alternate event profiles; the checked-in-attendance suggestion, pre-start organizer editing, and fixed-after-start default are confirmed above.
 - The exact ordered standings tiebreaker sequence and formulas.
 - **Pending exact-first-place-tie proposal:** if all approved tiebreakers are exhausted and first place is still exactly tied, use a tie-only deciding playoff through the existing match/judge flow. This recommendation is not yet approved; its format and final fallback remain open.
-- Whether to offer an optional regular Top 4 / Top 8 / Top 16 elimination stage. No such top cut is approved; the current default is the standings-based Swiss finish.
-- **Bye-assignment proposal, not yet approved:** choose a lowest-scoring eligible player, avoiding a second bye until all eligible players have received one, and log the assignment. The configurable bye score (default 3) and no-ELO treatment are already confirmed; assignment rules remain pending.
-- **Late-arrival missed-round tournament-points proposal, not yet approved:** give 0 tournament points for rounds missed before admission. No ELO change for missed rounds is confirmed independently.
+- Playoff cut size (for example Top 4 / Top 8 / Top 16), bracket format, qualification details, and explicit finish-mode selector default. The admin choice between PLAYOFFS and STANDINGS is approved.
+- **Bye-assignment proposal, not yet approved:** prioritize eligible players without a prior bye, choose the lowest score within that group, randomize among equally eligible players, and log the assignment. The fallback when everyone has already had a bye remains undecided. The configurable bye score (default 3) and no-ELO treatment are already confirmed; assignment rules remain pending.
+- **Late-arrival missed-round tournament-points proposal, not yet approved:** give 0 tournament points for rounds missed before admission and record them separately as missed rounds, not played losses. No ELO change for missed rounds is confirmed independently.
+- **Scoring question under discussion:** the user asked about win 1 / draw 0.5 / game points 0 / bye 1. This is not approval to replace the current editable win 3 / draw 1 / loss 0 / bye 3 defaults. The recommendation to retain the current defaults awaits the latest combined scoring/bye-policy response.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
 - Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
 - Exact live-countdown presentation, refresh precision, and implementation.
@@ -270,9 +273,11 @@ Pokémon counts are per age division. The separate [official September 1, 2026 Q
 
 The user approved suggesting the Swiss round count from checked-in attendance, allowing the organizer to edit it before starting, and keeping the selected count fixed once the event starts. This supersedes the earlier undecided fixed-versus-variable proposal. Variable stopping criteria and wholesale adoption of official event profiles were not approved. The reference tables above must not silently become application defaults.
 
-The Swiss standings-based finish is now confirmed: tournament points first, then ordered tiebreakers. Exact tiebreaker rules and a tie-only deciding playoff after an unresolved first-place tie remain pending. A regular Top 4 / Top 8 / Top 16 elimination stage has not been approved.
+Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. Standings use tournament points first, then ordered tiebreakers. Exact tiebreaker rules, a tie-only deciding playoff after an unresolved first-place tie, and the regular playoff stage's cut sizes and format remain pending.
 
 ## 11. Change history
+
+- **2026-10-10 (finish-mode choice and database archive):** Confirmed admin-selectable PLAYOFFS or STANDINGS and database archiving of results plus member/participant lists for future records. Kept playoff details and selector-default clarification open. Refined the pending bye/missed-round proposals and recorded the alternative-scoring question without changing approved scoring defaults.
 
 - **2026-10-10 (Swiss finish and rating clarification):** Confirmed a Swiss standings-based finish using tournament points then ordered tiebreakers, per-event points starting at zero without deleting history, persistent ELO, and no ELO change for byes or missed rounds. Left exact tiebreakers, final tied-first-place fallback, bye assignment, missed-round tournament points, rating parameters, and seeding unresolved.
 
