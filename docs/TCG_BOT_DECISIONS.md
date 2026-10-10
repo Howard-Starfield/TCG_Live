@@ -123,14 +123,19 @@ The shared card initially offers:
 
 All listed scoring fields are editable. These approved defaults supersede earlier screenshot values of 1 / 0.5 / 1. The presence of a configurable draw score does not authorize automatic draws when time expires.
 
-**No fixed Swiss round count, universal cap, or player-count-to-round-count table has been approved.** Industry-standard research was requested before that decision is made.
+### Round-count default (confirmed)
+
+- Suggest the Swiss round count from **checked-in attendance**, not merely the number registered.
+- The organizer may edit that count **before the event starts**.
+- Once the event starts, the selected round count is **fixed**.
+- This confirms the default selection workflow, not automatic adoption of every official event profile or research table. A specific universal cap, complete suggestion table, and variable stopping mode have not been approved.
 
 ## 8. Open decisions
 
 These items remain unresolved and must not be silently implemented as approved policy:
 
-- Swiss round-count recommendations, minimums, maximums, and organizer overrides.
-- Whether to use a top cut, and its size and format.
+- The exact Swiss attendance-to-round-count suggestion table, minimums, maximums, and any alternate event profiles; the checked-in-attendance suggestion, pre-start organizer editing, and fixed-after-start default are confirmed above.
+- **Pending next question:** should Swiss end with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff? This is a recommendation awaiting the user's decision, not approved behavior. Top-cut inclusion, size, and format remain open.
 - Standings tiebreakers.
 - Bye-assignment policy.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
@@ -145,7 +150,7 @@ These items remain unresolved and must not be silently implemented as approved p
 - Simulator/API integration limits are research findings, not user-approved product behavior.
 - Manual simulator hosting plus room-code sharing has been discussed as a practical fallback; no verified public integration has been established.
 - Do not assume an automatic room-creation or game-result integration exists.
-- Any Swiss round-count recommendation remains a proposal until explicitly accepted.
+- The round-count default workflow in section 7 is approved. Specific official event profiles, research tables, and alternate stopping modes remain reference material unless separately accepted.
 - Unlimited setup and the agreed pause model are custom-format choices, not a claim of compliance with sanctioned tournament rules.
 - The existing prototype is a frontend-only Discord message designer with 12 editable templates, embed/button/select/modal previews, Legacy/V2 validation and JSON export, and static/GIF media support. It has no live Discord, OAuth, SIM, or media-service integration. This context does not authorize implementation of those integrations.
 
@@ -213,10 +218,14 @@ Other event formats use different schedules:
 
 Pokémon counts are per age division. The separate [official September 1, 2026 Q3 update](https://www.pokemon.com/de/news/aktualisierte-play-pokemon-regeln-und-ressourcen-fuer-das-3-quartal-2026) retains a TCG asymmetrical top-cut cap of 16 (VGC/GO: 32). Neither that top-cut cap nor the Swiss-only table is a universal cap on Swiss rounds in every Pokémon event.
 
-### Pending product choice
+### Product decision following research
 
-An attendance-based suggested count, with an organizer-selected fixed or variable stopping mode before the event starts, is a proposal only. No universal hard-coded cap, fixed count, or stopping criterion has been accepted. The table above must not silently become application defaults.
+The user approved suggesting the Swiss round count from checked-in attendance, allowing the organizer to edit it before starting, and keeping the selected count fixed once the event starts. This supersedes the earlier undecided fixed-versus-variable proposal. Variable stopping criteria and wholesale adoption of official event profiles were not approved. The reference tables above must not silently become application defaults.
+
+The next proposal remains pending: finish Swiss with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff.
 
 ## 11. Change history
+
+- **2026-10-10 (round-count approval):** Recorded the user's approval of checked-in-attendance round suggestions, organizer editing before start, and a fixed count after start. Left the final-standings/default versus optional Top 4 / Top 8 / Top 16 playoff proposal pending.
 
 - **2026-10-10:** Consolidated agreed TCG bot planning decisions into this repository at the user's request. Explicitly recorded that clock expiry flags a judge rather than deciding the winner or declaring a draw. Kept Swiss round count and other unsettled policies open.
