@@ -84,6 +84,16 @@ For the plain-language administrator guide, see [Admin Tournament Rules](ADMIN_T
 
 **Safety-review recommendations (not yet approved implementation details):** keep backup manifests, recovery progress, and maintenance authentication usable independently of PostgreSQL; use separate privileged maintenance credentials; restore into a fresh database while preserving the original; serialize recovery operations; place every mutation entry point behind a maintenance lock and drain in-flight work; reconcile Discord after a rollback before resuming writes. Report connection health, checksum verification, and actual restore-test results as different checks.
 
+### Backup copies and Documents status
+
+- **Confirmed current status:** the user's Documents folder is not cloud-synced yet. A copy there remains local until cloud synchronization is configured and verified.
+- The user is considering/desires a project-folder copy plus a Documents copy and asked for a recommendation. The exact paths and copying procedure below are **proposed**, not an implemented or newly confirmed configuration.
+- Recommended flow: create one completed export in `TCG_Live/backups`, then make a verified copy in `Documents/TCG_Live Backups`. Verify copy integrity before showing success; checksum/hash verification is a proposed implementation detail.
+- Apply the already agreed editable retention/protection rules to both backup sets if this two-copy layout is adopted. Keep all backup files excluded from Git.
+- The Database page must show these copies as **local-only**, not cloud-backed-up, until synchronization is actually verified.
+- Two copies on the same PC, especially the same physical drive, do not protect against loss of that PC or drive. An off-device backup remains unresolved.
+- No cloud setup, file upload, backup creation, or copy is performed by this documentation update.
+
 ## 2. Match setup and readiness
 
 - Use a shared bot match card in the voice/video channel's chat.
@@ -239,7 +249,7 @@ These items remain unresolved and must not be silently implemented as approved p
 - Initial ELO-based seeding policy; 1200 starting rating and standard logistic K=32 are now approved.
 - Scoped keep-awake implementation and detailed recovery safety procedures. The backup/recovery toolkit and Database page are approved scope; no successful recovery or durability guarantee is implied.
 - PostgreSQL schema and implementation details.
-- Off-PC backup destination and remaining implementation details, including pre-upgrade retention duration; no external backup has been configured. Frequent/daily retention, pre-upgrade retention, protection of the latest test-restored backup, and editable settings are confirmed.
+- Exact backup-copy paths/procedure and an off-PC destination remain open. Documents is not cloud-synced; the proposed project-plus-Documents copies are both local. Pre-upgrade retention duration and other implementation details remain open; no external backup has been configured. Frequent/daily retention, pre-upgrade retention, protection of the latest test-restored backup, and editable settings are confirmed.
 - Detailed implementation of correction/voiding and replay of later affected ratings. No disqualification or suspension system is included.
 - CAM-versus-SIM room/channel policy, privacy, and simulator-room creation choices.
 - Whether the bot operates as a Battlefy companion or as an independent tournament system.
@@ -343,6 +353,8 @@ The user approved suggesting the Swiss round count from checked-in attendance, a
 Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. Standings use tournament points first, then ordered tiebreakers. Exact tiebreaker rules, a tie-only deciding playoff after an unresolved first-place tie, and the regular playoff stage's cut sizes and format remain pending.
 
 ## 11. Change history
+
+- **2026-10-10 (Documents backup discussion):** Recorded that Documents is not yet cloud-synced and the requested consideration of project-plus-Documents copies. Proposed one completed project export followed by a verified Documents copy, retaining both under the agreed policy and excluding backups from Git. Clearly labeled paths/copy mechanics as proposals and both copies local-only until cloud sync is verified; no cloud setup or data transfer performed.
 
 - **2026-10-10 (backup retention approval and clarification):** Confirmed editable retention of each five-minute active-event backup for 24 hours, daily backups for 30 days, retained pre-upgrade backups, and protection of the latest successfully test-restored backup. Clarified active-event-only frequency versus per-copy retention and full-export storage costs with visible totals/settings. No actual cleanup authorized or performed.
 

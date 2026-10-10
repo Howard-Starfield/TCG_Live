@@ -163,6 +163,14 @@ The off-PC destination and detailed safety procedures remain open. No backups, c
 
 **Safety-review proposals:** recovery metadata/authentication must work during a database outage; use separate maintenance credentials; restore fresh and preserve the original; serialize recovery, block all mutation entry points and drain in-flight work, then reconcile Discord before writes resume. Keep connection-health checks, checksum checks, and restore tests clearly separate. These are proposed safeguards, not claims of completed implementation.
 
+### Local backup copies and cloud status
+
+Documents is **not cloud-synced yet**. The user asked about keeping one project copy and one Documents copy.
+
+**Recommended layout, still a proposal:** finish one export in `TCG_Live/backups`, then verify a copy in `Documents/TCG_Live Backups`. Apply the agreed retention/protection rules to both sets and exclude backups from Git. Exact paths and checksum/copy mechanics have not been implemented or newly approved.
+
+Show **local-only** status until cloud synchronization is actually verified. Two copies on one PC do not protect against losing that PC; copies on one drive also share its failure risk. No cloud setup, upload, or backup copy has been performed here.
+
 ## 9. Still to decide
 
 Do not treat these as implemented rules or silently choose defaults:
@@ -173,7 +181,7 @@ Do not treat these as implemented rules or silently choose defaults:
 - Initial ELO-based seeding policy; the 1200 starting value and logistic K=32 calculation are approved.
 - Scoped keep-awake implementation and detailed recovery safety procedures; native runtime and the toolkit/page scope are selected.
 - PostgreSQL schema, provisioning, and implementation details.
-- Off-PC backup destination and remaining implementation details, including how long pre-upgrade backups are kept. Frequent backups: 24 hours; daily backups: 30 days; latest successfully test-restored backup: protected. Settings are editable.
+- Exact project/Documents backup paths and copy procedure, an off-PC destination, and remaining implementation details, including how long pre-upgrade backups are kept. Documents is currently unsynced, so the proposed two copies are local-only. Frequent backups: 24 hours; daily backups: 30 days; latest successfully test-restored backup: protected. Settings are editable.
 - Implementation details for correction/voiding and replay of dependent ratings. Disqualification and suspension are outside the current scope.
 - Rematch fallback; detailed handling of corrected standings and already-created pairings.
 - Remaining registration/authentication, room/privacy, and control/countdown UI details.
