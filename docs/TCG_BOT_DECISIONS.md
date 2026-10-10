@@ -22,6 +22,18 @@ This file records the agreed product behavior, separates unresolved questions fr
   - Repository: https://github.com/Howard-Starfield/tcg-discord-frontend
 - This decision log belongs to https://github.com/Howard-Starfield/TCG_Live. It does not move, replace, or deploy the mock frontend.
 
+### Tournament check-in and reminder messages (confirmed)
+
+- Use one pinned channel message as the canonical tournament check-in location.
+- DM reminders are supplementary and link players to that canonical message. Check-in must work without successful DM delivery or DM access.
+- Give each player a private acknowledgment of their check-in.
+- Check-in is idempotent: repeat clicks do not count the same player twice.
+- The default DM reminder lead time is **five minutes before the intended start time**.
+- Let the organizer/admin configure the reminder lead time when creating the tournament.
+- Show a live time countdown in both the DM reminder and the canonical check-in message.
+- **Time anchor unresolved:** the user called this “match start time.” The proposed interpretation is the scheduled tournament start, but that interpretation is awaiting confirmation. Actual match start depends on both players confirming readiness and cannot be predicted as a fixed scheduled timestamp.
+- A reminder/countdown is not authorization to auto-start a match, impose a setup cutoff, or create a global deadline. Unlimited setup, both-player readiness, and the agreed match-clock/pause rules remain unchanged.
+
 ## 2. Match setup and readiness
 
 - Use a shared bot match card in the voice/video channel's chat.
@@ -139,7 +151,10 @@ These items remain unresolved and must not be silently implemented as approved p
 - Standings tiebreakers.
 - Bye-assignment policy.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
-- Registration and authentication flow.
+- Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
+- Reminder/countdown time anchor: scheduled tournament start is recommended, but the user's “match start time” wording still needs clarification.
+- Exact live-countdown presentation, refresh precision, and implementation.
+- Auto/manual next-round control UI details; the automatic default and optional organizer-click mode in section 6 are already approved.
 - ELO formula, starting rating, and associated detailed rating policy. Earlier example values of 1000 and K=32 were not approved.
 - CAM-versus-SIM room/channel policy, privacy, and simulator-room creation choices.
 - Whether the bot operates as a Battlefy companion or as an independent tournament system.
@@ -225,6 +240,8 @@ The user approved suggesting the Swiss round count from checked-in attendance, a
 The next proposal remains pending: finish Swiss with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff.
 
 ## 11. Change history
+
+- **2026-10-10 (check-in and reminder approval):** Recorded pinned canonical channel check-in, supplementary DM links, private acknowledgments, idempotent attendance counting, a default five-minute DM lead time configurable at tournament creation, and live countdowns in DM/check-in messages. Kept the countdown's start-time anchor unresolved and preserved readiness-based match starts and unlimited setup.
 
 - **2026-10-10 (round-count approval):** Recorded the user's approval of checked-in-attendance round suggestions, organizer editing before start, and a fixed count after start. Left the final-standings/default versus optional Top 4 / Top 8 / Top 16 playoff proposal pending.
 
