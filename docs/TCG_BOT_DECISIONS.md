@@ -141,6 +141,7 @@ All listed scoring fields are editable. These approved defaults supersede earlie
 - Suggest the Swiss round count from **checked-in attendance**, not merely the number registered.
 - The organizer may edit that count **before the event starts**.
 - Once the event starts, the selected round count is **fixed**.
+- **Round-count selector UI:** **Auto** is the default, calculated from checked-in attendance and locked when round one starts. A **manual count dropdown** is available before that point.
 - This confirms the default selection workflow, not automatic adoption of every official event profile or research table. A specific universal cap, complete suggestion table, and variable stopping mode have not been approved.
 
 ## 8. Open decisions
@@ -154,7 +155,6 @@ These items remain unresolved and must not be silently implemented as approved p
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
 - Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
 - Exact live-countdown presentation, refresh precision, and implementation.
-- Swiss round-count selector UI: an **Auto** default calculated from checked-in attendance, locked when round one starts, plus a manual pre-start dropdown has been proposed but remains unanswered. The underlying attendance-based suggestion, pre-start organizer edit, and fixed-after-start policy are already approved; the proposed UI is not yet approved.
 - Auto/manual next-round control UI details; the automatic default and optional organizer-click mode in section 6 are already approved.
 - ELO formula, starting rating, and associated detailed rating policy. Earlier example values of 1000 and K=32 were not approved.
 - CAM-versus-SIM room/channel policy, privacy, and simulator-room creation choices.
@@ -245,6 +245,8 @@ The user approved suggesting the Swiss round count from checked-in attendance, a
 The next proposal remains pending: finish Swiss with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff.
 
 ## 11. Change history
+
+- **2026-10-10 (round-count selector approval):** Confirmed Auto as the default round-count selector, calculated from checked-in attendance and locked at round one, with a manual count dropdown available beforehand. The optional Top 4 / Top 8 / Top 16 playoff proposal remains pending.
 
 - **2026-10-10 (attendance check-in closure):** Confirmed that tournament attendance check-in closes when round one starts and reaffirmed no time limit on camera/SIM setup at each table. Kept the proposed Auto/manual round-count selector UI pending.
 
