@@ -28,6 +28,7 @@ This file records the agreed product behavior, separates unresolved questions fr
 - DM reminders are supplementary and link players to that canonical message. Check-in must work without successful DM delivery or DM access.
 - Give each player a private acknowledgment of their check-in.
 - Check-in is idempotent: repeat clicks do not count the same player twice.
+- **Tournament attendance check-in closes when round one starts.** This does not create a deadline for a table's camera/SIM setup; that setup remains unlimited.
 - The default DM reminder lead time is **10 minutes before the scheduled tournament start time**. This replaces the earlier five-minute default.
 - Let the organizer/admin configure the reminder lead time when creating the tournament.
 - Show a live time countdown in both the DM reminder and the canonical check-in message.
@@ -152,8 +153,8 @@ These items remain unresolved and must not be silently implemented as approved p
 - Bye-assignment policy.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
 - Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
-- **Pending attendance check-in question:** should tournament attendance check-in close when the organizer publishes round one? This is a recommendation awaiting confirmation, not an approved deadline. Table setup remains unlimited.
 - Exact live-countdown presentation, refresh precision, and implementation.
+- Swiss round-count selector UI: an **Auto** default calculated from checked-in attendance, locked when round one starts, plus a manual pre-start dropdown has been proposed but remains unanswered. The underlying attendance-based suggestion, pre-start organizer edit, and fixed-after-start policy are already approved; the proposed UI is not yet approved.
 - Auto/manual next-round control UI details; the automatic default and optional organizer-click mode in section 6 are already approved.
 - ELO formula, starting rating, and associated detailed rating policy. Earlier example values of 1000 and K=32 were not approved.
 - CAM-versus-SIM room/channel policy, privacy, and simulator-room creation choices.
@@ -244,6 +245,8 @@ The user approved suggesting the Swiss round count from checked-in attendance, a
 The next proposal remains pending: finish Swiss with final standings by default, with an optional Top 4 / Top 8 / Top 16 elimination playoff.
 
 ## 11. Change history
+
+- **2026-10-10 (attendance check-in closure):** Confirmed that tournament attendance check-in closes when round one starts and reaffirmed no time limit on camera/SIM setup at each table. Kept the proposed Auto/manual round-count selector UI pending.
 
 - **2026-10-10 (reminder anchor and lead-time clarification):** Confirmed that reminders and check-in countdowns target the scheduled tournament start. Changed the default DM reminder lead from five to **10 minutes**, still configurable at tournament creation. Left attendance check-in closure at round-one publication pending. Added Discord timestamp implementation caveats without changing match-start, setup, or pause rules.
 
