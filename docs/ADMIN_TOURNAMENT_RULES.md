@@ -137,6 +137,15 @@ Never silently use ELO, registration order, or a random draw to choose the winne
 
 The deciding match still uses the judge/result workflow: an expired clock flags a judge and **never automatically determines a winner or draw**. Its format, duration, drawn-result handling, and ELO/points effects remain open; do not invent them.
 
+### Admin alerts for deciding ties
+
+- Alert the admin about unresolved champion/final-qualification ties and deciding-match expiry requiring admin/judge attention.
+- **Discord alerts default on. Email is optional and configurable for each tournament.**
+- This does not subscribe admins to email for every tournament event.
+- Proposed messages name the tournament and tied players, explain the action needed, and link to the relevant Discord message.
+- Recipients, the Discord channel, email provider, delivery setup, and final message content still need to be selected. No real alerts have been sent or configured by this planning work.
+- An expiry alert requests a judge's decision; it never automatically awards a win or draw.
+
 ## 8. Points, ratings, and records
 
 - Tournament points belong to one event. Start each new event at zero.
@@ -197,6 +206,7 @@ Do not treat these as implemented rules or silently choose defaults:
 - Implementation details for correction/voiding and replay of dependent ratings. Disqualification and suspension are outside the current scope.
 - Rematch fallback; detailed handling of corrected standings and already-created pairings.
 - Remaining registration/authentication, room/privacy, and control/countdown UI details.
+- Admin-alert recipients, Discord channel, email provider/setup, and final message content. The deciding-tie/expiry scope and Discord-on/email-optional defaults are confirmed.
 
 The earlier standings-based default has not been explicitly revoked; approval of both finish modes did not newly choose a selector default. Native Discord relative timestamps are a possible countdown display, not a guaranteed second-by-second stopwatch.
 

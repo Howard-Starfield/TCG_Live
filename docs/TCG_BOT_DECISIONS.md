@@ -224,6 +224,16 @@ All listed scoring fields are editable. These approved defaults supersede earlie
 - Clock expiry still flags a judge and never automatically awards a winner or draw.
 - The numerical tiebreaker order/formulas, multiway format, deciding-match BO1/BO3 and timing, handling of a drawn deciding match, and impact on ELO/tournament points remain unresolved.
 
+### Admin notifications for deciding ties (confirmed)
+
+- Support **Discord and email** notifications when an unresolved exact tie affects the champion or final playoff qualification spot and needs admin attention.
+- Also support the admin/judge flag when a deciding match reaches clock expiry. Expiry never automatically decides the winner or declares a draw.
+- **Discord admin alerts are on by default. Email is optional and configurable per tournament.**
+- This scope covers these unresolved deciding-tie and deciding-match-expiry alerts; it does not enable email for every tournament event.
+- Proposed alert content: identify the tournament, tied players, and action/decision needed, with a link to the relevant Discord message.
+- Actual recipients, destination Discord channel, email provider, and delivery setup remain unresolved.
+- These are planned capabilities/defaults only. No notification has been sent and no integration has been implemented or configured by this documentation update.
+
 ### Pairing byes and no-shows (confirmed)
 
 - If the active-player count is odd before pairing, assign one **pairing bye** for that round.
@@ -253,6 +263,7 @@ These items remain unresolved and must not be silently implemented as approved p
 - Playoff cut size (for example Top 4 / Top 8 / Top 16), bracket format, qualification details, and explicit finish-mode selector default. The admin choice between PLAYOFFS and STANDINGS is approved.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
 - Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
+- Admin-alert recipients, Discord destination/channel, email provider and delivery setup, and final message content. Discord-on/email-optional per-tournament defaults for deciding-tie/expiry alerts are confirmed.
 - Exact live-countdown presentation, refresh precision, and implementation.
 - Auto/manual next-round control UI details; the automatic default and optional organizer-click mode in section 6 are already approved.
 - Initial ELO-based seeding policy; 1200 starting rating and standard logistic K=32 are now approved.
@@ -362,6 +373,8 @@ The user approved suggesting the Swiss round count from checked-in attendance, a
 Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. Standings use tournament points first, then ordered tiebreakers. The numerical tiebreaker rules and regular playoff cut sizes/format remain pending. An exact champion/final-qualification tie after numerical criteria is settled through an organizer-arranged tie-only deciding match/playoff; lower placements may share a rank. Detailed deciding-playoff mechanics remain open.
 
 ## 11. Change history
+
+- **2026-10-10 (deciding-tie notification defaults):** Confirmed Discord and email support for unresolved champion/qualification ties and deciding-match-expiry admin/judge flags. Discord alerts default on; email is optional per tournament. Kept message content as a proposal and recipient/channel/provider setup unresolved; no sending or implementation performed.
 
 - **2026-10-10 (exact-tie policy):** Confirmed organizer-arranged tie-only deciding matches/playoffs after numerical criteria are exhausted for champion/final-qualification ties, with the outcome unresolved until confirmed; lower placements may share rank. Extra deciding matches are acceptable. Prohibited silent ELO/registration/random selection and preserved judge-only clock expiry. Left detailed deciding-match mechanics and numerical criteria open. Reaffirmed planning-only scope and removed stale scoring-approval wording without changing approved defaults.
 
