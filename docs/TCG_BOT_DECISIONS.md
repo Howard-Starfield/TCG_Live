@@ -7,6 +7,8 @@ This file records the agreed product behavior, separates unresolved questions fr
 
 For the plain-language administrator guide, see [Admin Tournament Rules](ADMIN_TOURNAMENT_RULES.md).
 
+See the [three-reviewer planning debate](PLANNING_DEBATE_REVIEW.md) for counterexamples, resolved technical disagreements, proposed safeguards, and unexecuted acceptance tests. Its recommendations do not approve new policy; numerical tiebreak rules remain pending.
+
 ## Critical invariant: expiry requires a judge
 
 **When the match clock expires, the bot flags a judge. It must NEVER automatically assign a winner or a draw.** A judge can resolve the match and grant an extension. Clock expiry is not a result submission, confirmation, or automatic penalty.
@@ -373,6 +375,8 @@ The user approved suggesting the Swiss round count from checked-in attendance, a
 Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. Standings use tournament points first, then ordered tiebreakers. The numerical tiebreaker rules and regular playoff cut sizes/format remain pending. An exact champion/final-qualification tie after numerical criteria is settled through an organizer-arranged tie-only deciding match/playoff; lower placements may share a rank. Detailed deciding-playoff mechanics remain open.
 
 ## 11. Change history
+
+- **2026-10-10 (cross-reviewed planning debate):** Added a separate three-reviewer debate report covering fairness counterexamples, transactional controls, rating replay, delivery, restart/restore, backups, and proposed acceptance tests. Linked it from both guides. All new recommendations remain proposals; no numerical algorithm or implementation was approved.
 
 - **2026-10-10 (planning risk review):** Added explicitly proposed safeguards and unresolved questions for numerical standings, qualification, concurrency/consent, audit/replay, a database-backed notification outbox, backup coverage, fresh-environment recovery, and stale Discord reconciliation. No numerical tiebreak order or new implementation policy was approved by this review.
 

@@ -222,6 +222,8 @@ The earlier standings-based default has not been explicitly revoked; approval of
 
 
 
+For the full cross-reviewed findings and examples, see the [Planning Debate Review](PLANNING_DEBATE_REVIEW.md). It keeps the existing single-PC architecture and labels every new safeguard as a proposal; nothing was built or tested.
+
 ## Planning review: questions to settle before building
 
 **These are risks and recommendations, not newly approved rules.** The numerical tiebreaker order and formulas remain undecided.
