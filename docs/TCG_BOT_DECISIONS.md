@@ -374,6 +374,8 @@ Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. St
 
 ## 11. Change history
 
+- **2026-10-10 (planning risk review):** Added explicitly proposed safeguards and unresolved questions for numerical standings, qualification, concurrency/consent, audit/replay, a database-backed notification outbox, backup coverage, fresh-environment recovery, and stale Discord reconciliation. No numerical tiebreak order or new implementation policy was approved by this review.
+
 - **2026-10-10 (deciding-tie notification defaults):** Confirmed Discord and email support for unresolved champion/qualification ties and deciding-match-expiry admin/judge flags. Discord alerts default on; email is optional per tournament. Kept message content as a proposal and recipient/channel/provider setup unresolved; no sending or implementation performed.
 
 - **2026-10-10 (exact-tie policy):** Confirmed organizer-arranged tie-only deciding matches/playoffs after numerical criteria are exhausted for champion/final-qualification ties, with the outcome unresolved until confirmed; lower placements may share rank. Extra deciding matches are acceptable. Prohibited silent ELO/registration/random selection and preserved judge-only clock expiry. Left detailed deciding-match mechanics and numerical criteria open. Reaffirmed planning-only scope and removed stale scoring-approval wording without changing approved defaults.
@@ -424,3 +426,41 @@ Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. St
 
 - **2026-10-10:** Consolidated agreed TCG bot planning decisions into this repository at the user's request. Explicitly recorded that clock expiry flags a judge rather than deciding the winner or declaring a draw. Kept Swiss round count and other unsettled policies open.
 
+
+## 12. Planning risk review: proposals and unanswered questions
+
+**This entire section is a review, not approval of new behavior or an implementation report.** The numerical Swiss tiebreaker order, formulas, and related edge-case choices remain pending. Existing confirmed decisions elsewhere are unchanged.
+
+### A. Standings and qualification
+
+1. **Opponent-strength calculations need an exact definition.** Averaging each opponent's percentage is different from pooling all opponent points and rounds. For example, opponent percentages of 100% over one counted round and 0% over three counted rounds average to 50%; pooling those four rounds gives 25% when a win is worth 3 points. Neither calculation has been selected.
+2. **Any percentage floor needs explicit placement.** Decide whether a proposed floor applies to each opponent before averaging or to the final aggregate, which results count in the numerator/denominator, and what happens for an opponent with zero counted rounds. A floor value, formula, rounding rule, and zero-round fallback are not approved.
+3. **Late entry and withdrawal can distort opponent percentages.** A short high-scoring record can inflate strength if missed or unplayed rounds are handled inconsistently. Define counted rounds, late-entry missed rounds, dropped players, voided matches, and the calculation cutoff before accepting a formula.
+4. **Keep result types distinct.** A pairing bye, missed round, unplayed no-show forfeit, played concession, draw, and void are not interchangeable data. Their confirmed points/ELO rules do not automatically decide how each affects opponent-strength denominators or other tiebreakers.
+5. **Head-to-head must work on tied groups.** Define when the whole tied group is eligible, how incomplete meetings are treated, whether to reapply criteria to smaller groups, and how rematches or split head-to-head records behave. A two-player example does not settle multiway ties.
+6. **Shared ranks do not settle playoff allocation.** Decide how three tied players competing for two remaining places are handled, how qualification and seed ordering differ, and how a shared lower rank maps to bracket seeding. The approved tie-only deciding-play policy does not select a multiway bracket or a seeding algorithm. Do not silently resolve these with ELO, registration order, or randomness.
+
+### B. Concurrent actions and trustworthy records
+
+7. **Consent can become stale.** Proposed safeguard: bind result confirmation/dispute and pause/resume consent to the exact match/state revision and pause generation. A click on an older proposal or a previous pause must not approve a changed result or a later resume. Define when existing consent is reset.
+8. **All writers need one transactional mutation path.** Proposed safeguard: Discord actions, admin/API changes, scheduler tasks, corrections, and recovery operations use a common database-backed mutation layer. Check expected revisions and permissions, use consistent lock ordering, and keep durable idempotency/duplicate keys. In-memory duplicate detection alone does not survive restart.
+9. **Shared rating pools can race.** Different matches affecting the same player's per-game rating require deterministic ordering and consistent locks. The shared CAM/SIM pool makes this relevant across modes. Define replay order and correction boundaries; avoid rating updates that overwrite each other or double-count.
+10. **History must explain the current state.** Proposed safeguard: preserve original results, action authors/times/reasons, rules/scoring versions, mode, and correction/void events. Derive or reconcile standings and rating projections from that history. Snapshot the event settings used so a later settings edit cannot silently reinterpret old results.
+
+### C. Discord delivery and database consistency
+
+11. **A database commit and a Discord/email send are separate operations.** A crash between them can leave a saved result without its updated card or send a duplicate notice. Proposed solution: a **small database-backed notification outbox**, written in the same transaction as the state change, with retry status and duplicate-safe delivery. Do not introduce a new external queue just for this.
+12. **A restored database may be older than Discord.** Proposed recovery barrier: invalidate stale controls using a restore generation/version; inspect and reconcile existing Discord cards, rounds, and pending notifications before allowing mutations again. Pause ordinary workers during reconciliation and drain in-flight operations through the common maintenance gate. This is a proposed implementation of safe recovery, not a claim it exists.
+
+### D. Backups, restoration, and data representation
+
+13. **“Active tournament” leaves coverage gaps.** The approved five-minute schedule needs a precise active-state definition. Registration before play, an event paused overnight, and post-event corrections may change data outside it. Backup coverage for those periods, idle-time/daily scheduling, and triggers after important changes need an explicit policy; no additional cadence is approved by this review.
+14. **A normal database dump is not the whole installation.** Proposed toolkit requirement: reproducible PostgreSQL role/permission setup plus compatible application/schema/migration metadata, version information, and a recovery manifest. Keep secrets out of the repository and exports shown to others. A database dump may not include cluster roles or every runtime/configuration dependency. Test recovery into a fresh environment with the intended permissions.
+15. **Health, integrity, and recoverability are different.** A successful connection does not prove absence of corruption; a checksum does not prove an export can be restored; a successful restore does not prove application-level consistency. Proposed reporting separates these checks, their timestamps, and failed/untested status.
+16. **Precision and identifiers need deliberate storage.** Proposed design checks: preserve Discord snowflake IDs losslessly (avoid JavaScript Number precision loss), use explicit UTC instants and display-local time, keep rating precision separate from display rounding, and define timer/remaining-time behavior across restart. Do not let serialization silently change identity, ranking, or consent.
+17. **Local copies share a failure domain.** Project and Documents copies remain local-only until cloud sync is verified. A lost PC, failed drive, or destructive account compromise may affect both. Off-device destination and actual recovery testing remain open.
+18. **Localhost is a boundary, not complete authorization.** Proposed safety review: authenticate/authorize privileged admin actions, protect browser-driven requests against cross-site abuse, keep normal app database access least-privileged, and separate maintenance credentials. Backup manifests, recovery progress, and maintenance access must remain usable when PostgreSQL is unavailable. The exact auth/recovery design is not selected.
+
+### Review exit criteria (proposed)
+
+Before implementation, settle the numerical ranking examples and qualification edge cases, define result/state transitions and revision-specific consent, select backup coverage outside active play, and write a fresh-environment restore/reconciliation test plan. These are recommendations for the next planning decisions, not authorization to build, install, or deploy.

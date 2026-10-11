@@ -220,3 +220,19 @@ The earlier standings-based default has not been explicitly revoked; approval of
 
 1200 and K=32 are selected launch settings, not an official TCG requirement. See the [exact formula and sources](TCG_BOT_DECISIONS.md#rating-and-database-references). PostgreSQL is the selected technology; no database has been provisioned by this documentation task.
 
+
+
+## Planning review: questions to settle before building
+
+**These are risks and recommendations, not newly approved rules.** The numerical tiebreaker order and formulas remain undecided.
+
+- **Fair standings:** late arrivals, withdrawals, missed rounds, byes, forfeits, and voided results can affect opponent-strength calculations differently. Averaging opponent percentages and pooling their points/rounds give different answers; any percentage floor also needs a clear definition.
+- **Ties around the cut:** shared ranks do not tell us how to allocate two playoff spots among three tied players or how to seed them. Head-to-head also needs rules for tied groups, incomplete meetings, and rematches. The tie-only deciding-play policy remains approved; its detailed format does not.
+- **Safe clicks and corrections:** old result or resume buttons must not approve a newer state. Duplicate clicks, simultaneous admin/player actions, and rating corrections need one consistent, auditable handling process.
+- **Reliable alerts:** a saved database result and an updated Discord message can get out of sync after a crash. Delivery/retry handling is a proposed safeguard, not a finished feature.
+- **Backup gaps:** define what counts as an active tournament and how registration or post-event corrections are protected. No extra schedule has been selected.
+- **Recovering more than a dump:** a fresh PC also needs the correct application/schema versions, database roles, configuration, and runtime. A restore test must check that the application works, not only that a file exists.
+- **Discord after rollback:** restoring an older database can leave newer Discord buttons and messages behind. Reconcile them and invalidate stale controls before allowing new changes; the exact procedure remains proposed.
+- **Local safety:** both backup locations are still on the same PC until off-device sync is verified. Localhost access still needs an appropriate admin-authentication design.
+
+Connection health, checksum verification, and an actual restore test should be reported separately. The [detailed planning risk review](TCG_BOT_DECISIONS.md#12-planning-risk-review-proposals-and-unanswered-questions) explains the proposed implementation safeguards without treating them as approved or built.
