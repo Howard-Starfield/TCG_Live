@@ -1,7 +1,7 @@
 # TCG Live Discord Bot: Decision Log
 
 Updated: 2026-10-10  
-Status: Planning decisions, not an implementation-completion report.
+Status: Planning only. The user explicitly asked not to build yet. This document does not authorize implementation, installation, provisioning, or deployment.
 
 This file records the agreed product behavior, separates unresolved questions from decisions, and keeps research from being mistaken for approval. The latest explicit user decisions take precedence over earlier suggestions.
 
@@ -201,7 +201,7 @@ The shared card initially offers:
 | Game/set tie | 0 |
 | Bye | 3 |
 
-All listed scoring fields are editable. These approved defaults supersede earlier screenshot values of 1 / 0.5 / 1. The presence of a configurable draw score does not authorize automatic draws when time expires.
+All listed scoring fields are editable. These approved defaults supersede earlier screenshot values of 1 / 0.5 / 1. The alternative win 1 / draw 0.5 / game points 0 / bye 1 scheme was considered, not chosen; the current 3 / 1 / 0 / bye 3 defaults are approved. The presence of a configurable draw score does not authorize automatic draws when time expires.
 
 ### Event standings and points (confirmed)
 
@@ -209,10 +209,20 @@ All listed scoring fields are editable. These approved defaults supersede earlie
 - In **STANDINGS** mode, finish Swiss using tournament points first, then ordered tiebreakers, with the goal of establishing a winner.
 - In **PLAYOFFS** mode, Swiss leads into a playoff stage. Specific cut sizes, bracket format, and qualification details remain unresolved.
 - The earlier standings-based default has not been explicitly revoked. The latest dual-mode approval does not newly select a default for the finish-mode selector.
-- The tiebreaker sequence, formulas, and final fallback for a remaining exact tie have not been selected. Reapplying identical exhausted criteria cannot resolve an exact tie.
+- The numerical tiebreaker sequence and formulas remain unresolved. After all selected numerical criteria are exhausted, use the confirmed exact-tie policy below; reapplying identical exhausted criteria cannot resolve an exact tie.
 - Tournament points are specific to one event. Each new tournament starts at zero; points do not carry into the next event.
 - Archive tournament results and member/participant lists **in the database** for future lookup and records. Preserve historical standings and audit history as well. Resetting points for a new event does not mean deleting old results or participant records.
 - Keep the configured scoring defaults above: win 3, draw 1, loss 0, bye 3, with editable fields. These event points are distinct from persistent ELO.
+
+### Exact ties after numerical tiebreakers (confirmed)
+
+- If an exact tie remains **after all numerical tiebreakers are exhausted** and affects the **champion or final playoff qualification spot**, flag it for the organizer and arrange a deciding match/playoff **among the tied players only**.
+- Keep the affected outcome unresolved until the deciding result is confirmed through the match/result workflow.
+- An extra deciding match is acceptable. For exactly two tied players, one extra deciding match is the straightforward approach; more than two requires a tie-only playoff, whose exact format is still unresolved.
+- If the exact tie affects only lower placements, allow a **shared rank**.
+- Never silently choose a winner or qualifier by ELO, registration order, or random draw. The random choice used in pairing-bye selection does not apply to final standings.
+- Clock expiry still flags a judge and never automatically awards a winner or draw.
+- The numerical tiebreaker order/formulas, multiway format, deciding-match BO1/BO3 and timing, handling of a drawn deciding match, and impact on ELO/tournament points remain unresolved.
 
 ### Pairing byes and no-shows (confirmed)
 
@@ -239,9 +249,8 @@ These items remain unresolved and must not be silently implemented as approved p
 
 - The exact Swiss attendance-to-round-count suggestion table, minimums, maximums, and any alternate event profiles; the checked-in-attendance suggestion, pre-start organizer editing, and fixed-after-start default are confirmed above.
 - The exact ordered standings tiebreaker sequence and formulas.
-- **Pending exact-first-place-tie proposal:** if all approved tiebreakers are exhausted and first place is still exactly tied, use a tie-only deciding playoff through the existing match/judge flow. This recommendation is not yet approved; its format and final fallback remain open.
+- Tie-only playoff details: multiway format, deciding-match BO1/BO3 and duration, handling of a drawn deciding match, and ELO/tournament-point effects. The policy of an organizer-arranged deciding match/playoff for an exact champion/qualification tie is confirmed.
 - Playoff cut size (for example Top 4 / Top 8 / Top 16), bracket format, qualification details, and explicit finish-mode selector default. The admin choice between PLAYOFFS and STANDINGS is approved.
-- **Scoring question under discussion:** the user asked about win 1 / draw 0.5 / game points 0 / bye 1. This is not approval to replace the current editable win 3 / draw 1 / loss 0 / bye 3 defaults. The recommendation to retain the current defaults awaits the latest combined scoring/bye-policy response.
 - Rematch avoidance and fallback behavior when a repeat pairing cannot otherwise be avoided.
 - Registration and authentication flow beyond the confirmed canonical check-in and private acknowledgment behavior.
 - Exact live-countdown presentation, refresh precision, and implementation.
@@ -350,9 +359,11 @@ Pokémon counts are per age division. The separate [official September 1, 2026 Q
 
 The user approved suggesting the Swiss round count from checked-in attendance, allowing the organizer to edit it before starting, and keeping the selected count fixed once the event starts. This supersedes the earlier undecided fixed-versus-variable proposal. Variable stopping criteria and wholesale adoption of official event profiles were not approved. The reference tables above must not silently become application defaults.
 
-Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. Standings use tournament points first, then ordered tiebreakers. Exact tiebreaker rules, a tie-only deciding playoff after an unresolved first-place tie, and the regular playoff stage's cut sizes and format remain pending.
+Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. Standings use tournament points first, then ordered tiebreakers. The numerical tiebreaker rules and regular playoff cut sizes/format remain pending. An exact champion/final-qualification tie after numerical criteria is settled through an organizer-arranged tie-only deciding match/playoff; lower placements may share a rank. Detailed deciding-playoff mechanics remain open.
 
 ## 11. Change history
+
+- **2026-10-10 (exact-tie policy):** Confirmed organizer-arranged tie-only deciding matches/playoffs after numerical criteria are exhausted for champion/final-qualification ties, with the outcome unresolved until confirmed; lower placements may share rank. Extra deciding matches are acceptable. Prohibited silent ELO/registration/random selection and preserved judge-only clock expiry. Left detailed deciding-match mechanics and numerical criteria open. Reaffirmed planning-only scope and removed stale scoring-approval wording without changing approved defaults.
 
 - **2026-10-10 (two-copy backup approval):** Confirmed a completed export in TCG_Live/backups followed by a verified copy in Documents/TCG_Live Backups, applying agreed retention/protection to both. Both remain local-only until cloud sync is verified. No backups or cloud configuration performed.
 

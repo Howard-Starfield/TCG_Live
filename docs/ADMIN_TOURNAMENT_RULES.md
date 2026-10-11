@@ -2,7 +2,7 @@
 
 Updated: 2026-10-10
 
-**Status: agreed product rules for the planned Discord bot. This guide does not claim these features are implemented.** Detailed decisions, history, and research are in the [decision log](TCG_BOT_DECISIONS.md).
+**Status: planning only. The user explicitly asked not to build yet. These agreed product rules do not claim implementation or authorize installation/deployment.** Detailed decisions, history, and research are in the [decision log](TCG_BOT_DECISIONS.md).
 
 ## The three rules to remember
 
@@ -124,7 +124,18 @@ The admin chooses the Swiss finish:
 - **STANDINGS:** rank by tournament points, then the ordered tiebreakers.
 - **PLAYOFFS:** continue into a playoff stage after Swiss.
 
-The exact tiebreakers and playoff details remain open. Do not repeatedly apply identical exhausted tiebreakers and claim they break an exact tie. A tie-only deciding playoff is a proposal awaiting approval.
+### If the final standings are exactly tied
+
+Apply all selected numerical tiebreakers first; their exact order/formulas still need a decision. If the players remain exactly tied:
+
+- **Champion or final playoff qualification spot:** flag the organizer and arrange a deciding match/playoff among those tied players. Leave the affected outcome unresolved until the deciding result is confirmed.
+- **Exactly two players:** an extra deciding match is acceptable and is the simplest approach.
+- **More than two:** use a tie-only playoff; its detailed format is still to be decided.
+- **Lower placements only:** allow a shared rank.
+
+Never silently use ELO, registration order, or a random draw to choose the winner/qualifier. Random selection for pairing byes is a separate rule.
+
+The deciding match still uses the judge/result workflow: an expired clock flags a judge and **never automatically determines a winner or draw**. Its format, duration, drawn-result handling, and ELO/points effects remain open; do not invent them.
 
 ## 8. Points, ratings, and records
 
@@ -176,7 +187,8 @@ Show **local-only** status until cloud synchronization is actually verified. Two
 Do not treat these as implemented rules or silently choose defaults:
 
 - Exact Auto attendance-to-round-count table, limits, and alternate event profiles.
-- Ordered tiebreakers and the final fallback for an exact first-place tie.
+- Ordered numerical tiebreakers and formulas.
+- Detailed tie-only playoff format, BO1/BO3, duration, drawn deciding-match handling, and ELO/points effects. Organizer-arranged deciding play for exact champion/final-qualification ties and shared lower ranks are confirmed.
 - Playoff cut sizes, bracket/qualification rules, and explicit finish-selector default.
 - Initial ELO-based seeding policy; the 1200 starting value and logistic K=32 calculation are approved.
 - Scoped keep-awake implementation and detailed recovery safety procedures; native runtime and the toolkit/page scope are selected.
