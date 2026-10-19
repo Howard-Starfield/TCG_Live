@@ -86,7 +86,7 @@ The panes:
 - Spring-based motion presets.
 - Tabular numbers for clocks and counts.
 - Single-stroke borders.
-- An IME composition guard in the composer, and a 150 ms scroll-pin cooldown.
+- An IME composition guard in the composer, and a scroll pin that only unpins on recent user input (250 ms intent window).
 - Light and dark themes.
 - `prefers-reduced-motion`: a static ring and no dash flow.
 

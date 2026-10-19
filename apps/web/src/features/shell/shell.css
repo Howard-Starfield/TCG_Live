@@ -250,7 +250,7 @@
   top: 0;
   bottom: 0;
   left: -1px;
-  z-index: 5;
+  z-index: 20;   /* above the live/list divider (z-10) where the two cross */
   width: 9px;
   margin-left: -4px;
   cursor: col-resize;

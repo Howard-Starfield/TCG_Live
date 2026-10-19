@@ -244,11 +244,10 @@ test.describe('an event that retires while the tab is open', () => {
   });
 });
 
-test.describe('known issues', () => {
-  // BUG (minor): with both panes open, the live/list divider (.ui-split-handle, z-index 10) spans the dock's
-  // left edge and covers the dock resize handle (.shell-dock-handle, z-index 5) where they cross, so a
-  // drag that starts there resizes the split instead of the dock.
-  test.fixme('the dock resize handle can be grabbed where the live/list divider meets it', async ({ page }) => {
+test.describe('regressions', () => {
+  // Fixed: the live/list divider (.ui-split-handle) once covered the dock resize handle where they
+  // cross, so a drag starting there resized the split instead of the dock.
+  test('the dock resize handle can be grabbed where the live/list divider meets it', async ({ page }) => {
     await openConsole(page, { preferences: { panes: { live: true, list: true } } });
     const handle = page.getByRole('separator', { name: 'Resize previews' });
     const split = page.getByRole('separator', { name: 'Resize live and list previews' });
