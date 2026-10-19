@@ -22,7 +22,7 @@ export function ToggleTab({ pressed, onPressedChange, icon, children, shortcut, 
       aria-keyshortcuts={shortcut?.join('+')}
       className={cx('ui-press inline-flex h-[30px] shrink-0 items-center gap-2 whitespace-nowrap rounded-[9px] px-2.5 text-[12.5px] font-medium',
         'transition-[background-color,color,box-shadow] duration-200 ease-out-expo [&_svg]:size-4',
-        pressed ? 'bg-raised text-fg shadow-raised [&_svg]:text-accent' : 'text-fg-muted hover:bg-line-faint hover:text-fg', className)}>
+        pressed ? 'bg-raised text-fg shadow-raised [&_svg]:text-accent-text' : 'text-fg-muted hover:bg-line-faint hover:text-fg', className)}>
       {icon && <span aria-hidden className="grid">{icon}</span>}
       {children}
       {shortcut && <Kbd keys={shortcut} className="ml-0.5" />}

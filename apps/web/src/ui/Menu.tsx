@@ -5,7 +5,7 @@ import { cx, focusableWithin } from './cx';
 import { useDismiss, useFloating, type Placement } from './floating';
 import { Kbd } from './Kbd';
 import { useSafeVariants, variants } from './motion';
-import { Portal } from './Portal';
+import { Portal, usePortalContainer } from './Portal';
 
 export interface TriggerProps {
   ref: RefCallback<HTMLElement>;
@@ -76,10 +76,11 @@ export function Menu({ label, items, trigger, placement = 'bottom-start', defaul
 
   useDismiss(open, [anchorRef, floatingRef], reason => close(reason === 'escape'));
 
-  // Focus follows the active item while the menu is open.
+  // Focus follows the active item while the menu is open (re-run once a scoped portal container exists).
+  const container = usePortalContainer();
   useEffect(() => {
     if (open && focusId) itemRefs.current.get(focusId)?.focus();
-  }, [open, focusId]);
+  }, [open, focusId, container]);
 
   const openAt = (which: 'first' | 'last') => {
     setOpen(true);
@@ -110,7 +111,6 @@ export function Menu({ label, items, trigger, placement = 'bottom-start', defaul
         event.preventDefault();
         if (current) select(current);
         return;
-      case 'Escape': event.preventDefault(); event.stopPropagation(); close(true); return;
       case 'Tab': event.preventDefault(); close(true); return;
     }
     if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -161,7 +161,7 @@ export function Menu({ label, items, trigger, placement = 'bottom-start', defaul
                     className={cx('flex h-8 cursor-default select-none items-center gap-2 rounded-md px-2 outline-none [&_svg]:size-4',
                       'focus:bg-line-faint aria-disabled:opacity-45', item.danger ? 'text-danger focus:bg-danger-soft' : 'text-fg')}>
                     {choice
-                      ? <span aria-hidden className="grid w-4 place-items-center text-accent">{item.checked && <Check />}</span>
+                      ? <span aria-hidden className="grid w-4 place-items-center text-accent-text">{item.checked && <Check />}</span>
                       : item.icon && <span aria-hidden className={cx('grid', !item.danger && 'text-fg-muted')}>{item.icon}</span>}
                     <span className="flex-1 truncate">{item.label}</span>
                     {item.shortcut && <Kbd keys={item.shortcut} />}
@@ -195,14 +195,15 @@ export function Popover({ label, trigger, children, placement = 'bottom-start', 
   const popVariants = useSafeVariants(variants.popover);
   useDismiss(open, [anchorRef, floatingRef], reason => close(reason === 'escape'));
   const opened = useRef(false);
+  const container = usePortalContainer();
 
   useEffect(() => {
     if (!open) { opened.current = false; return; }
-    if (opened.current || defaultOpen) return;
-    opened.current = true;
     const panel = floatingRef.current;
-    if (panel) (focusableWithin(panel)[0] ?? panel).focus();
-  }, [open, defaultOpen, floatingRef]);
+    if (opened.current || defaultOpen || !panel) return;
+    opened.current = true;
+    (focusableWithin(panel)[0] ?? panel).focus();
+  }, [open, defaultOpen, floatingRef, container]);
 
   const triggerProps: TriggerProps = {
     ref: setAnchor,
@@ -221,7 +222,6 @@ export function Popover({ label, trigger, children, placement = 'bottom-start', 
           {open && (
             <motion.div ref={setFloating} key="popover" id={panelId} role="dialog" aria-label={label} tabIndex={-1}
               variants={popVariants} initial="hidden" animate="shown" exit="exit"
-              onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); } }}
               style={{ position: 'fixed', top: position?.top ?? -9999, left: position?.left ?? -9999 }}
               className={cx(SURFACE, 'p-3', className)}>
               {typeof children === 'function' ? children(() => close(true)) : children}

@@ -13,7 +13,8 @@ function scrollBox(el: HTMLElement & { scripted?: boolean }, box: { scrollHeight
   Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => box.scrollHeight });
   Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => box.clientHeight });
   Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top, set: (value: number) => { top = Math.max(0, Math.min(value, box.scrollHeight - box.clientHeight)); } });
-  el.scrollTo = ((options: ScrollToOptions) => { el.scrollTop = options.top ?? 0; }) as typeof el.scrollTo;
+  // Smooth scrolls do not move at once; the test steps through the animation by hand.
+  el.scrollTo = ((options: ScrollToOptions) => { if (options.behavior !== 'smooth') el.scrollTop = options.top ?? 0; }) as typeof el.scrollTo;
 }
 
 function Feed({ clock, box }: { clock: { now: number }; box: { scrollHeight: number; clientHeight: number } }) {
@@ -24,6 +25,7 @@ function Feed({ clock, box }: { clock: { now: number }; box: { scrollHeight: num
       <div data-testid="scroller" ref={node => { if (node) scrollBox(node, box); pin.scrollRef(node); }} />
       <button type="button" onClick={() => { box.scrollHeight += 100; setCount(c => c + 1); }}>add</button>
       <button type="button" onClick={() => pin.jumpToLatest('auto')}>jump</button>
+      <button type="button" onClick={() => pin.jumpToLatest('smooth')}>smooth jump</button>
       <output data-testid="state">{`${pin.pinned ? 'pinned' : 'free'}${pin.hasUnseen ? '+unseen' : ''}`}</output>
     </>
   );
@@ -82,6 +84,54 @@ describe('useScrollPin', () => {
     scroller.scrollTop = 395;
     fireEvent.scroll(scroller);
     expect(screen.getByTestId('state')).toHaveTextContent('pinned');
+  });
+
+  it('stays pinned through a smooth jumpToLatest that outlasts the cooldown', () => {
+    const clock = { now: 1000 };
+    const box = { scrollHeight: 5000, clientHeight: 200 };
+    render(<Feed clock={clock} box={box} />);
+    const scroller = screen.getByTestId('scroller');
+    clock.now += 500;
+    scroller.scrollTop = 100;
+    fireEvent.scroll(scroller);
+    expect(screen.getByTestId('state')).toHaveTextContent('free');
+
+    fireEvent.click(screen.getByText('smooth jump'));
+    expect(screen.getByTestId('state')).toHaveTextContent('pinned');
+    // The animation runs for ~600 ms, far past the 150 ms cooldown, and never reaches the bottom early.
+    for (const top of [400, 1200, 2500, 3800, 4600]) {
+      clock.now += 120;
+      scroller.scrollTop = top;
+      fireEvent.scroll(scroller);
+      expect(screen.getByTestId('state')).toHaveTextContent('pinned');
+    }
+    clock.now += 120;
+    scroller.scrollTop = 4800;
+    fireEvent.scroll(scroller);
+    expect(screen.getByTestId('state')).toHaveTextContent('pinned');
+  });
+
+  it('honors a user scroll-up while content arrives faster than the cooldown', () => {
+    const clock = { now: 1000 };
+    const box = { scrollHeight: 500, clientHeight: 200 };
+    render(<Feed clock={clock} box={box} />);
+    const scroller = screen.getByTestId('scroller');
+    // New content every 100 ms keeps re-arming the 150 ms cooldown.
+    for (let i = 0; i < 3; i += 1) {
+      clock.now += 100;
+      fireEvent.click(screen.getByText('add'));
+      fireEvent.scroll(scroller);
+    }
+    expect(scroller.scrollTop).toBe(600);
+    clock.now += 20;
+    fireEvent.wheel(scroller, { deltaY: -300 });
+    scroller.scrollTop = 300;
+    fireEvent.scroll(scroller);
+    expect(screen.getByTestId('state')).toHaveTextContent('free');
+    clock.now += 100;
+    fireEvent.click(screen.getByText('add'));
+    expect(scroller.scrollTop).toBe(300);
+    expect(screen.getByTestId('state')).toHaveTextContent('free+unseen');
   });
 
   it('measures distance from the bottom', () => {

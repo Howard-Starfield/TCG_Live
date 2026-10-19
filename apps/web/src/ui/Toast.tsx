@@ -131,7 +131,7 @@ function ToastItem({ toast, paused, onDismiss }: { toast: ToastRecord; paused: b
       </div>
       {toast.action && (
         <button type="button" onClick={() => { toast.action!.onClick(); onDismiss(toast.id); }}
-          className="h-6 shrink-0 rounded-md px-2 text-xs font-semibold text-accent hover:bg-accent-soft">
+          className="h-6 shrink-0 rounded-md px-2 text-xs font-semibold text-accent-text hover:bg-accent-soft">
           {toast.action.label}
         </button>
       )}

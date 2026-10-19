@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { cloneElement, isValidElement, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { cx } from './cx';
-import { useFloating, type Placement } from './floating';
+import { useEscapeLayer, useFloating, type Placement } from './floating';
 import { Kbd } from './Kbd';
 import { useSafeVariants, variants } from './motion';
 import { Portal } from './Portal';
@@ -50,12 +50,7 @@ export function Tooltip({ content, shortcut, placement = 'top', delay = 450, des
   const hide = () => { clear(); setOpen(false); };
   useEffect(() => clear, []);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') hide(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open]);
+  useEscapeLayer(open, hide);
 
   const trigger = isValidElement(children) && describe
     ? cloneElement(children, { 'aria-describedby': [children.props['aria-describedby'], open ? id : undefined].filter(Boolean).join(' ') || undefined })

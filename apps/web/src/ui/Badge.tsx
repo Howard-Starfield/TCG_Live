@@ -4,7 +4,7 @@ import { StatusDot, type Tone } from './Status';
 
 const TONE: Record<Tone, string> = {
   neutral: 'bg-line-faint text-fg-muted',
-  accent: 'bg-accent-soft text-accent',
+  accent: 'bg-accent-soft text-accent-text',
   success: 'bg-success-soft text-success',
   warning: 'bg-warning-soft text-warning',
   danger: 'bg-danger-soft text-danger'
