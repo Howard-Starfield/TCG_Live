@@ -6,6 +6,25 @@ import { memberName } from '../../data';
 import { Avatar, Badge, Chip, IconButton, Tooltip, cx, type Tone } from '../../ui';
 import type { StatusMeta } from './model';
 
+/**
+ * Content-box width of an element, kept current with a ResizeObserver. Null until first measured
+ * (and where ResizeObserver is missing), so callers render their widest layout by default.
+ */
+export function useElementWidth<T extends HTMLElement>(): [(node: T | null) => void, number | null] {
+  const [node, setNode] = useState<T | null>(null);
+  const [width, setWidth] = useState<number | null>(null);
+  useEffect(() => {
+    if (!node || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(entries => {
+      const next = entries[entries.length - 1]?.contentRect.width;
+      if (next !== undefined && next > 0) setWidth(Math.round(next));
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [node]);
+  return [setNode, width];
+}
+
 export type CopyState = 'idle' | 'copied' | 'failed';
 
 /** Clipboard copy with a short-lived result state. */
@@ -74,8 +93,10 @@ export function SeatTag({ seat, className }: { seat: Seat; className?: string })
 }
 
 /** Avatar plus display name; the name is a button that copies the member ID (shown in its tooltip). */
-export function MemberName({ snapshot, memberId, avatar = true, className }: {
-  snapshot: EventSnapshotDto; memberId: Snowflake | null; avatar?: boolean; className?: string;
+export function MemberName({ snapshot, memberId, avatar = true, compact = false, className }: {
+  snapshot: EventSnapshotDto; memberId: Snowflake | null; avatar?: boolean;
+  /** Narrower name truncation for narrow panes. */
+  compact?: boolean; className?: string;
 }) {
   const { state, copy } = useCopy();
   if (!memberId) return <span className="text-fg-subtle">Open seat</span>;
@@ -86,7 +107,8 @@ export function MemberName({ snapshot, memberId, avatar = true, className }: {
       {avatar && <Avatar src={member?.avatarUrl} name={name} size="sm" decorative />}
       <Tooltip content={state === 'copied' ? 'Member ID copied' : state === 'failed' ? 'Copy failed' : `ID ${memberId} · click to copy`}>
         <button type="button" aria-label={`${name}, copy member ID`} onClick={event => { stop(event); void copy(memberId); }}
-          className="min-w-0 max-w-[12rem] truncate rounded-[4px] text-left font-medium text-fg outline-none hover:underline hover:decoration-line-strong hover:underline-offset-2 focus-visible:shadow-[0_0_0_2px_var(--color-accent-ring)]">
+          className={cx('min-w-0 truncate rounded-[4px]', compact ? 'max-w-[7.5rem]' : 'max-w-[12rem]',
+            'text-left font-medium text-fg outline-none hover:underline hover:decoration-line-strong hover:underline-offset-2 focus-visible:shadow-[0_0_0_2px_var(--color-accent-ring)]')}>
           {name}
         </button>
       </Tooltip>

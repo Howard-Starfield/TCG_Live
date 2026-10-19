@@ -15,7 +15,8 @@
 }
 
 /* The tab strip scrolls sideways in very narrow panes instead of wrapping. */
-.lists-tabbar {
+.lists-tabbar,
+.lists-tabs {
   scrollbar-width: none;
 }
 
