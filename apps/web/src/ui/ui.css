@@ -1,1 +1,86 @@
 /* Owned by its lane (see docs/ADMIN_DASHBOARD_PLAN.md). Component variables build on styles/tokens.css. */
+/* L3 web-kit: component-level variables, keyframes and the few styles utilities cannot express. */
+
+:root {
+  --ui-split-hit: 9px;
+  --ui-pulse-duration: 2.4s;
+  --ui-press-scale: 0.97;
+}
+
+/* Press feedback for buttons and toggles. */
+.ui-press:active:not(:disabled) {
+  transform: scale(var(--ui-press-scale));
+  transition-duration: 80ms;
+}
+
+/* Live status dot: a soft halo breathes out of the dot. */
+.ui-status-dot[data-live]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  animation: ui-halo var(--ui-pulse-duration) cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+@keyframes ui-halo {
+  0% { transform: scale(1); opacity: 0.55; }
+  70%, 100% { transform: scale(2.6); opacity: 0; }
+}
+
+/* Scroll fade: mask the edges that hide more content. */
+.ui-scroll-fade {
+  --ui-fade-start: 0px;
+  --ui-fade-end: 0px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--ui-fade-start), #000 calc(100% - var(--ui-fade-end)), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--ui-fade-start), #000 calc(100% - var(--ui-fade-end)), transparent 100%);
+}
+.ui-scroll-fade[data-axis="horizontal"] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--ui-fade-start), #000 calc(100% - var(--ui-fade-end)), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--ui-fade-start), #000 calc(100% - var(--ui-fade-end)), transparent 100%);
+}
+.ui-scroll-fade[data-fade-start] { --ui-fade-start: var(--ui-fade); }
+.ui-scroll-fade[data-fade-end] { --ui-fade-end: var(--ui-fade); }
+
+/* Split pane divider: a 1px hairline with a wider invisible grab area. */
+.ui-split-handle {
+  touch-action: none;
+  transition: background-color 150ms var(--ease-standard);
+}
+.ui-split-handle[data-direction="horizontal"] { width: 1px; cursor: col-resize; }
+.ui-split-handle[data-direction="vertical"] { height: 1px; cursor: row-resize; }
+.ui-split-handle::before {
+  content: "";
+  position: absolute;
+  inset: calc((var(--ui-split-hit) - 1px) / -2) 0;
+}
+.ui-split-handle[data-direction="horizontal"]::before { inset: 0 calc((var(--ui-split-hit) - 1px) / -2); }
+.ui-split-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 999px;
+  background: var(--color-line-strong);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition: opacity 150ms var(--ease-standard);
+}
+.ui-split-handle[data-direction="vertical"]::after { width: 28px; height: 3px; }
+.ui-split-handle[data-direction="horizontal"]::after { width: 3px; height: 28px; }
+.ui-split-handle:hover,
+.ui-split-handle:focus-visible,
+.ui-split[data-dragging] > .ui-split-handle { background-color: var(--color-accent); }
+.ui-split-handle:hover::after,
+.ui-split-handle:focus-visible::after { opacity: 1; }
+.ui-split-handle:focus-visible { outline-offset: 0; }
+.ui-split-animate { transition: flex-basis 380ms var(--ease-out-expo); }
+/* While dragging: no text selection, and panes (iframes, canvases) cannot steal the pointer. */
+.ui-split[data-dragging] { user-select: none; }
+.ui-split[data-dragging] > .ui-split-pane { pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-status-dot[data-live]::after { animation: none; opacity: 0; }
+  .ui-press:active:not(:disabled) { transform: none; }
+  .ui-split-animate { transition: none; }
+}
