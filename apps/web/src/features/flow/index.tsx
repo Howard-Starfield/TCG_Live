@@ -2,14 +2,15 @@
 // getServerNow from L4's stream clock. Keep LivePreviewProps stable.
 import '@xyflow/react/dist/base.css';
 import type { EventSnapshotDto, MatchId } from '@tcg-live/core';
+import type { FlowGraph } from './types';
 import {
   Background, BackgroundVariant, Panel, ReactFlow, ReactFlowProvider, useReactFlow, type FitViewOptions
 } from '@xyflow/react';
 import { Maximize, Minus, Plus } from 'lucide-react';
-import { useEffect, useId, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react';
 import { FlowContext, usePrefersReducedMotion, type FlowContextValue } from './context';
 import { EdgeMarkers, edgeTypes } from './edge';
-import { buildFlowGraph, resolveMatchId } from './layout';
+import { buildFlowGraph, reconcileGraph, resolveMatchId } from './layout';
 import { nodeTypes } from './nodes';
 import { useThrottledValue } from './throttle';
 
@@ -27,7 +28,7 @@ export interface LivePreviewProps {
   className?: string;
 }
 
-export { buildEventGraph, buildFlowGraph, buildMatchGraph, resolveMatchId } from './layout';
+export { buildEventGraph, buildFlowGraph, buildMatchGraph, reconcileGraph, resolveMatchId } from './layout';
 export { GRAPH_UPDATE_INTERVAL_MS, useThrottledValue } from './throttle';
 export type { FlowEdgeState, FlowGraph, FlowNodeState } from './types';
 
@@ -46,17 +47,38 @@ function FlowCanvas({ snapshot, view, matchId, onViewChange, getServerNow = Date
   // Streams can deliver many snapshots per second; the graph follows at most five times a second.
   const throttled = useThrottledValue(snapshot);
   const shownMatch = resolveMatchId(throttled, matchId);
-  const graph = useMemo(() => buildFlowGraph(throttled, view, shownMatch), [throttled, view, shownMatch]);
+  // Unchanged nodes and edges keep their object identity, so React Flow keeps its internal state and
+  // edge components (and their animations) stay mounted across updates.
+  const previousGraph = useRef<FlowGraph | null>(null);
+  const graph = useMemo(
+    () => reconcileGraph(previousGraph.current, buildFlowGraph(throttled, view, shownMatch)),
+    [throttled, view, shownMatch]
+  );
+  useEffect(() => { previousGraph.current = graph; }, [graph]);
   const reducedMotion = usePrefersReducedMotion();
   const markerPrefix = `tcgf-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
+  // Callbacks from the host may be inline functions; keep them in refs behind stable wrappers so a
+  // parent re-render never re-renders every node or restarts every clock interval.
   const onViewChangeRef = useRef(onViewChange);
-  useEffect(() => { onViewChangeRef.current = onViewChange; }, [onViewChange]);
+  const getServerNowRef = useRef(getServerNow);
+  useLayoutEffect(() => {
+    onViewChangeRef.current = onViewChange;
+    getServerNowRef.current = getServerNow;
+  }, [onViewChange, getServerNow]);
+  const stableNow = useCallback(() => getServerNowRef.current(), []);
 
+  // Opening a match from the keyboard unmounts the focused node; focus then moves to the switcher.
+  const focusAfterViewChange = useRef(false);
   const context = useMemo<FlowContextValue>(() => ({
-    markerPrefix, reducedMotion, getServerNow,
-    openMatch: view === 'event' ? (id: MatchId) => onViewChangeRef.current('match', id) : null
-  }), [markerPrefix, reducedMotion, getServerNow, view]);
+    markerPrefix, reducedMotion, getServerNow: stableNow,
+    openMatch: view === 'event'
+      ? (id: MatchId) => {
+          focusAfterViewChange.current = true;
+          onViewChangeRef.current('match', id);
+        }
+      : null
+  }), [markerPrefix, reducedMotion, stableNow, view]);
 
   const { fitView } = useReactFlow();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -66,6 +88,14 @@ function FlowCanvas({ snapshot, view, matchId, onViewChange, getServerNow = Date
   useEffect(() => {
     void fitView({ ...FIT_OPTIONS, duration });
   }, [graph.layoutKey, fitView, duration]);
+
+  useEffect(() => {
+    if (!focusAfterViewChange.current) return;
+    focusAfterViewChange.current = false;
+    // The opened node is still mounted here (React Flow swaps nodes after this effect) but is about
+    // to unmount, so move focus now rather than waiting for it to fall to <body>.
+    containerRef.current?.querySelector<HTMLButtonElement>('.tcg-flow-toolbar button[aria-pressed="true"]')?.focus();
+  }, [graph.layoutKey]);
 
   // Refit when the dock pane is resized.
   useEffect(() => {

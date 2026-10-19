@@ -9,6 +9,7 @@ import {
 import { memo, type KeyboardEvent } from 'react';
 import { useFlowContext, useServerNow } from './context';
 import { describeMatch, describeStage, describeStep, stepSubtitle } from './labels';
+import { NODE_SIZE } from './layout';
 import type {
   FlowNodeState, MatchFlowNode, MatchStatus, StageFlowNode, StageId, StepFlowNode, StepId
 } from './types';
@@ -41,6 +42,35 @@ function StateBadge({ state }: { state: FlowNodeState }) {
   return null;
 }
 
+/** Gap between a node's border and its ring, and the ring's stroke width, in flow pixels. */
+const RING_GAP = 3;
+const RING_STROKE = 2.5;
+
+/**
+ * Activity ring for live and judge-waiting nodes: a rounded-rect stroke just outside the border. A
+ * faint full track carries a bright comet (head plus fading tail) that travels around it with an
+ * animated `stroke-dashoffset`; `pathLength` makes the dash lengths percentages of the perimeter.
+ * Under reduced motion the comet is hidden and the track is drawn solid (flow.css).
+ */
+function ActivityRing({ kind, radius, state }: { kind: keyof typeof NODE_SIZE; radius: number; state: FlowNodeState }) {
+  if (state !== 'live' && state !== 'waiting') return null;
+  const { width, height } = NODE_SIZE[kind];
+  const pad = RING_GAP + RING_STROKE;
+  const rect = {
+    x: pad - RING_GAP, y: pad - RING_GAP,
+    width: width + RING_GAP * 2, height: height + RING_GAP * 2,
+    rx: radius + RING_GAP, pathLength: 100
+  };
+  return (
+    <svg className={`tcg-flow-ring is-${state}`} aria-hidden focusable="false"
+      width={width + pad * 2} height={height + pad * 2} style={{ left: -pad, top: -pad }}>
+      <rect className="tcg-flow-ring-track" {...rect} />
+      <rect className="tcg-flow-ring-tail" {...rect} />
+      <rect className="tcg-flow-ring-head" {...rect} />
+    </svg>
+  );
+}
+
 /** Remaining time of a clock at the current server time; ticks only while the clock runs. */
 function useRemaining(clock: ClockDto | null): number {
   const now = useServerNow(clock?.state === 'running');
@@ -55,6 +85,7 @@ export const StageNode = memo(function StageNode({ data }: NodeProps<StageFlowNo
     <div className={`tcg-flow-node tcg-flow-stage is-${data.state}`} data-state={data.state} data-node={data.stage}
       role="group" aria-roledescription="stage" aria-label={describeStage(data)} tabIndex={0}>
       <Anchors />
+      <ActivityRing kind="stage" radius={14} state={data.state} />
       <Icon className="tcg-flow-stage-icon" aria-hidden />
       <StateBadge state={data.state} />
       <div className="tcg-flow-stage-label" aria-hidden>
@@ -103,6 +134,7 @@ export const MatchNode = memo(function MatchNode({ data }: NodeProps<MatchFlowNo
       style={interactive ? { pointerEvents: 'all' } : undefined}
       onClick={interactive ? open : undefined} onKeyDown={onKeyDown}>
       <Anchors />
+      <ActivityRing kind="match" radius={14} state={data.state} />
       <div className="tcg-flow-match-head" aria-hidden>
         <span className="tcg-flow-mid">{data.matchId}</span>
         <MatchStatusLabel status={data.status} />
@@ -136,6 +168,7 @@ export const StepNode = memo(function StepNode({ data }: NodeProps<StepFlowNode>
     <div className={`tcg-flow-node tcg-flow-step is-${data.state}`} data-state={data.state} data-node={data.step}
       role="group" aria-roledescription="step" aria-label={describeStep(data, remaining)} tabIndex={0}>
       <Anchors />
+      <ActivityRing kind="step" radius={12} state={data.state} />
       <Icon className="tcg-flow-step-icon" aria-hidden />
       <div className="tcg-flow-step-text" aria-hidden>
         <b>{data.title}</b>

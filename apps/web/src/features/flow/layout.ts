@@ -1,6 +1,7 @@
 // Deterministic canvas layouts, mapped purely from an event snapshot. No clocks are read here:
 // countdowns tick inside the node components, so a tick never re-runs the layout.
 import { formatClock, type EventSnapshotDto, type EventStage, type MatchDto, type MatchId, type Seat } from '@tcg-live/core';
+import { Position, type NodeHandle } from '@xyflow/react';
 import { seatName } from './labels';
 import type {
   FlowEdge, FlowEdgeData, FlowEdgeState, FlowGraph, FlowNode, FlowNodeState, MatchNodeData, MatchStatus,
@@ -16,6 +17,33 @@ export const NODE_SIZE = {
 } as const;
 
 type Side = 'top' | 'right' | 'bottom' | 'left';
+
+const SIDE_POSITIONS: [Side, Position][] = [
+  ['top', Position.Top], ['right', Position.Right], ['bottom', Position.Bottom], ['left', Position.Left]
+];
+
+/**
+ * Explicit 1px anchors on each side's midpoint, as both source (`s-<side>`) and target (`t-<side>`).
+ * With `measured` and `handles` set, React Flow never has to re-measure a node when the snapshot
+ * changes, so edges stay mounted between updates.
+ */
+export function nodeAnchors(width: number, height: number): NodeHandle[] {
+  const box: Record<Side, { x: number; y: number }> = {
+    top: { x: width / 2 - 0.5, y: 0 },
+    right: { x: width - 1, y: height / 2 - 0.5 },
+    bottom: { x: width / 2 - 0.5, y: height - 1 },
+    left: { x: 0, y: height / 2 - 0.5 }
+  };
+  return (['source', 'target'] as const).flatMap(type => SIDE_POSITIONS.map(([side, position]) => ({
+    id: `${type === 'source' ? 's' : 't'}-${side}`, type, position, ...box[side], width: 1, height: 1
+  })));
+}
+
+/** Fixed size, measured size and anchors for a node kind. */
+function sized(kind: keyof typeof NODE_SIZE) {
+  const { width, height } = NODE_SIZE[kind];
+  return { width, height, measured: { width, height }, handles: nodeAnchors(width, height) };
+}
 
 const STAGE_INDEX: Record<EventStage, number> = { signup: 0, checkin: 1, live: 2, complete: 3 };
 
@@ -49,8 +77,8 @@ function matchStatus(snapshot: EventSnapshotDto, match: MatchDto): MatchStatus {
 export function edgeInto(state: FlowNodeState): FlowEdgeState {
   switch (state) {
     case 'done': return 'done';
-    case 'live':
-    case 'current': return 'active';
+    case 'live': return 'active';
+    case 'current': return 'current';
     case 'waiting':
     case 'alert': return 'waiting';
     case 'interrupted': return 'blocked';
@@ -101,8 +129,7 @@ export function buildEventGraph(snapshot: EventSnapshotDto): FlowGraph {
   const finals = matches.filter(match => match.phase === 'final').length;
 
   const stage = (id: StageNodeData['stage'], x: number, data: Omit<StageNodeData, 'stage'>): FlowNode => ({
-    id, type: 'stage', position: { x, y: STAGE_Y }, data: { stage: id, ...data },
-    width: NODE_SIZE.stage.width, height: NODE_SIZE.stage.height
+    id, type: 'stage', position: { x, y: STAGE_Y }, data: { stage: id, ...data }, ...sized('stage')
   });
 
   const nodes: FlowNode[] = [
@@ -145,7 +172,7 @@ export function buildEventGraph(snapshot: EventSnapshotDto): FlowGraph {
     };
     nodes.push({
       id: match.id, type: 'match', position: { x: STAGE_X.matches, y: MATCH_Y[position] ?? 30 + position * 116 },
-      data, width: NODE_SIZE.match.width, height: NODE_SIZE.match.height
+      data, ...sized('match')
     });
     const above = position === 0;
     edges.push(edge('round', 'right', match.id, 'left', {
@@ -245,8 +272,7 @@ export function buildMatchGraph(snapshot: EventSnapshotDto, matchId: MatchId): F
       clock: step === 'running' && started ? match.clock : null, phase
     };
     return {
-      id: step, type: 'step', position: STEP_POSITION[step], data,
-      width: NODE_SIZE.step.width, height: NODE_SIZE.step.height
+      id: step, type: 'step', position: STEP_POSITION[step], data, ...sized('step')
     };
   });
 
@@ -256,11 +282,11 @@ export function buildMatchGraph(snapshot: EventSnapshotDto, matchId: MatchId): F
       label: published ? `${match.ready.length} / 2` : null
     }),
     edge('running', 'top', 'paused', 'bottom', {
-      state: phase === 'paused' ? 'active' : everPaused ? 'done' : untakenEdge,
+      state: phase === 'paused' ? 'current' : everPaused ? 'done' : untakenEdge,
       label: 'pause · resume', bidirectional: true
     }),
     edge('running', 'right', 'proposal', 'left', {
-      state: proposal ? (openProposal ? 'active' : 'done') : untakenEdge, label: 'report'
+      state: proposal ? (openProposal ? 'current' : 'done') : untakenEdge, label: 'report'
     }),
     edge('proposal', 'right', 'confirm', 'left', {
       state: agreed ? 'done' : untakenEdge, label: 'confirm'
@@ -287,4 +313,38 @@ export function buildMatchGraph(snapshot: EventSnapshotDto, matchId: MatchId): F
 /** The graph for a view. Pure: the same snapshot, view and match always give the same graph. */
 export function buildFlowGraph(snapshot: EventSnapshotDto, view: FlowView, matchId: MatchId | null): FlowGraph {
   return view === 'event' ? buildEventGraph(snapshot) : buildMatchGraph(snapshot, resolveMatchId(snapshot, matchId));
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * `next`, reusing every node and edge object from `previous` that did not change, and `previous`
+ * itself when nothing changed. React Flow then keeps its internal node state and edge components.
+ */
+export function reconcileGraph(previous: FlowGraph | null, next: FlowGraph): FlowGraph {
+  if (!previous || previous.layoutKey !== next.layoutKey) return next;
+  const oldNodes = new Map(previous.nodes.map(node => [node.id, node]));
+  const oldEdges = new Map(previous.edges.map(edge => [edge.id, edge]));
+  let changed = previous.nodes.length !== next.nodes.length || previous.edges.length !== next.edges.length;
+  const nodes = next.nodes.map((node, index) => {
+    const old = oldNodes.get(node.id);
+    if (old && sameValue(old, node)) {
+      if (previous.nodes[index] !== old) changed = true;
+      return old;
+    }
+    changed = true;
+    return node;
+  });
+  const edges = next.edges.map((edge, index) => {
+    const old = oldEdges.get(edge.id);
+    if (old && sameValue(old, edge)) {
+      if (previous.edges[index] !== old) changed = true;
+      return old;
+    }
+    changed = true;
+    return edge;
+  });
+  return changed ? { layoutKey: next.layoutKey, nodes, edges } : previous;
 }

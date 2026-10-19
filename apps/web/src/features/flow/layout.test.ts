@@ -2,7 +2,9 @@ import type { EventSnapshotDto, MatchDto } from '@tcg-live/core';
 import { checkin, final, liveDispute, liveInterrupted, signupOpen, snapshots, FIXTURE_NOW_MS } from '@tcg-live/core/fixtures';
 import { describe, expect, it } from 'vitest';
 import { describeMatch, describeStage, describeStep, seatName } from './labels';
-import { buildEventGraph, buildFlowGraph, buildMatchGraph, matchNodeState, resolveMatchId } from './layout';
+import {
+  buildEventGraph, buildFlowGraph, buildMatchGraph, matchNodeState, NODE_SIZE, reconcileGraph, resolveMatchId
+} from './layout';
 import type { FlowEdgeState, FlowGraph, FlowNodeState, MatchNodeData, StageNodeData, StepNodeData } from './types';
 
 function nodeStates(graph: FlowGraph): Record<string, FlowNodeState> {
@@ -114,7 +116,8 @@ describe('Event view mapping', () => {
     expect(matchNodeState(final, final.matches[0]!)).toBe('done');
     const paused = withM1({ phase: 'paused', clock: { ...liveDispute.matches[0]!.clock, state: 'frozen', runningSinceMs: null } });
     expect(matchNodeState(paused, paused.matches[0]!)).toBe('current');
-    expect(buildEventGraph(paused).edges.find(edge => edge.id === 'round->M1')!.data!.state).toBe('active');
+    // A paused match is current but not live play: its edge is clay and static, never flowing.
+    expect(buildEventGraph(paused).edges.find(edge => edge.id === 'round->M1')!.data!.state).toBe('current');
   });
 
   it('a legacy event without signup shows signup as done', () => {
@@ -160,7 +163,7 @@ describe('Match view mapping', () => {
       dispute: 'alert', judge: 'waiting', final: 'pending'
     });
     expect(edgeStates(graph)).toEqual({
-      'ready->running': 'done', 'running->paused': 'active', 'running->proposal': 'done',
+      'ready->running': 'done', 'running->paused': 'current', 'running->proposal': 'done',
       'proposal->confirm': 'pending', 'confirm->final': 'pending', 'proposal->dispute': 'done',
       'dispute->judge': 'waiting', 'running->judge': 'pending', 'judge->final': 'pending'
     });
@@ -230,14 +233,79 @@ describe('Match view mapping', () => {
     expect(edgeStates(graph)['running->judge']).toBe('waiting');
   });
 
-  it('an open proposal while running: the report edge flows into Proposal, Confirm awaits the opponent', () => {
+  it('an open proposal while running: a static current edge into Proposal, Confirm awaits the opponent', () => {
     const proposing = withM1({ proposal: { revision: 1, winner: 'A', reporter: 'A', decision: 'open' } });
     const graph = buildMatchGraph(proposing, 'M1');
     expect(nodeStates(graph)).toMatchObject({ running: 'live', proposal: 'current', confirm: 'pending' });
-    expect(edgeStates(graph)['running->proposal']).toBe('active');
+    expect(edgeStates(graph)['running->proposal']).toBe('current');
+    expect(edgeStates(graph)['ready->running']).toBe('active');
     expect(nodeData<StepNodeData>(graph, 'confirm').subtitle).toBe('awaiting B');
     const seats = nodeData<MatchNodeData>(buildEventGraph(proposing), 'M1').seats;
     expect(seats.map(row => row.meta)).toEqual(['reported win', 'to confirm']);
+  });
+});
+
+describe('React Flow stability', () => {
+  const allGraphs = (): FlowGraph[] => Object.values(snapshots).flatMap(snapshot => [
+    buildEventGraph(snapshot), ...snapshot.matches.map(match => buildMatchGraph(snapshot, match.id))
+  ]);
+
+  it('every node carries its measured size and explicit anchors, so updates never drop handle bounds', () => {
+    for (const graph of allGraphs()) {
+      for (const node of graph.nodes) {
+        const size = NODE_SIZE[node.type as keyof typeof NODE_SIZE];
+        expect(node.measured).toEqual(size);
+        expect(node).toMatchObject(size);
+        const ids = node.handles!.map(handle => `${handle.type}:${handle.id}`).sort();
+        expect(ids).toEqual(['source:s-bottom', 'source:s-left', 'source:s-right', 'source:s-top',
+          'target:t-bottom', 'target:t-left', 'target:t-right', 'target:t-top']);
+        for (const handle of node.handles!) {
+          expect(handle.x).toBeGreaterThanOrEqual(0);
+          expect(handle.x + (handle.width ?? 1)).toBeLessThanOrEqual(size.width);
+          expect(handle.y + (handle.height ?? 1)).toBeLessThanOrEqual(size.height);
+        }
+      }
+      // Every edge refers to anchors that exist on its nodes.
+      for (const edge of graph.edges) {
+        const source = graph.nodes.find(node => node.id === edge.source)!;
+        const target = graph.nodes.find(node => node.id === edge.target)!;
+        expect(source.handles!.some(handle => handle.id === edge.sourceHandle && handle.type === 'source')).toBe(true);
+        expect(target.handles!.some(handle => handle.id === edge.targetHandle && handle.type === 'target')).toBe(true);
+      }
+    }
+  });
+
+  it('anchors sit on the midpoint of each side', () => {
+    const anchors = buildEventGraph(liveDispute).nodes.find(node => node.id === 'M1')!.handles!;
+    const at = (id: string) => anchors.find(handle => handle.id === id && handle.type === 'source')!;
+    expect(at('s-top')).toMatchObject({ x: 97.5, y: 0 });
+    expect(at('s-right')).toMatchObject({ x: 195, y: 43.5 });
+    expect(at('s-bottom')).toMatchObject({ x: 97.5, y: 87 });
+    expect(at('s-left')).toMatchObject({ x: 0, y: 43.5 });
+  });
+
+  it('reconcileGraph keeps unchanged nodes and edges, and the whole graph when nothing changed', () => {
+    const first = buildEventGraph(liveDispute);
+    expect(reconcileGraph(first, buildEventGraph({ ...liveDispute, version: 99 }))).toBe(first);
+
+    const later = buildEventGraph(liveInterrupted);
+    const merged = reconcileGraph(first, later);
+    expect(merged).not.toBe(first);
+    const same = (id: string) => merged.nodes.find(node => node.id === id) === first.nodes.find(node => node.id === id);
+    expect(same('signup')).toBe(true);
+    expect(same('M2')).toBe(true);
+    expect(same('M1')).toBe(false);
+    const sameEdge = (id: string) => merged.edges.find(edge => edge.id === id) === first.edges.find(edge => edge.id === id);
+    expect(sameEdge('signup->checkin')).toBe(true);
+    expect(sameEdge('round->M1')).toBe(false);
+    expect(merged).toEqual(later);
+  });
+
+  it('reconcileGraph never mixes layouts', () => {
+    const event = buildEventGraph(liveDispute);
+    const match = buildMatchGraph(liveDispute, 'M1');
+    expect(reconcileGraph(event, match)).toBe(match);
+    expect(reconcileGraph(null, event)).toBe(event);
   });
 });
 
@@ -275,6 +343,13 @@ describe('labels', () => {
   it('describes interrupted, final and unpublished matches', () => {
     const m1 = nodeData<MatchNodeData>(buildEventGraph(liveInterrupted), 'M1');
     expect(describeMatch(m1, 840_000)).toBe('M1, running, clock interrupted, 14:00 left, Ava Chen vs Ben Ortiz');
+    const live = nodeData<MatchNodeData>(buildEventGraph(liveDispute), 'M1');
+    // A running countdown is spoken in whole minutes so the accessible name is not rewritten every second.
+    expect(describeMatch(live, 840_000)).toBe('M1, running, about 14 minutes left, Ava Chen vs Ben Ortiz');
+    expect(describeMatch(live, 839_000)).toBe(describeMatch(live, 811_000));
+    expect(describeMatch(live, 61_000)).toContain('about 1 minute left');
+    expect(describeMatch(live, 59_000)).toContain('under a minute left');
+    expect(describeMatch(live, 0)).toContain('time up');
     const won = nodeData<MatchNodeData>(buildEventGraph(final), 'M2');
     expect(describeMatch(won, 0)).toBe('M2, final, Dee Ross won, Cy Park vs Dee Ross');
     const waiting = nodeData<MatchNodeData>(buildEventGraph(checkin), 'M1');
@@ -287,5 +362,7 @@ describe('labels', () => {
     expect(describeStep(judge, 0)).toBe('M2 Judge, waiting on a judge, dispute');
     const running = nodeData<StepNodeData>(buildMatchGraph(liveInterrupted, 'M1'), 'running');
     expect(describeStep(running, 840_000)).toBe('M1 Running, clock interrupted, 14:00 left, frozen');
+    const ticking = nodeData<StepNodeData>(buildMatchGraph(liveDispute, 'M1'), 'running');
+    expect(describeStep(ticking, 839_000)).toBe('M1 Running, in progress, about 14 minutes left');
   });
 });

@@ -4,18 +4,6 @@
  * Component variables are prefixed --tcg-flow-*; colours always come from styles/tokens.css.
  */
 
-@property --tcg-flow-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
-
-@keyframes tcg-flow-spin {
-  to {
-    --tcg-flow-angle: 360deg;
-  }
-}
-
 /* One dash period is 8px (2px dash + 6px gap); moving two periods keeps the loop seamless. */
 @keyframes tcg-flow-dash {
   to {
@@ -36,7 +24,6 @@
 }
 
 .tcg-flow {
-  --tcg-flow-ring-gap: 2px;
   position: relative;
   width: 100%;
   height: 100%;
@@ -82,7 +69,6 @@
 
 .tcg-flow-node {
   --tcg-flow-radius: 14px;
-  --tcg-flow-ring: var(--tcg-accent);
   position: relative;
   box-sizing: border-box;
   border: 1.5px solid var(--tcg-line-strong);
@@ -133,38 +119,83 @@
   box-shadow: 0 0 0 4px var(--tcg-warning-soft);
 }
 
-/* Rings: a conic gradient behind the node shows through its transparent border and just outside it. */
-.tcg-flow-node.is-live,
-.tcg-flow-node.is-waiting {
-  border-color: transparent;
+/*
+ * Activity ring (nodes.tsx ActivityRing): an SVG rounded rectangle just outside the node. A faint track
+ * runs all the way round; a short head and a longer, fainter tail travel along it together. Dash
+ * lengths are percentages of the perimeter (pathLength = 100), so one loop is an offset of 100.
+ */
+@keyframes tcg-flow-orbit-head {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+
+@keyframes tcg-flow-orbit-tail {
+  from {
+    stroke-dashoffset: 22;
+  }
+  to {
+    stroke-dashoffset: -78;
+  }
+}
+
+.tcg-flow-node.is-live {
+  border-color: color-mix(in srgb, var(--tcg-accent) 55%, var(--tcg-line-strong));
 }
 
 .tcg-flow-node.is-waiting {
-  --tcg-flow-ring: var(--tcg-danger);
+  border-color: color-mix(in srgb, var(--tcg-danger) 55%, var(--tcg-line-strong));
 }
 
-.tcg-flow-node.is-live::after,
-.tcg-flow-node.is-waiting::after {
-  content: "";
+.tcg-flow-ring {
   position: absolute;
-  inset: calc(-1.5px - var(--tcg-flow-ring-gap));
-  z-index: -1;
-  border-radius: calc(var(--tcg-flow-radius) + var(--tcg-flow-ring-gap));
-  background: conic-gradient(
-    from var(--tcg-flow-angle),
-    var(--tcg-flow-ring) 0%,
-    var(--tcg-flow-ring) 22%,
-    color-mix(in srgb, var(--tcg-flow-ring) 16%, transparent) 38%,
-    color-mix(in srgb, var(--tcg-flow-ring) 16%, transparent) 62%,
-    var(--tcg-flow-ring) 86%,
-    var(--tcg-flow-ring) 100%
-  );
-  animation: tcg-flow-spin 1.6s linear infinite;
+  overflow: visible;
   pointer-events: none;
+  color: var(--tcg-accent);
 }
 
-.tcg-flow-node.is-waiting::after {
-  animation-duration: 4.5s;
+.tcg-flow-ring.is-waiting {
+  color: var(--tcg-danger);
+}
+
+.tcg-flow-ring rect {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.tcg-flow-ring-track {
+  opacity: 0.28;
+}
+
+.tcg-flow-ring-head {
+  stroke-dasharray: 18 82;
+  animation: tcg-flow-orbit-head 2.2s linear infinite;
+}
+
+.tcg-flow-ring-tail {
+  opacity: 0.45;
+  stroke-dasharray: 40 60;
+  animation: tcg-flow-orbit-tail 2.2s linear infinite;
+}
+
+.tcg-flow-ring.is-waiting .tcg-flow-ring-head,
+.tcg-flow-ring.is-waiting .tcg-flow-ring-tail {
+  animation-duration: 6s;
+}
+
+/* Reduced motion (media query or the canvas flag): a static, solid ring. */
+.tcg-flow[data-reduced-motion] .tcg-flow-ring-head,
+.tcg-flow[data-reduced-motion] .tcg-flow-ring-tail {
+  display: none;
+}
+
+.tcg-flow[data-reduced-motion] .tcg-flow-ring-track {
+  opacity: 1;
 }
 
 /* Status badge in the bottom-right corner. */
@@ -217,7 +248,7 @@
 }
 
 .tcg-flow-stage.is-live .tcg-flow-stage-icon {
-  color: var(--tcg-accent);
+  color: var(--tcg-accent-text);
 }
 
 .tcg-flow-stage-label {
@@ -303,7 +334,7 @@
 }
 
 .tcg-flow-status.is-live {
-  color: var(--tcg-accent);
+  color: var(--tcg-accent-text);
 }
 
 .tcg-flow-status.is-judge {
@@ -404,7 +435,7 @@
 }
 
 .tcg-flow-seat-meta.tone-accent {
-  color: var(--tcg-accent);
+  color: var(--tcg-accent-text);
 }
 
 /* Lifecycle step chip. */
@@ -427,7 +458,7 @@
 
 .tcg-flow-step.is-live .tcg-flow-step-icon,
 .tcg-flow-step.is-current .tcg-flow-step-icon {
-  color: var(--tcg-accent);
+  color: var(--tcg-accent-text);
 }
 
 .tcg-flow-step.is-waiting .tcg-flow-step-icon,
@@ -461,7 +492,7 @@
 }
 
 .tcg-flow-step-text span[data-clock-state="running"] {
-  color: var(--tcg-accent);
+  color: var(--tcg-accent-text);
   font-family: var(--font-mono);
   font-weight: 600;
 }
@@ -490,6 +521,10 @@
   animation: tcg-flow-dash 0.9s linear infinite;
 }
 
+.tcg-flow .tcg-flow-edge.is-current {
+  stroke: var(--tcg-accent);
+}
+
 .tcg-flow .tcg-flow-edge.is-waiting {
   stroke: var(--tcg-danger);
   animation: tcg-flow-dash 2.4s linear infinite;
@@ -513,7 +548,8 @@
   opacity: 0.85;
 }
 
-.tcg-flow-arrow.is-active {
+.tcg-flow-arrow.is-active,
+.tcg-flow-arrow.is-current {
   fill: var(--tcg-accent);
 }
 
@@ -552,8 +588,9 @@
   color: var(--tcg-success);
 }
 
-.tcg-flow-edge-label.is-active {
-  color: var(--tcg-accent);
+.tcg-flow-edge-label.is-active,
+.tcg-flow-edge-label.is-current {
+  color: var(--tcg-accent-text);
 }
 
 .tcg-flow-edge-label.is-waiting,
@@ -699,9 +736,11 @@
   .tcg-flow-status-dot {
     animation: none !important;
   }
-  .tcg-flow-node.is-live::after,
-  .tcg-flow-node.is-waiting::after {
-    animation: none !important;
-    background: var(--tcg-flow-ring);
+  .tcg-flow-ring-head,
+  .tcg-flow-ring-tail {
+    display: none;
+  }
+  .tcg-flow-ring-track {
+    opacity: 1;
   }
 }
