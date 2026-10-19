@@ -256,6 +256,10 @@
   top: calc(100% + 9px);
   left: 50%;
   transform: translateX(-50%);
+  padding: 1px 5px 2px;
+  border-radius: 6px;
+  /* Edges leaving a stage downwards (top-to-bottom layout) pass under the label, not through it. */
+  background: color-mix(in srgb, var(--tcg-canvas) 88%, transparent);
   text-align: center;
   white-space: nowrap;
   pointer-events: none;
@@ -677,7 +681,10 @@
   display: flex;
   gap: 12px;
   margin: 0;
-  padding: 5px 4px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  /* Nodes can pass under the legend when a short pane pans; keep it legible over them. */
+  background: color-mix(in srgb, var(--tcg-canvas) 86%, transparent);
   list-style: none;
   color: var(--tcg-fg-subtle);
   font-size: 10.5px;

@@ -4,7 +4,7 @@ import '@xyflow/react/dist/base.css';
 import type { EventSnapshotDto, MatchId } from '@tcg-live/core';
 import type { FlowGraph } from './types';
 import {
-  Background, BackgroundVariant, Panel, ReactFlow, ReactFlowProvider, useReactFlow, type FitViewOptions
+  Background, BackgroundVariant, Panel, ReactFlow, ReactFlowProvider, useReactFlow, useStore
 } from '@xyflow/react';
 import { Maximize, Minus, Plus } from 'lucide-react';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react';
@@ -13,6 +13,7 @@ import { EdgeMarkers, edgeTypes } from './edge';
 import { buildFlowGraph, reconcileGraph, resolveMatchId } from './layout';
 import { nodeTypes } from './nodes';
 import { useThrottledValue } from './throttle';
+import { chooseOrientation, computeViewport, type PaneSize } from './viewport';
 
 export type FlowView = 'event' | 'match';
 
@@ -30,9 +31,8 @@ export interface LivePreviewProps {
 
 export { buildEventGraph, buildFlowGraph, buildMatchGraph, reconcileGraph, resolveMatchId } from './layout';
 export { GRAPH_UPDATE_INTERVAL_MS, useThrottledValue } from './throttle';
-export type { FlowEdgeState, FlowGraph, FlowNodeState } from './types';
-
-const FIT_OPTIONS: FitViewOptions = { padding: { top: '52px', right: '28px', bottom: '56px', left: '28px' }, maxZoom: 1.15 };
+export type { FlowEdgeState, FlowGraph, FlowNodeState, FlowOrientation } from './types';
+export { chooseOrientation, computeViewport, READABLE_ZOOM } from './viewport';
 
 /** Read-only live canvas for one event: the Event view or one match's lifecycle. */
 export function LivePreview(props: LivePreviewProps) {
@@ -47,12 +47,24 @@ function FlowCanvas({ snapshot, view, matchId, onViewChange, getServerNow = Date
   // Streams can deliver many snapshots per second; the graph follows at most five times a second.
   const throttled = useThrottledValue(snapshot);
   const shownMatch = resolveMatchId(throttled, matchId);
+  // The pane size React Flow measured; a tall or narrow dock pane switches to the top-to-bottom layout.
+  const paneWidth = useStore(state => state.width);
+  const paneHeight = useStore(state => state.height);
+  const pane = useMemo<PaneSize | null>(
+    () => (paneWidth > 0 && paneHeight > 0 ? { width: paneWidth, height: paneHeight } : null),
+    [paneWidth, paneHeight]
+  );
+  const candidates = useMemo(() => ({
+    horizontal: buildFlowGraph(throttled, view, shownMatch, 'horizontal'),
+    vertical: buildFlowGraph(throttled, view, shownMatch, 'vertical')
+  }), [throttled, view, shownMatch]);
+  const orientation = chooseOrientation(pane, candidates.horizontal.bounds, candidates.vertical.bounds);
   // Unchanged nodes and edges keep their object identity, so React Flow keeps its internal state and
   // edge components (and their animations) stay mounted across updates.
   const previousGraph = useRef<FlowGraph | null>(null);
   const graph = useMemo(
-    () => reconcileGraph(previousGraph.current, buildFlowGraph(throttled, view, shownMatch)),
-    [throttled, view, shownMatch]
+    () => reconcileGraph(previousGraph.current, candidates[orientation]),
+    [candidates, orientation]
   );
   useEffect(() => { previousGraph.current = graph; }, [graph]);
   const reducedMotion = usePrefersReducedMotion();
@@ -80,14 +92,26 @@ function FlowCanvas({ snapshot, view, matchId, onViewChange, getServerNow = Date
       : null
   }), [markerPrefix, reducedMotion, stableNow, view]);
 
-  const { fitView } = useReactFlow();
+  const { setViewport } = useReactFlow();
   const containerRef = useRef<HTMLDivElement>(null);
   const duration = reducedMotion ? 0 : 220;
 
-  // Refit when the layout changes (view or match), never on a data update.
+  // Place the camera when the layout (view, match, orientation) or the pane size changes, never on a
+  // data update, so a user's own pan and zoom survive live updates. The fit keeps text readable.
+  const graphRef = useRef(graph);
+  useLayoutEffect(() => { graphRef.current = graph; }, [graph]);
+  const placedLayout = useRef<string | null>(null);
   useEffect(() => {
-    void fitView({ ...FIT_OPTIONS, duration });
-  }, [graph.layoutKey, fitView, duration]);
+    if (!pane) return;
+    const layoutChanged = placedLayout.current !== null && placedLayout.current !== graph.layoutKey;
+    placedLayout.current = graph.layoutKey;
+    void setViewport(computeViewport(graphRef.current, pane), { duration: layoutChanged ? duration : 0 });
+  }, [graph.layoutKey, pane, setViewport, duration]);
+
+  /** The Fit view button shows everything, however small. */
+  const fitAll = useCallback(() => {
+    if (pane) void setViewport(computeViewport(graphRef.current, pane, 0), { duration });
+  }, [pane, setViewport, duration]);
 
   useEffect(() => {
     if (!focusAfterViewChange.current) return;
@@ -97,28 +121,13 @@ function FlowCanvas({ snapshot, view, matchId, onViewChange, getServerNow = Date
     containerRef.current?.querySelector<HTMLButtonElement>('.tcg-flow-toolbar button[aria-pressed="true"]')?.focus();
   }, [graph.layoutKey]);
 
-  // Refit when the dock pane is resized.
-  useEffect(() => {
-    const element = containerRef.current;
-    if (!element || typeof ResizeObserver === 'undefined') return;
-    let frame = 0;
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => { void fitView(FIT_OPTIONS); });
-    });
-    observer.observe(element);
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [fitView]);
-
   const viewTitle = view === 'event' ? 'Event view' : `Match ${shownMatch} lifecycle`;
 
   return (
     <div ref={containerRef} className={['tcg-flow', className].filter(Boolean).join(' ')}
       data-testid="live-preview" data-event={snapshot.eventId} data-view={view}
-      data-match={view === 'match' ? shownMatch : undefined} data-reduced-motion={reducedMotion || undefined}>
+      data-match={view === 'match' ? shownMatch : undefined} data-orientation={graph.orientation}
+      data-reduced-motion={reducedMotion || undefined}>
       <FlowContext.Provider value={context}>
         <EdgeMarkers prefix={markerPrefix} />
         <ReactFlow
@@ -134,8 +143,6 @@ function FlowCanvas({ snapshot, view, matchId, onViewChange, getServerNow = Date
           elementsSelectable={false}
           edgesReconnectable={false}
           zoomOnDoubleClick={false}
-          fitView
-          fitViewOptions={FIT_OPTIONS}
           minZoom={0.35}
           maxZoom={2}
         >
@@ -147,7 +154,7 @@ function FlowCanvas({ snapshot, view, matchId, onViewChange, getServerNow = Date
             <Legend />
           </Panel>
           <Panel position="bottom-left">
-            <ZoomControls duration={duration} />
+            <ZoomControls duration={duration} onFit={fitAll} />
           </Panel>
         </ReactFlow>
       </FlowContext.Provider>
@@ -172,11 +179,11 @@ function ViewSwitcher({ snapshot, view, matchId, onViewChange }: {
   );
 }
 
-function ZoomControls({ duration }: { duration: number }) {
-  const { fitView, zoomIn, zoomOut } = useReactFlow();
+function ZoomControls({ duration, onFit }: { duration: number; onFit(): void }) {
+  const { zoomIn, zoomOut } = useReactFlow();
   return (
     <div className="tcg-flow-toolbar is-icons" role="group" aria-label="Zoom">
-      <button type="button" aria-label="Fit view" title="Fit view" onClick={() => void fitView({ ...FIT_OPTIONS, duration })}><Maximize aria-hidden /></button>
+      <button type="button" aria-label="Fit view" title="Fit view" onClick={onFit}><Maximize aria-hidden /></button>
       <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => void zoomOut({ duration })}><Minus aria-hidden /></button>
       <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => void zoomIn({ duration })}><Plus aria-hidden /></button>
     </div>
