@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AdminMode } from './config.js';
+import { createAdminHttp } from './http/handler.js';
 import type { AdminRuntime } from './runtime-types.js';
 
 export interface AdminHandlerOptions {
@@ -29,12 +30,7 @@ export interface AdminHandler {
   close(): Promise<void>;
 }
 
-/** Wave 0 stub; L1 (server-http) replaces the body. */
-export function createAdminHandler(_options: AdminHandlerOptions): AdminHandler {
-  return {
-    handle: () => false,
-    loginUrl: () => null,
-    rotateLoginUrl: () => { throw new Error('Admin console is not implemented yet.'); },
-    close: async () => {}
-  };
+/** The admin console's HTTP layer: auth, read routes, the live stream and the static web build. */
+export function createAdminHandler(options: AdminHandlerOptions): AdminHandler {
+  return createAdminHttp(options);
 }
