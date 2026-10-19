@@ -1,7 +1,8 @@
 import { checkin, FIXTURE_ADMIN_ID, FIXTURE_MEMBER_IDS, final, liveDispute, liveInterrupted, signupOpen } from '@tcg-live/core/fixtures';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PLAYER_COLUMN_MIN_WIDTH } from './PlayersTab';
 import { bodyRows, renderList } from './testUtils';
 
 const [AVA] = FIXTURE_MEMBER_IDS;
@@ -93,6 +94,46 @@ describe('Players tab', () => {
     expect(within(rows[3]!).getByText('Lost')).toBeInTheDocument();
     await user.click(within(header).getByRole('button'));
     expect(header).toHaveAttribute('aria-sort', 'ascending');
+  });
+
+  describe('in narrow panes', () => {
+    afterEach(() => vi.unstubAllGlobals());
+    const stubWidth = (width: number) => {
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element) {
+          this.callback([{ target, contentRect: { width } } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        unobserve() {}
+        disconnect() {}
+      });
+    };
+    const headers = () => screen.getAllByRole('columnheader').map(header => header.textContent);
+
+    it('keeps seat, member, status and points at 380 px', () => {
+      stubWidth(380);
+      renderList(liveDispute, 'players');
+      expect(headers()).toEqual(['Seat', 'Member', 'Status', 'Pts']);
+      expect(within(bodyRows('Players by seat')[3]!).getByText('Needs judge')).toBeInTheDocument();
+    });
+
+    it('adds columns by priority as the pane widens', () => {
+      stubWidth(PLAYER_COLUMN_MIN_WIDTH.match);
+      renderList(liveDispute, 'players');
+      expect(headers()).toEqual(['Seat', 'Member', 'Status', 'Check-in', 'Match', 'Pts']);
+    });
+
+    it('shows every column when wide', () => {
+      stubWidth(PLAYER_COLUMN_MIN_WIDTH.signup);
+      renderList(liveDispute, 'players');
+      expect(headers()).toEqual(['Seat', 'Member', 'Status', 'Check-in', 'Match', 'Pts', 'Rating', 'Signup']);
+    });
+
+    it('shows only roster columns before seats exist', () => {
+      stubWidth(380);
+      renderList(signupOpen, 'players');
+      expect(headers()).toEqual(['#', 'Member', 'Status', 'Signup']);
+    });
   });
 
   it('copies a member ID from the name', async () => {
