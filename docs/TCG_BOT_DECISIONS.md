@@ -137,7 +137,6 @@ See the [three-reviewer planning debate](PLANNING_DEBATE_REVIEW.md) for countere
 The shared card initially offers:
 
 - **I won**
-- **I lost**
 - **Call judge**
 - **Pause**
 
@@ -145,7 +144,9 @@ The shared card initially offers:
 
 - Either player can make the first report.
 - The card updates to state the proposed winner explicitly.
-- It offers neutral **Confirm result** and **Dispute result** actions. The opponent should not be forced to click an emotionally difficult `I lost` label to confirm.
+- It offers **Agree** (green) and **Dispute** (red). There is no **I lost** button; the opponent agrees to the stated winner instead.
+- The card tags the reporting player and the opponent expected to agree or dispute. Readiness and resume agreements also identify the acting players with their user mentions.
+- **Resume** is green. Discord does not offer an orange button style, so **🟠 Pause** uses the neutral style with an orange indicator. These labels do not change consent or clock rules.
 - Only the opponent of the reporting player may confirm or dispute that report.
 - The reporter must not approve their own report.
 - Opponent confirmation finalizes the result immediately.

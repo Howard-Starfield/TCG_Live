@@ -1,0 +1,82 @@
+# Private Discord integration plan
+
+Status: inspected by Claude Opus 5.5 at high effort and revised after primary evaluation. Offline implementation passed local validation. The user subsequently authorized live tests and test-channel creation in the named private server; automated Gateway/REST/database checks passed. A two-account human rehearsal is the remaining gate. See [review decisions](PRIVATE_DISCORD_REVIEW.md) and [validation evidence and limits](PRIVATE_DISCORD_VALIDATION.md).
+
+Build one supervised private rehearsal: one selected guild, a text channel for check-in, assigned voice-channel chats for M1/M2, four allowlisted players, one separate test admin, and one fixed BO1 CAM round. Keep the existing A/B and C/D pairing and mark results as practice. Optional match-channel configuration retains the original shared-text layout for older fixtures. Human messages make the configured channel's panels sticky through the existing refresh owner.
+
+## The first usable result
+
+Players use one pinned check-in message and two shared match cards. Check-in receives a private acknowledgment. The admin publishes the fixed round after four check-ins. Players ready, pause, resume, report, confirm, dispute, and call the judge from those cards. The admin can resolve or correct a result and override a pause, with a reason. A real timer flags expiry; it never awards a result.
+
+Retain the current fixture's isolated points/ratings if displayed, clearly labeled practice. Scheduled reminders, DMs, email, room creation, streams, time extensions, no-shows, Swiss pairing, additional rounds, global ratings, web admin, and backup/restore remain outside this slice. Existing product decisions on these features are unchanged.
+
+## Reuse and necessary changes
+
+| Owner | Planned change |
+| --- | --- |
+| `apps/server/src/rehearsal/domain.ts` | Reuse transitions, revisions, pause generations, fixture scoring, and final-result protection. Add only participant `callJudge`: set attention without implicitly pausing or awarding anything; repeats while already flagged are a no-op. |
+| `apps/server/src/rehearsal/store.ts` | Keep the transaction, event row lock, applied-command deduplication, and audit owner. Add a narrow trusted Discord context check under the same lock; preserve real actor identity separately from the internal A-D/admin alias. Sample the real command clock after acquiring the lock. Keep explicit injected time for existing tests. |
+| New `apps/server/src/discord/` modules | Configuration, one Gateway listener/router, three card renderers, and one bounded timer/message-refresh owner. No generic command/plugin framework. |
+| `database/migrations/` | One explicit additive migration for a session record containing the identity mapping, active/retired status and three message IDs, plus audit principal metadata. Update the existing exact schema/version guards and verify old fixture records still load. No durable delivery queue. |
+| `main.ts`, configuration, package scripts | Explicit Discord entrypoint/lifecycle using the existing loopback health service. Default health-only startup still works without Discord credentials. |
+
+Add `discord.js` as the one new direct runtime dependency. Registry metadata currently reports 14.27.0, compatible with this repository's Node 24 runtime; pin and confirm the package at implementation. Use its Gateway and REST handling rather than implementing the Discord protocol or introducing another bot framework. [discord.js guide](https://github.com/discordjs/guide/blob/main/guide/creating-your-bot/main-file.md)
+
+## Private installation and identity
+
+Use an application dedicated to this test. Configure guild installation, `bot` and `applications.commands` scopes, and the `Guilds` and `GuildMessages` Gateway intents. Sticky triggers inspect channel/author metadata without reading message content; the privileged Message Content intent is not required. Receive interactions through the outbound Gateway; leave the public interactions endpoint unset. [Discord interaction delivery](https://docs.discord.com/developers/interactions/receiving-and-responding), [Gateway intents](https://docs.discord.com/developers/events/gateway#gateway-intents)
+
+Private settings contain application, guild, channel, four player, and admin IDs plus the bot token. Keep snowflakes as strings. Require four distinct player IDs and a separate admin. Snapshot this mapping in the session record; reject a config change on an existing session instead of silently remapping players. Never put the token in the plan, source, audit, command line, or logs.
+
+The production adapter uses a selected channel restricted to the testers and does not manage guild roles or channel privacy. For the separately authorized live test setup, task-owned private channels were created through Discord REST; this did not add automatic channel management to the adapter. Grant the bot View Channel, Send Messages, Embed Links, Read Message History, and Pin Messages in the target text channel. It needs no Administrator or Manage Messages permission. Current pinning uses `PIN_MESSAGES`; use the current pin endpoint/SDK support. [Discord permissions](https://docs.discord.com/developers/topics/permissions), [message pinning](https://docs.discord.com/developers/resources/message#pin-message)
+
+Register one named admin slash command, `/tcg-test`, in the selected guild, with publish, resolve, correct, judge-resume, and refresh subcommands. Resolve/correct take match (A/B or C/D), winner, and required reason; validate that the winner belongs to the selected match. Judge-resume takes match and reason. Publish/refresh target the selected session. Use ordinary slash options instead of introducing modal state. Register only this command explicitly, without overwriting unrelated commands or registering global commands. Guild scoping does not replace runtime authorization. [Guild commands](https://docs.discord.com/developers/interactions/application-commands#making-a-guild-command)
+
+Every interaction must match the configured application, guild, channel, active session, and its canonical message where applicable. Use Discord's authenticated user ID to map the actor; neither button data nor slash options can supply a role. Only the configured admin can invoke admin actions. Discord Administrator permission by itself grants no test-admin rights. Preserve the actual principal, internal alias, interaction ID, reason, and mode in audit. Timer actions use an explicit system principal.
+
+## Controls and commits
+
+Route all controls through one `interactionCreate` listener, not process-local collectors that disappear on restart. Button IDs carry a short protocol version, session/event, match, action, and the relevant proposal revision or pause generation. Keep them within Discord's 100-character limit and reject malformed IDs. Validate the saved guild/channel/message binding under the mutation lock. [Component identifiers](https://docs.discord.com/developers/components/reference#custom-id)
+
+I won/I lost maps to a proposed winner using the authenticated participant, never a caller-supplied winner identity. Those report buttons carry the expected proposal revision, including zero before the first report; do not substitute the current database revision for a stale button's revision. Confirm/dispute targets the exact proposal; Resume targets the exact pause. Render only available actions, and enforce the rules again on the server. An outdated control gets a private explanation and card refresh.
+
+| State or action | Meaning retained from the domain |
+| --- | --- |
+| Expired | Remaining time is zero and judge attention is set. Reports, confirmations, disputes and admin resolution remain possible; pause/resume are unavailable. |
+| Resolve | Admin finalizes a started, unfinalized match, with a reason. |
+| Correct | Admin changes a finalized winner to the other participant, with a reason. |
+| Judge attention | Result finalization, resolve, or correct clears it. Publish, refresh, pause/resume, judge-resume and replacing a proposal do not clear an unresolved flag. |
+
+Perform cheap scope checks and immediately defer an ephemeral reply before database or Discord REST work. Discord requires initial acknowledgment within three seconds. If acknowledgment cannot be obtained, do not start a new mutation; a duplicate already-processed interaction may be answered from its committed outcome. [Interaction response timing](https://docs.discord.com/developers/interactions/receiving-and-responding#responding-to-an-interaction)
+
+Use `discord:<interactionId>` as the durable command ID and `timer:<match>:<pauseGeneration>:<deadline>` for deadlines. Keep existing CLI fixture IDs compatible. Store state and the real audit principal in the existing transaction, then release its lock before REST work and request an in-memory refresh. Applied commands reserve IDs, as in the current store. A duplicate/no-op check-in acknowledges the saved state without counting twice. Database failure means no claimed success. If a commit succeeds but a card edit fails, say the action was saved and the display is pending; never report that the saved action failed.
+
+## Three durable cards
+
+A local prepare command explicitly creates/selects a fresh practice session and binds its guild/channel/identity mapping. One session is active at a time. `prepare --replace` explicitly retires an interrupted/completed practice session and creates a fresh one while preserving the old results and audit; retirement changes transport availability, not match outcomes. It must not replace a live session owned by a running bot. Preparation takes the same advisory lock used by the bot, and retirement/replacement takes the old aggregate row lock. Every interaction rechecks session status and message binding after taking that row lock, so a queued click cannot commit into a retired session.
+
+After initial connection, the admin invokes `/tcg-test refresh` to create the check-in card and two disabled match placeholders, persist each returned ID, and pin check-in. Startup and background refresh only edit known cards; creating a missing slot or replacing a confirmed deleted card always requires this explicit admin action. This also handles a crash before a send's returned ID was saved without needing a durable pending-send record. Controls on a message without a saved matching ID are always rejected. If a send is ambiguous, stop creation attempts and explain that a later explicit refresh may leave a stray card. A forbidden/inaccessible card requires a permission fix, not a replacement loop. Serialize repair and ordinary updates. A stray unbound card may remain and the operator can remove it manually; its controls are inert. No exactly-once message creation claim is made.
+
+For known messages, keep dirty/version tracking only in memory. After a commit, on every startup/reconnect, and on a modest retry interval while dirty, reload the latest state and edit those same three messages. Startup refresh of all three repairs the commit-before-refresh crash gap. Serialize edits per session. A version check after each edit prevents clearing dirty state when a newer commit arrived. Never replay stored old message payloads. Honor SDK rate-limit handling and back off on failures. This needs no Redis, generic job queue, notification outbox, or stored message-payload history.
+
+Use plain embeds and ordinary buttons, no Components V2 redesign or per-second message edits. Show a Discord deadline timestamp while running and frozen remaining time while paused. Disable automatic mention parsing. The implemented slice displays judge-needed status without notification pings; the supervising admin watches the test channel. A later optional ping must allow only the selected admin and remain best effort.
+
+## Time and process boundaries
+
+Discord uses the real clock, sampled inside the locked transaction rather than at interaction arrival. Retain one runner ID for the process and schedule at most two match deadlines. A deadline callback rechecks current phase, pause generation and deadline under the event lock before applying a system clock-check. Early callbacks reschedule; obsolete callbacks after pause/resume/finalization do nothing. Expiry persists judge attention and refreshes the card without a result or continuous audit ticks. While this same process stays alive through a Gateway reconnect, the practice clock continues; this explicit test constraint does not settle production outage policy.
+
+Use one database-wide `pg_try_advisory_lock` on a dedicated PostgreSQL connection, matching the single-active-session constraint, and exit at startup if already held. The same key applies when replacing a session with a different configured target, so changed settings cannot bypass a live owner's lock. On connection loss, stop accepting actions and timers, emit a fixed redacted error, close the Gateway, and exit after bounded cleanup. Do not reconnect into an ambiguous degraded mode. This is one single-process guard, not a distributed worker design.
+
+A Gateway reconnect keeps the runner and refreshes saved cards. There is no need for a global refresh barrier before handling controls whose stored bindings and state preconditions are valid. The domain already clears runner ownership on pause and persisted expiry: a new process may continue registration, setup, paused, expired, or finished states. If any match is still persisted as running under an old runner, block all session mutations before calculating elapsed time, display interruption, and require local `prepare --replace` while the bot is stopped. A deadline that merely passed on the wall clock is not a persisted expiry. Do not infer outage time or claim running-clock recovery. Planned restarts happen before start or while paused.
+
+Shutdown stops acceptance and timers, drains started transactions, closes Discord and database clients, and then stops the existing health server. It does not silently pause the game or alter system power settings.
+
+## Implementation and acceptance order
+
+1. **Offline adapter and storage:** configuration/identity mapping, additive migration, exact context guards, real principal audit, card rendering, and clock scheduling with a fake Discord transport. Keep existing domain/database tests. Test wrong guild/channel/message/user, admin impersonation, stale controls, duplicate interaction IDs, two-process exclusion, delayed locks, and migration with existing fixtures.
+2. **Delivery failure checks:** lost acknowledgment before mutation, database commit before failed edit, newer state during an older edit, 429/backoff, missing/forbidden message, ambiguous initial send, and queued clicks racing retirement. Verify no false success, automatic creation retry loop, active duplicate controls, stale final display, or secret-bearing logs. Exercise refresh and setup/paused/expired restart with saved cards; running restart stays blocked.
+3. **Named private live rehearsal:** after local checks pass and the owner supplies the actual target and private token, explicitly register the guild command, run the bot, and have the admin create the three cards with refresh. Four accounts check in, both-ready start, pause/two-party resume, actual short-clock expiry with no outcome, reporter self-confirm rejection, dispute/confirmation, judge request, and reasoned admin correction. Verify edits use the original message IDs. Test same-process Gateway reconnect and a paused restart, then stop cleanly.
+
+Record local/simulated evidence separately from real Discord interaction evidence. The milestone is complete only after the named private test has run; lack of test accounts or a configured target is a live-validation gap, not a reason to invent identities or call the harness live.
+
+GPT-6 Sol medium remains the implementation agent and GPT-6 Luna handles bounded source exploration. Offline coding does not require Discord credentials or access. Before live execution, supply the selected application/guild/channel, four participating accounts, one test admin, and a token through private local configuration. One explicit go-ahead covering command registration and the rehearsal messages in that named private target is sufficient; it need not be requested again per API call. The current continuation is implementing and testing the adapter locally; no live target has been selected.

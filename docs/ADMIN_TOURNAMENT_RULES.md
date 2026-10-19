@@ -99,11 +99,11 @@ The bot cannot physically stop players from playing early in an external simulat
 
 ## 6. Report, confirm, or dispute a result
 
-The initial card offers **I won**, **I lost**, **Call judge**, and **Pause**.
+The initial card offers **I won**, **Call judge**, and **🟠 Pause**. There is no **I lost** button. **Resume** is green; Pause uses an orange indicator because Discord has no orange button style.
 
 1. Either player reports the result.
 2. Update the same card to name the proposed winner.
-3. Only the opponent may choose **Confirm result** or **Dispute result**. The reporter cannot confirm their own report.
+3. Only the opponent may choose green **Agree** or red **Dispute**. The reporter cannot agree to their own report. The panel tags the reporting player and the opponent expected to act; readiness, resume consent, and result agreement identify the users who agreed.
 4. Opponent confirmation finalizes immediately. An admin may also finalize.
 
 A dispute can still be settled by the players while they wait for a judge:

@@ -1,0 +1,22 @@
+{
+  "name": "tcg-live",
+  "private": true,
+  "workspaces": ["apps/server"],
+  "engines": { "node": ">=24.14.0 <25", "npm": ">=11.9.0 <12" },
+  "scripts": {
+    "build": "npm run build --workspace @tcg-live/server",
+    "typecheck": "npm run typecheck --workspace @tcg-live/server",
+    "test": "npm run test --workspace @tcg-live/server",
+    "test:db": "npm run test:db --workspace @tcg-live/server",
+    "db:setup": "npm run db:setup --workspace @tcg-live/server",
+    "rehearse": "npm run rehearse --workspace @tcg-live/server",
+    "dev": "npm run build && node apps/server/dist/main.js",
+    "db:discord-setup": "npm run db:discord-setup --workspace @tcg-live/server",
+    "discord:prepare": "npm run build && node apps/server/dist/discord/runtime.js prepare",
+    "discord:register": "npm run discord:register --workspace @tcg-live/server",
+    "discord:run": "npm run discord:run --workspace @tcg-live/server",
+    "discord:signup-prepare": "npm run discord:signup-prepare --workspace @tcg-live/server",
+    "discord:signup-register": "npm run discord:signup-register --workspace @tcg-live/server",
+    "discord:signup-run": "npm run discord:signup-run --workspace @tcg-live/server"
+  }
+}

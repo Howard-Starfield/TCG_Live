@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+data/postgres/
+data/discord-room-overwrites/
+backups/
+*.log
+*.dump
+*.backup
+*.sql.gz
+coverage/
+.local/
