@@ -282,3 +282,31 @@ describe('StreamClient', () => {
     client.stop();
   });
 });
+
+describe('StreamClient during a database outage (Wave 2 review)', () => {
+  it('keeps the known active event when hello reports none because the database is down', async () => {
+    const { bodies, client } = setup();
+    client.start();
+    await settle();
+    const first = change(liveDispute, auditTimeline);
+    bodies[0]!.push(frame(hello({ activeEventId: liveDispute.eventId })) + frame(first.event, first.id));
+    await settle();
+    bodies[0]!.end();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const outage = hello({ activeEventId: null });
+    if (outage.type === 'hello') outage.status = { ...outage.status, database: 'unavailable' };
+    expect(bodies).toHaveLength(2);
+    bodies[1]!.push(frame(outage));
+    await settle();
+    expect(client.getSnapshot().activeEventId).toBe(liveDispute.eventId);
+
+    // With a healthy database, "no active event" is taken at its word.
+    bodies[1]!.end();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(bodies).toHaveLength(3);
+    bodies[2]!.push(frame(hello({ activeEventId: null })));
+    await settle();
+    expect(client.getSnapshot().activeEventId).toBeNull();
+    client.stop();
+  });
+});

@@ -53,6 +53,7 @@ export interface ShellModel {
 }
 
 const ShellContext = createContext<ShellModel | null>(null);
+const NO_EVENTS: EventSummaryDto[] = [];
 
 export const ShellProvider = ShellContext.Provider;
 
@@ -60,6 +61,14 @@ export function useShell(): ShellModel {
   const model = useContext(ShellContext);
   if (!model) throw new Error('useShell() must be used inside the console shell.');
   return model;
+}
+
+/** After a pane closes with focus inside it: the sheet if it is still open, else the pane's toggle. */
+function focusAfterClose(pane: PaneKey): void {
+  const sheet = document.querySelector<HTMLElement>('[data-testid="preview-sheet"]');
+  const target = sheet && sheet.querySelector('[data-pane]') ? sheet
+    : document.querySelector<HTMLElement>(`[data-toggle="${pane}"] button`);
+  target?.focus();
 }
 
 function useDock(): DockApi {
@@ -77,14 +86,21 @@ function useDock(): DockApi {
     update({ panes: { [pane]: true } });
     if (narrow) setSheetOpen(true);
   }, [narrow, update]);
-  const close = useCallback((pane: PaneKey) => update({ panes: { [pane]: false } }), [update]);
+  const close = useCallback((pane: PaneKey) => {
+    const element = typeof document === 'undefined' ? null : document.querySelector(`[data-pane="${pane}"]`);
+    const hadFocus = !!element && element.contains(document.activeElement);
+    update({ panes: { [pane]: false } });
+    if (hadFocus) setTimeout(() => focusAfterClose(pane), 0);
+  }, [update]);
   const toggle = useCallback((pane: PaneKey) => {
     if (visible[pane]) close(pane);
     else open(pane);
   }, [visible, open, close]);
   const dismissSheet = useCallback(() => setSheetOpen(false), []);
 
-  return { narrow, visible, sheetOpen: narrow && sheetOpen && anyOpen, toggle, open, close, dismissSheet };
+  const sheetShown = narrow && sheetOpen && anyOpen;
+  return useMemo(() => ({ narrow, visible, sheetOpen: sheetShown, toggle, open, close, dismissSheet }),
+    [narrow, visible, sheetShown, toggle, open, close, dismissSheet]);
 }
 
 /** Builds the shell model from the data layer and preferences. */
@@ -93,7 +109,7 @@ export function useShellModel(session: SessionDto): ShellModel {
   const status = useRuntimeStatus();
   const eventsQuery = useEvents();
   const activeEventId = useActiveEventId();
-  const events = eventsQuery.data ?? [];
+  const events = eventsQuery.data ?? NO_EVENTS;
   const [selected, setSelected] = useState<string | null>(null);
   const [liveMatch, setLiveMatch] = useState<MatchId | null>(null);
 
@@ -107,14 +123,23 @@ export function useShellModel(session: SessionDto): ShellModel {
 
   useEffect(() => { setLiveMatch(null); }, [viewedId]);
 
+  // The events list is refreshed on every hello and new event; when it disagrees with the cached
+  // snapshot (retired since, or newer), the cached snapshot is stale: read it again.
   const refetchSnapshot = snapshotQuery.refetch;
+  const stale = !!summary && !!snapshot && (summary.status !== snapshot.status || summary.version > snapshot.version);
+  const fetching = snapshotQuery.isFetching;
+  useEffect(() => {
+    if (stale && !fetching) void refetchSnapshot();
+  }, [stale, fetching, refetchSnapshot, viewedId]);
+
   const viewed = useMemo<ViewedEvent>(() => ({
     eventId: viewedId,
     summary,
     snapshot,
     status: !viewedId ? 'none' : snapshot ? 'ready' : snapshotQuery.error ? 'error' : 'loading',
     error: snapshotQuery.error,
-    retired: (snapshot?.status ?? summary?.status) === 'retired',
+    // The list knows about retirement first (the stream only pushes the active event).
+    retired: (summary?.status ?? snapshot?.status) === 'retired' || snapshot?.status === 'retired',
     waitingForDatabase: !snapshot && status.data?.database === 'unavailable',
     retry: () => { void refetchSnapshot(); }
   }), [viewedId, summary, snapshot, snapshotQuery.error, refetchSnapshot, status.data?.database]);
@@ -130,20 +155,23 @@ export function useShellModel(session: SessionDto): ShellModel {
   }, [setCanvas, dock]);
 
   const refetchEvents = eventsQuery.refetch;
-  return {
+  const eventsState = eventsQuery.data ? 'ready' : eventsQuery.error ? 'error' : 'loading';
+  const statusData = status.data;
+  const canvasView = preferences.canvasView;
+  return useMemo<ShellModel>(() => ({
     session,
-    status: status.data,
+    status: statusData,
     events,
-    eventsState: eventsQuery.data ? 'ready' : eventsQuery.error ? 'error' : 'loading',
+    eventsState,
     refetchEvents: () => { void refetchEvents(); },
     activeEventId,
     viewed,
     selectEvent: eventId => setSelected(eventId === activeEventId ? null : eventId),
     followActive: () => setSelected(null),
-    canvasView: preferences.canvasView,
+    canvasView,
     liveMatch,
     setCanvas,
     openMatch,
     dock
-  };
+  }), [session, statusData, events, eventsState, refetchEvents, activeEventId, viewed, canvasView, liveMatch, setCanvas, openMatch, dock]);
 }

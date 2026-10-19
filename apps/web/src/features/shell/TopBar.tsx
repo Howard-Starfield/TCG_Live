@@ -29,10 +29,14 @@ export function TopBar() {
       <Breadcrumb items={crumbs} className="shell-crumbs" />
       <span aria-hidden className="shell-vsep" />
       <div role="group" aria-label="Previews" className="shell-toggles">
-        <ToggleTab pressed={dock.visible.live} onPressedChange={() => dock.toggle('live')}
-          icon={<Workflow />} shortcut={['Alt', '1']}>Live preview</ToggleTab>
-        <ToggleTab pressed={dock.visible.list} onPressedChange={() => dock.toggle('list')}
-          icon={<Table2 />} shortcut={['Alt', '2']}>List preview</ToggleTab>
+        <span data-toggle="live" className="contents">
+          <ToggleTab pressed={dock.visible.live} onPressedChange={() => dock.toggle('live')}
+            icon={<Workflow />} shortcut={['Alt', '1']}>Live preview</ToggleTab>
+        </span>
+        <span data-toggle="list" className="contents">
+          <ToggleTab pressed={dock.visible.list} onPressedChange={() => dock.toggle('list')}
+            icon={<Table2 />} shortcut={['Alt', '2']}>List preview</ToggleTab>
+        </span>
       </div>
       <div className="ml-auto flex min-w-0 items-center gap-1.5">
         <Tooltip content={discord.description} placement="bottom">

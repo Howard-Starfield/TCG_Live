@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { AdminDataProvider, preferencesStore, type AdminData, type PreferencesStore } from '../data';
 import { ThemeProvider, ToastProvider } from '../ui';
+import { FragmentLogin } from './FragmentLogin';
 import { PreferencesScope, useConsolePreferences } from './preferences';
 import { SessionGate } from './SessionGate';
 
@@ -18,6 +19,7 @@ export function AppRoot({ data, preferences = preferencesStore }: AppRootProps) 
       <PreferencesScope store={preferences}>
         <ThemedApp>
           <ToastProvider>
+            <FragmentLogin />
             <SessionGate />
           </ToastProvider>
         </ThemedApp>

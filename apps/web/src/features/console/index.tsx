@@ -7,7 +7,7 @@ import { NeedsYou } from './NeedsYou';
 import { StageStepper } from './StageStepper';
 
 export { ActivityStream, groupActivity, lineText } from './ActivityStream';
-export { NeedsYou, judgeMatches } from './NeedsYou';
+export { NeedsYou, judgeCardMode, judgeMatches } from './NeedsYou';
 export { StageStepper, stepModel } from './StageStepper';
 
 /** The main window: what is happening, what needs the admin, and what changed. */

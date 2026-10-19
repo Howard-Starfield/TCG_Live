@@ -17,7 +17,7 @@ export type SessionState =
   | { status: 'error'; error: ApiError };
 
 /** Minimal `location`/`history` surface for the fragment login; injectable for tests. */
-export interface LocationLike { hash: string; pathname: string; search: string }
+export interface LocationLike { hash: string; pathname: string; search: string; origin?: string }
 export interface HistoryLike { state: unknown; replaceState(data: unknown, unused: string, url?: string | null): void }
 
 /**
@@ -46,6 +46,33 @@ export function launchTokenFromInput(input: string): string | null {
     return token || null;
   }
   return /^[A-Za-z0-9_\-.~+/=]+$/.test(trimmed) ? trimmed : null;
+}
+
+/** Result of checking a pasted console link. */
+export type ConsoleLinkCheck = { ok: true; token: string } | { ok: false; message: string };
+
+/**
+ * Checks a pasted console link (or bare launch token). A full link must belong to `expectedOrigin`
+ * (this console): a token is only ever sent to the server that printed it.
+ */
+export function checkConsoleLink(input: string, expectedOrigin?: string | null): ConsoleLinkCheck {
+  const trimmed = input.trim();
+  if (!trimmed) return { ok: false, message: 'Paste the console link printed in the server terminal.' };
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    let url: URL;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return { ok: false, message: 'That does not look like a console link. Copy the whole line from the terminal.' };
+    }
+    if (expectedOrigin && url.origin !== expectedOrigin) {
+      return { ok: false, message: `That link belongs to the console at ${url.origin}, but this console runs at ${expectedOrigin}. `
+        + 'Open the link itself, or paste the link printed for this console.' };
+    }
+  }
+  const token = launchTokenFromInput(trimmed);
+  return token ? { ok: true, token }
+    : { ok: false, message: 'Paste the full console link (it contains #login=) or the token after it.' };
 }
 
 export interface SessionControllerOptions {
@@ -101,13 +128,14 @@ export class SessionController {
 
   /** Signs in with a pasted console link or launch token. */
   login(linkOrToken: string): Promise<void> {
-    const token = launchTokenFromInput(linkOrToken);
-    if (!token) {
-      this.setState({ status: 'error', error: new ApiError({ code: 'bad_request', status: 400,
-        message: 'Paste the console link printed in the server terminal.' }) });
+    const location = this.options.location === undefined
+      ? (typeof window === 'undefined' ? null : window.location) : this.options.location;
+    const check = checkConsoleLink(linkOrToken, location?.origin ?? null);
+    if (!check.ok) {
+      this.setState({ status: 'error', error: new ApiError({ code: 'bad_request', status: 400, message: check.message }) });
       return Promise.resolve();
     }
-    return this.exchange(token);
+    return this.exchange(check.token);
   }
 
   /** Retries after an error: re-sends the last launch token, or re-validates the stored token. */
