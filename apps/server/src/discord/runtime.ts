@@ -5,6 +5,8 @@ import {
   ChannelType, ChatInputCommandInteraction, Events, MessageFlags, MessageType, PermissionFlagsBits, Routes,
   SlashCommandBuilder, type Guild, type GuildMember, type Interaction, type TextChannel, type VoiceChannel
 } from 'discord.js';
+import { readAdminConfig, type AdminConfig } from '../admin/config.js';
+import { createDiscordAdmin, discordGateway, guildMembers, type DiscordAdmin } from '../admin/runtime/discord-wiring.js';
 import { readConfig } from '../config.js';
 import { RuleError, type MatchId, type Player } from '../rehearsal/domain.js';
 import { startServer } from '../server.js';
@@ -266,8 +268,15 @@ export async function loginAndWaitReady(
   }
 }
 
+function readAdminSettings(): AdminConfig {
+  // Refuses demo-only settings (TCG_ADMIN_LOGIN_TOKEN, TCG_ADMIN_DEV_ORIGIN) before anything starts.
+  try { return readAdminConfig('discord'); }
+  catch (error) { throw new RuleError(error instanceof Error ? error.message : 'Invalid admin console configuration.'); }
+}
+
 export async function runPrivateDiscord(config: PrivateDiscordConfig = readPrivateDiscordConfig(process.env, true)): Promise<void> {
   const healthConfig = readConfig();
+  const adminConfig = readAdminSettings();
   const runnerId = randomUUID();
   const client = privateDiscordClient(!!config.publicMatchRooms);
   let stopping = false;
@@ -276,6 +285,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   let health: Awaited<ReturnType<typeof startServer>> | undefined;
   let lease: AdvisoryLease | undefined;
   let roomSync: MatchRoomReconciler | undefined;
+  let admin: DiscordAdmin | undefined;
   const reportedRoomFailures = new Set<string>();
   const reportRoomFailure = (error: unknown) => {
     const message = safeError(error);
@@ -289,6 +299,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     shutdownTask = (async () => {
       const watchdog = setTimeout(() => { process.stderr.write('Private Discord shutdown deadline exceeded.\n'); process.exit(1); }, 5_000);
       try {
+        // Ends console streams and polling first, so open streams cannot hold the watchdog budget.
+        await admin?.close();
         await controller?.stop();
         await roomSync?.stop();
         await client.destroy();
@@ -315,7 +327,10 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       void shutdown();
     });
     ensureActive();
-    health = await startServer(healthConfig);
+    admin = createDiscordAdmin({ adminConfig, port: healthConfig.port, runnerId,
+      publicMatchRooms: !!config.publicMatchRooms, lease });
+    health = await startServer(healthConfig, admin ? { admin: admin.handler } : {});
+    admin?.announce();
     ensureActive();
     await loginAndWaitReady(client, config.token!, () => stopping || lease?.isLost() === true);
     ensureActive();
@@ -325,6 +340,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     if (channel?.type !== ChannelType.GuildText || channel.guildId !== config.guildId)
       throw new RuleError('Configured private Discord channel is not a text channel.');
     const guild = await client.guilds.fetch(config.guildId);
+    admin?.attachClient(discordGateway(client), guildMembers(guild));
     const bot = await guild.members.fetchMe();
     const textPermissions = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
       PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles];
@@ -351,12 +367,14 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       await roomTransport.assertPermissions('M2', 'policy');
       roomSync = new MatchRoomReconciler(config, bot.id, guild.afkChannelId, roomTransport,
         () => getSessionState(config), () => !stopping && !lease?.isLost());
+      admin?.attachRooms(roomSync);
       await roomSync.trigger();
     }
     ensureActive();
     controller = new PrivateDiscordController(config, runnerId, discordTransport(channel, matches, client.user!.id),
       undefined, undefined, undefined, undefined, undefined, undefined, () => !stopping && !lease?.isLost(),
       undefined, undefined, explicit => roomSync?.trigger(explicit) ?? Promise.resolve());
+    admin?.attachController(controller);
     await controller.start();
     ensureActive();
     client.on('interactionCreate', interaction => { if (!stopping && !lease?.isLost()) {

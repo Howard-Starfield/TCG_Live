@@ -34,6 +34,14 @@ export interface CardTransport {
   classify(error: unknown): 'missing' | 'forbidden' | 'retry';
 }
 
+/** Admin console notifications. Delivered from a microtask and never awaited. */
+export type ControllerChange =
+  | { type: 'event'; eventId: string }     // committed command or timer application
+  | { type: 'panels'; eventId: string }    // card bind, sticky repost or suspension (panelRevision moved)
+  | { type: 'status' };                    // updatePending changed
+export type ControllerListener = (change: ControllerChange) => void;
+export interface ControllerStatus { updatePending: boolean; panelRevision: number }
+
 type RefreshMode = 'known' | 'explicit';
 const SLOTS: CardSlot[] = ['checkin', 'M1', 'M2'];
 const SNOWFLAKE = /^[1-9]\d{14,21}$/;
@@ -56,6 +64,9 @@ export class PrivateDiscordController {
   private pending = new Set<Promise<unknown>>();
   private scheduledVersion = -1;
   private sticky = new Map<string, StickyChannel>();
+  private listeners = new Set<ControllerListener>();
+  private panelRevision = 0;
+  private lastPending = false;
 
   constructor(
     readonly config: PrivateDiscordConfig,
@@ -73,6 +84,44 @@ export class PrivateDiscordController {
     private readonly claimReminder = claimResumeReminder,
     private readonly syncRooms?: (explicit: boolean) => Promise<void>
   ) {}
+
+  /** Subscribers run in isolated microtasks; a throwing subscriber cannot affect replies, cards or shutdown. */
+  subscribe(listener: ControllerListener): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  /** Read-only view for the admin console. */
+  status(): ControllerStatus {
+    return { updatePending: this.pendingNow(), panelRevision: this.panelRevision };
+  }
+
+  private pendingNow(): boolean {
+    // A requested refresh (dirty ticket) has not yet completed without failure.
+    return this.dirty > 0 && this.refreshed !== this.dirty;
+  }
+
+  private notify(change: ControllerChange): void {
+    for (const listener of [...this.listeners]) {
+      try {
+        queueMicrotask(() => {
+          try { listener(change); } catch { /* Subscribers never affect Discord handling. */ }
+        });
+      } catch { /* Never reached; notification must not throw into the caller. */ }
+    }
+  }
+
+  private panelChanged(eventId: string): void {
+    this.panelRevision++;
+    this.notify({ type: 'panels', eventId });
+  }
+
+  private pendingChanged(): void {
+    const pending = this.pendingNow();
+    if (pending === this.lastPending) return;
+    this.lastPending = pending;
+    this.notify({ type: 'status' });
+  }
 
   private track<T>(task: Promise<T>): Promise<T> {
     this.pending.add(task);
@@ -92,6 +141,7 @@ export class PrivateDiscordController {
 
   private requestRefresh(mode: RefreshMode = 'known'): Promise<void> {
     this.dirty++;
+    this.pendingChanged();
     const task = this.refreshTask.then(() => this.refresh(mode));
     this.refreshTask = task.catch(() => {});
     return this.track(task);
@@ -116,18 +166,22 @@ export class PrivateDiscordController {
         // Send is attempted once. An ambiguous response never triggers an automatic resend.
         const sent = await this.sendOnce(payload, slot);
         await this.bind(this.config, session.event_id, slot, sent);
+        this.panelChanged(session.event_id);
         if (slot === 'checkin') await this.transport.pin(sent, slot);
         continue;
       }
       try {
         await this.transport.edit(id, payload, slot);
-        if (mode === 'explicit' && session.identity_map.stickySuspended?.includes(slot))
+        if (mode === 'explicit' && session.identity_map.stickySuspended?.includes(slot)) {
           await this.bind(this.config, session.event_id, slot, id);
+          this.panelChanged(session.event_id);
+        }
         if (mode === 'explicit' && slot === 'checkin') await this.transport.pin(id, slot);
       } catch (error) {
         if (mode === 'explicit' && this.transport.classify(error) === 'missing') {
           const sent = await this.sendOnce(payload, slot);
           await this.bind(this.config, session.event_id, slot, sent);
+          this.panelChanged(session.event_id);
           if (slot === 'checkin') await this.transport.pin(sent, slot);
         } else {
           failed = true;
@@ -138,6 +192,7 @@ export class PrivateDiscordController {
       }
     }
     if (!failed && ticket === this.dirty) this.refreshed = ticket;
+    this.pendingChanged();
     if (retryable || (!failed && this.refreshed !== this.dirty)) this.scheduleRetry();
     if (failed) throw new RuleError('Card update pending.');
   }
@@ -216,6 +271,7 @@ export class PrivateDiscordController {
       // Persist a reservation before POST: a crash or ambiguous response leaves
       // this slot suspended until a deliberate admin refresh.
       if (!await this.stickyStore.suspend(this.config, session.event_id, slot, oldId)) continue;
+      this.panelChanged(session.event_id);
       if (!this.accepting || !this.canPost()) return;
       let newId: string;
       try { newId = await this.transport.send(payload, slot); }
@@ -239,6 +295,7 @@ export class PrivateDiscordController {
         }
         continue;
       }
+      this.panelChanged(session.event_id);
       // Queue a fresh render behind this replacement. A command may have
       // committed while the network POST was in flight.
       void this.requestRefresh().catch(() => {});
@@ -249,7 +306,10 @@ export class PrivateDiscordController {
       }
       try { await this.transport.remove?.(oldId, slot); }
       catch (error) { if (this.transport.classify(error) !== 'missing') cleaned = false; }
-      if (cleaned) await this.stickyStore.complete(this.config, session.event_id, slot, newId);
+      if (cleaned) {
+        await this.stickyStore.complete(this.config, session.event_id, slot, newId);
+        this.panelChanged(session.event_id);
+      }
     }
   }
 
@@ -286,6 +346,7 @@ export class PrivateDiscordController {
     if (!this.accepting) return;
     const result = await this.apply({ config: this.config, eventId, principalId: 'system:timer',
       timer: { matchId, pauseGeneration, deadlineMs } }, { type: 'clockCheck', matchId }, this.runnerId, this.clock);
+    if (result.applied) this.notify({ type: 'event', eventId });
     const latest = await this.read(this.config);
     this.schedule(latest.state);
     if (result.applied) await this.requestRefresh();
@@ -329,6 +390,7 @@ export class PrivateDiscordController {
         principalId: interaction.userId, interactionId: interaction.id,
         ...(slot ? { message: { slot, id: interaction.messageId!, channelId: interaction.channelId! } } : {}) }, command, this.runnerId, this.clock);
       committed = outcome;
+      if (outcome.applied) this.notify({ type: 'event', eventId: session.event_id });
       let roomWarning = '';
       if (outcome.applied && ['signupClose', 'signupReopen', 'publish'].includes(command.type)) {
         try { await this.syncRooms?.(false); }
