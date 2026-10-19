@@ -70,6 +70,8 @@ export class StreamManager {
   private changes = 0;
   /** A snapshot read failed with the store unavailable; ticks and status changes retry it. */
   private retryPending = false;
+  /** Bumped whenever a read fails, so a flush that started earlier cannot clear a newer failure. */
+  private failures = 0;
   private lastStatus = '';
   private closed = false;
   private drained: (() => void) | null = null;
@@ -117,6 +119,7 @@ export class StreamManager {
         snapshot = null;
         audit = [];
         this.retryPending = true;
+        this.failures += 1;
       }
       // Read after the snapshot: the read itself can change the status (database ready or unavailable).
       const status = this.runtime.status();
@@ -235,11 +238,13 @@ export class StreamManager {
       return;
     }
     this.flushing = true;
+    const failures = this.failures;
     try {
       await this.flushOnce();
-      this.retryPending = false;
+      if (this.failures === failures) this.retryPending = false;
     } catch {
       this.retryPending = true;   // the next tick or status change retries
+      this.failures += 1;
     } finally {
       this.flushing = false;
       if (this.flushAgain) {

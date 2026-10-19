@@ -146,6 +146,8 @@ test('late binding: gateway, controller and rooms attach after creation and driv
   assert.equal(runtime.status().gateway, 'ready');
   const unsubscribe = listen();
   assert.equal(timers.intervals.size, 1, 'polling starts with the first subscriber');
+  await tick();
+  changes.length = 0;   // the first poll's notice
   gateway.emit('reconnecting');
   assert.equal(runtime.status().gateway, 'reconnecting');
   await tick();
@@ -207,7 +209,9 @@ test('the safety-net poll reports unannounced version changes and lease loss', a
   const { runtime, store, timers, changes, listen } = runtimeWith({ lease: { isLost: () => lost } });
   listen();
   await tick();
-  assert.deepEqual(changes, [], 'the first poll only sets the baseline');
+  assert.deepEqual(changes, [{ type: 'event', eventId: EVENT_ID }],
+    'the first poll notifies, covering writes between the first read of a subscriber and the baseline');
+  changes.length = 0;
   store.bump();
   timers.tick();
   await tick();
@@ -231,6 +235,8 @@ test('a throwing runtime subscriber does not stop delivery to others', async () 
   const seen: AdminRuntimeChange[] = [];
   runtime.subscribe(() => { throw new Error('listener failure'); });
   runtime.subscribe(change => { seen.push(change); });
+  await tick();
+  seen.length = 0;      // the first poll's notice
   controller.emit({ type: 'event', eventId: EVENT_ID });
   await tick();
   assert.deepEqual(seen.filter(change => change.type === 'event'), [{ type: 'event', eventId: EVENT_ID }]);
@@ -330,4 +336,22 @@ test('console on: handler wraps the runtime, announces once, and closes handler 
   noLink!.announce();
   assert.deepEqual(quiet, [], 'nothing printed without a launch link');
   await noLink!.close();
+});
+
+test('a controller notice does not hide an out-of-process write that lands before the next poll', async () => {
+  const { runtime, store, timers, changes, listen } = runtimeWith();
+  const controller = fakeController();
+  runtime.attachController(controller.controller);
+  listen();
+  await tick();
+  changes.length = 0;
+  store.bump();                                          // the bot's own command (v+1), announced
+  controller.emit({ type: 'event', eventId: EVENT_ID });
+  store.bump();                                          // the rehearsal CLI writes v+2 before the poll
+  await tick();
+  timers.tick();
+  await tick();
+  assert.deepEqual(changes, [{ type: 'event', eventId: EVENT_ID }, { type: 'event', eventId: EVENT_ID }],
+    'the poll still reports the newer version');
+  await runtime.close();
 });
