@@ -10,7 +10,7 @@ const SIZE: Record<AvatarSize, string> = {
   lg: 'size-8 text-xs'
 };
 
-/** Muted warm hues for initials; picked deterministically from the name. */
+/** Muted hues for initials, picked from the name. At OKLCH lightness 0.52 white text keeps at least 5.3:1 on every hue. */
 const HUES = [18, 32, 145, 168, 200, 255, 290, 340];
 
 export function initialsOf(name: string | null | undefined): string {
@@ -58,7 +58,7 @@ export function Avatar({ src, name, size = 'md', shape = 'circle', decorative = 
   const hue = hueOf(label);
   return (
     <span {...a11y} data-fallback="" className={classes}
-      style={{ backgroundColor: `oklch(0.66 0.07 ${hue})`, color: 'white' }}>
+      style={{ backgroundColor: `oklch(0.52 0.07 ${hue})`, color: 'white' }}>
       {initialsOf(name)}
     </span>
   );

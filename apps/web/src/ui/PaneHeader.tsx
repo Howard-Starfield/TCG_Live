@@ -22,7 +22,7 @@ export function PaneHeader({ title, icon, children, actions, onClose, level = 2,
   const Heading = level === 2 ? 'h2' : 'h3';
   return (
     <div className={cx('flex h-[42px] shrink-0 items-center gap-2 pl-3 pr-1.5', className)}>
-      {icon && <span aria-hidden className="grid text-accent [&_svg]:size-4">{icon}</span>}
+      {icon && <span aria-hidden className="grid text-accent-text [&_svg]:size-4">{icon}</span>}
       <Heading className="whitespace-nowrap text-[12.5px] font-semibold text-fg">{title}</Heading>
       {children && <div className="flex min-w-0 items-center gap-2">{children}</div>}
       <div className="ml-auto flex items-center gap-1">

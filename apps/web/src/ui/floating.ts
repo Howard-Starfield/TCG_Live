@@ -66,12 +66,46 @@ export function useFloating(anchorRef: RefObject<HTMLElement | null>, open: bool
   return { floatingRef, setFloating, position, update };
 }
 
-/** Calls `onDismiss` on Escape or on a pointer press outside every given element while active. */
+interface EscapeLayer { run: () => void }
+const escapeLayers: EscapeLayer[] = [];
+
+function onEscapeCapture(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || event.defaultPrevented) return;
+  const top = escapeLayers[escapeLayers.length - 1];
+  if (!top) return;
+  // Mark the key as handled so outer layers (a Dialog, the composer) leave it alone, but let it propagate.
+  event.preventDefault();
+  top.run();
+}
+
+/**
+ * Registers a dismissible floating layer (tooltip, menu, popover). Escape closes only the most recently
+ * opened active layer, and is handled in the capture phase before any element sees it, so a tooltip or menu
+ * inside a Dialog closes without closing the Dialog (which ignores an Escape that is `defaultPrevented`).
+ */
+export function useEscapeLayer(active: boolean, onEscape: () => void) {
+  const onEscapeRef = useRef(onEscape);
+  onEscapeRef.current = onEscape;
+  useEffect(() => {
+    if (!active) return;
+    const layer: EscapeLayer = { run: () => onEscapeRef.current() };
+    if (escapeLayers.length === 0) document.addEventListener('keydown', onEscapeCapture, true);
+    escapeLayers.push(layer);
+    return () => {
+      const index = escapeLayers.indexOf(layer);
+      if (index !== -1) escapeLayers.splice(index, 1);
+      if (escapeLayers.length === 0) document.removeEventListener('keydown', onEscapeCapture, true);
+    };
+  }, [active]);
+}
+
+/** Calls `onDismiss` on Escape (as an escape layer) or on a pointer press outside every given element. */
 export function useDismiss(active: boolean, refs: Array<RefObject<HTMLElement | null>>, onDismiss: (reason: 'escape' | 'outside') => void) {
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
   const refsRef = useRef(refs);
   refsRef.current = refs;
+  useEscapeLayer(active, () => onDismissRef.current('escape'));
 
   useEffect(() => {
     if (!active) return;
@@ -80,17 +114,7 @@ export function useDismiss(active: boolean, refs: Array<RefObject<HTMLElement | 
       if (target && refsRef.current.some(ref => ref.current?.contains(target))) return;
       onDismissRef.current('outside');
     };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) {
-        event.preventDefault();
-        onDismissRef.current('escape');
-      }
-    };
     document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', onKeyDown);
-    };
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
   }, [active]);
 }

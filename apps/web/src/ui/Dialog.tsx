@@ -5,7 +5,7 @@ import { Button, IconButton } from './Button';
 import { cx, focusableWithin } from './cx';
 import { Field, Textarea } from './Field';
 import { useSafeVariants, variants } from './motion';
-import { Portal } from './Portal';
+import { Portal, usePortalContainer } from './Portal';
 
 export interface DialogProps {
   open: boolean;
@@ -45,8 +45,11 @@ export function Dialog({ open, onClose, title, description, children, footer, in
   const layerRef = useRef<HTMLDivElement | null>(null);
   const initialFocus = useRef(initialFocusRef);
   initialFocus.current = initialFocusRef;
+  // The portal container can arrive after the first render (PortalScope), so the effect also waits for it:
+  // a dialog mounted already open still moves focus in, makes the page inert and restores focus later.
+  const container = usePortalContainer();
   useEffect(() => {
-    if (!open) return;
+    if (!open || !container || !layerRef.current) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const inerted = makeOthersInert(layerRef.current);
     const panel = panelRef.current;
@@ -58,7 +61,7 @@ export function Dialog({ open, onClose, title, description, children, footer, in
       inerted.forEach(el => el.removeAttribute('inert'));
       if (opener?.isConnected) opener.focus();
     };
-  }, [open]);
+  }, [open, container]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {

@@ -3,6 +3,9 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { ConfirmDialog, Dialog } from './Dialog';
+import { Menu } from './Menu';
+import { PortalScope } from './Portal';
+import { Tooltip } from './Tooltip';
 import { skipMotion } from './testing';
 
 beforeAll(skipMotion);
@@ -101,5 +104,97 @@ describe('ConfirmDialog', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
     await user.click(screen.getByRole('button', { name: 'Correct result' }));
     expect(onConfirm).toHaveBeenCalledWith('');
+  });
+});
+
+describe('Dialog in a PortalScope', () => {
+  function Scoped() {
+    const [open, setOpen] = useState(true);
+    return (
+      <PortalScope>
+        <button type="button">Background</button>
+        <Dialog open={open} onClose={() => setOpen(false)} title="Already open">
+          <input aria-label="Inside" />
+        </Dialog>
+      </PortalScope>
+    );
+  }
+
+  it('moves focus in, makes the page inert and restores focus when mounted already open', async () => {
+    const user = userEvent.setup();
+    const opener = document.createElement('button');
+    opener.textContent = 'Opener';
+    document.body.append(opener);
+    opener.focus();
+    render(<Scoped />);
+    const dialog = await screen.findByRole('dialog', { name: 'Already open' });
+    expect(dialog.closest('[data-portal-scope]')).not.toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Inside' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Background', hidden: true }).closest('[inert]')).not.toBeNull();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(opener).toHaveFocus();
+    expect(document.querySelector('[inert]')).toBeNull();
+    opener.remove();
+  });
+
+  it('opens a defaultOpen Menu inside the scope and closes it with Escape', async () => {
+    const user = userEvent.setup();
+    render(
+      <PortalScope>
+        <Menu label="Scoped" defaultOpen items={[{ id: 'a', label: 'Alpha', onSelect: vi.fn() }]}
+          trigger={props => <button type="button" {...props}>Scoped</button>} />
+      </PortalScope>
+    );
+    const menu = await screen.findByRole('menu', { name: 'Scoped' });
+    expect(menu.closest('[data-portal-scope]')).not.toBeNull();
+    expect(menu.style.top).not.toBe('-9999px');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+  });
+});
+
+describe('Escape layering', () => {
+  function Layered({ onClose }: { onClose: () => void }) {
+    const [open, setOpen] = useState(true);
+    return (
+      <Dialog open={open} onClose={() => { setOpen(false); onClose(); }} title="Layered">
+        <Tooltip content="Explains the action" delay={0}><button type="button">Hinted</button></Tooltip>
+        <Menu label="Actions" items={[{ id: 'one', label: 'One', onSelect: vi.fn() }]}
+          trigger={props => <button type="button" {...props}>Actions</button>} />
+      </Dialog>
+    );
+  }
+
+  it('closes a tooltip inside a dialog before the dialog', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<Layered onClose={onClose} />);
+    const hinted = screen.getByRole('button', { name: 'Hinted' });
+    expect(hinted).toHaveFocus();
+    // Open by hover: jsdom's :focus-visible heuristic sticks after earlier pointer tests in this file.
+    await user.hover(hinted);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Explains the action');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Layered' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('closes a menu inside a dialog before the dialog', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<Layered onClose={onClose} />);
+    const trigger = screen.getByRole('button', { name: 'Actions' });
+    await user.click(trigger);
+    expect(screen.getByRole('menuitem', { name: 'One' })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(trigger).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

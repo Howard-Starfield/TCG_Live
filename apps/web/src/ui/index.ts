@@ -6,7 +6,7 @@ export { useRovingFocus, nextRovingIndex, type RovingFocusOptions, type RovingIt
 export { useBackoff, backoffDelay, type Backoff, type BackoffOptions } from './hooks/useBackoff';
 
 export { Portal, PortalScope, usePortalContainer } from './Portal';
-export { computePosition, useFloating, useDismiss, type Placement, type FloatingPosition } from './floating';
+export { computePosition, useFloating, useDismiss, useEscapeLayer, type Placement, type FloatingPosition } from './floating';
 export { ThemeProvider, useResolvedTheme, useThemePreference, useSystemTheme, type ThemePreference, type ResolvedTheme, type ThemeProviderProps } from './ThemeProvider';
 
 export { Button, IconButton, type ButtonProps, type IconButtonProps, type ButtonVariant, type ButtonSize } from './Button';
