@@ -6,10 +6,10 @@ export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 export type ButtonSize = 'sm' | 'md' | 'lg';
 
 const VARIANT: Record<ButtonVariant, string> = {
-  primary: 'bg-accent text-fg-on-accent hover:bg-accent-hover shadow-[0_1px_2px_rgb(0_0_0/0.12)]',
+  primary: 'bg-accent-fill text-fg-on-accent hover:bg-accent-fill-hover shadow-[0_1px_2px_rgb(0_0_0/0.12)]',
   secondary: 'bg-raised text-fg shadow-raised hover:bg-sunken',
   ghost: 'bg-transparent text-fg-muted hover:bg-line-faint hover:text-fg',
-  danger: 'bg-danger text-fg-on-accent hover:brightness-95 shadow-[0_1px_2px_rgb(0_0_0/0.12)]'
+  danger: 'bg-danger-fill text-fg-on-accent hover:brightness-95 shadow-[0_1px_2px_rgb(0_0_0/0.12)]'
 };
 
 const SIZE: Record<ButtonSize, string> = {

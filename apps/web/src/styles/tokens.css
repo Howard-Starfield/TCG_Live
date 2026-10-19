@@ -30,6 +30,10 @@
   --tcg-accent-hover: #ae5934;
   --tcg-accent-soft: rgb(196 103 63 / 0.1);
   --tcg-accent-ring: rgb(196 103 63 / 0.35);
+  /* Solid fills under white text keep at least 4.5:1 contrast in both themes. */
+  --tcg-accent-fill: #b45733;
+  --tcg-accent-fill-hover: #a04b2b;
+  --tcg-danger-fill: #b23a2b;
   /* Status */
   --tcg-success: #2e7d52;
   --tcg-success-soft: rgb(46 125 82 / 0.11);
@@ -65,6 +69,10 @@
   --tcg-accent-hover: #e48a62;
   --tcg-accent-soft: rgb(216 121 79 / 0.15);
   --tcg-accent-ring: rgb(216 121 79 / 0.45);
+  /* Solid fills under white text keep at least 4.5:1 contrast in both themes. */
+  --tcg-accent-fill: #b45733;
+  --tcg-accent-fill-hover: #a04b2b;
+  --tcg-danger-fill: #b23a2b;
   --tcg-success: #5bb47f;
   --tcg-success-soft: rgb(91 180 127 / 0.14);
   --tcg-danger: #ec6b5b;
@@ -100,6 +108,9 @@
   --color-accent-hover: var(--tcg-accent-hover);
   --color-accent-soft: var(--tcg-accent-soft);
   --color-accent-ring: var(--tcg-accent-ring);
+  --color-accent-fill: var(--tcg-accent-fill);
+  --color-accent-fill-hover: var(--tcg-accent-fill-hover);
+  --color-danger-fill: var(--tcg-danger-fill);
   --color-success: var(--tcg-success);
   --color-success-soft: var(--tcg-success-soft);
   --color-danger: var(--tcg-danger);
