@@ -17,8 +17,11 @@ import type { ClockDto, JudgeReason, MatchId, MatchPhase, Seat } from '@tcg-live
 export const NODE_STATES = ['done', 'live', 'waiting', 'interrupted', 'current', 'alert', 'pending', 'muted'] as const;
 export type FlowNodeState = typeof NODE_STATES[number];
 
-/** Edge states. Active and waiting edges flow toward the node where something is happening. */
-export const EDGE_STATES = ['done', 'active', 'waiting', 'blocked', 'pending', 'muted'] as const;
+/**
+ * Edge states. Active (live play) and waiting (a judge) edges flow toward the node where something is
+ * happening; `current` leads to a current step where nothing runs, so it is clay but static.
+ */
+export const EDGE_STATES = ['done', 'active', 'current', 'waiting', 'blocked', 'pending', 'muted'] as const;
 export type FlowEdgeState = typeof EDGE_STATES[number];
 
 export type StageId = 'signup' | 'checkin' | 'round' | 'standings';

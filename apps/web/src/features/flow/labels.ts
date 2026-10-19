@@ -1,5 +1,5 @@
 // Pure text helpers for the canvas: names from the members directory and accessible descriptions.
-import { formatClock, type EventSnapshotDto, type Seat } from '@tcg-live/core';
+import { formatClock, type ClockDto, type EventSnapshotDto, type Seat } from '@tcg-live/core';
 import type { FlowNodeState, MatchNodeData, StageNodeData, StepNodeData } from './types';
 
 /** Display name for a seat, from `snapshot.seats` and `snapshot.members`. */
@@ -30,8 +30,20 @@ export function describeStage(data: StageNodeData): string {
 }
 
 /**
+ * Remaining time for an accessible name. A running clock is rounded to whole minutes so the name
+ * does not change every second (the exact time is visible text); a stopped clock is exact.
+ */
+export function spokenRemaining(clock: ClockDto, remainingMs: number): string {
+  if (clock.state !== 'running') return `${formatClock(remainingMs)} left`;
+  if (remainingMs <= 0) return 'time up';
+  if (remainingMs < 60_000) return 'under a minute left';
+  const minutes = Math.round(remainingMs / 60_000);
+  return `about ${minutes} minute${minutes === 1 ? '' : 's'} left`;
+}
+
+/**
  * Accessible label for a match card, for example "M2, paused, judge needed: dispute, 22:25 left".
- * `remainingMs` is the clock at render time, so the label follows the ticking clock.
+ * `remainingMs` is the clock at render time; a running clock is spoken in whole minutes.
  */
 export function describeMatch(data: MatchNodeData, remainingMs: number): string {
   const parts: string[] = [data.matchId];
@@ -42,7 +54,7 @@ export function describeMatch(data: MatchNodeData, remainingMs: number): string 
   if (data.phase === 'final') {
     if (data.winnerName) parts.push(`${data.winnerName} won`);
   } else {
-    parts.push(`${formatClock(remainingMs)} left`);
+    parts.push(spokenRemaining(data.clock, remainingMs));
   }
   parts.push(`${data.seats[0].name} vs ${data.seats[1].name}`);
   return parts.join(', ');
@@ -57,9 +69,10 @@ export function stepSubtitle(data: StepNodeData, remainingMs: number): string {
 
 /** For example "M2 Judge, waiting on a judge, dispute". */
 export function describeStep(data: StepNodeData, remainingMs: number): string {
-  const subtitle = data.clock?.state === 'interrupted'
-    ? `${formatClock(remainingMs)} left, frozen`
-    : stepSubtitle(data, remainingMs);
+  const clock = data.clock;
+  const subtitle = clock?.state === 'interrupted' ? `${formatClock(remainingMs)} left, frozen`
+    : clock?.state === 'running' && data.phase !== 'expired' ? spokenRemaining(clock, remainingMs)
+      : stepSubtitle(data, remainingMs);
   return [`${data.matchId} ${data.title}`, stateWord(data.state), subtitle === '—' ? '' : subtitle]
     .filter(Boolean).join(', ');
 }

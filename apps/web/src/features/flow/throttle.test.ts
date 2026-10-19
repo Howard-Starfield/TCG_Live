@@ -66,4 +66,18 @@ describe('useThrottledValue', () => {
     rerender({ value: 4 });
     expect(result.current).toBe(4);
   });
+
+  it('unmounting before the trailing flush clears the timer and never sets state', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { result, rerender, unmount } = renderHook(({ value }) => useThrottledValue(value), { initialProps: { value: 'a' } });
+    rerender({ value: 'b' });
+    expect(result.current).toBe('a');
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(1_000);
+    expect(result.current).toBe('a');
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+  });
 });
