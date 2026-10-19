@@ -85,9 +85,19 @@ export type FlowEdgeData = {
 
 export type FlowEdge = Edge<FlowEdgeData, 'flow'>;
 
+/** Left-to-right for wide panes, top-to-bottom for tall or narrow ones. */
+export type FlowOrientation = 'horizontal' | 'vertical';
+
+export interface FlowRect { x: number; y: number; width: number; height: number }
+
 export interface FlowGraph {
-  /** Changes only when the layout itself changes (view or match), never on a data update. */
+  /** Changes only when the layout itself changes (view, match or orientation), never on a data update. */
   layoutKey: string;
+  orientation: FlowOrientation;
   nodes: FlowNode[];
   edges: FlowEdge[];
+  /** Everything drawn, in flow pixels: nodes plus the labels under stage nodes. */
+  bounds: FlowRect;
+  /** Where play is happening (the centre of live, waiting and current nodes), or null. */
+  focus: { x: number; y: number } | null;
 }

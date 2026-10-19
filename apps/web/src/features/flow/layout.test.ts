@@ -246,9 +246,11 @@ describe('Match view mapping', () => {
 });
 
 describe('React Flow stability', () => {
-  const allGraphs = (): FlowGraph[] => Object.values(snapshots).flatMap(snapshot => [
-    buildEventGraph(snapshot), ...snapshot.matches.map(match => buildMatchGraph(snapshot, match.id))
-  ]);
+  const allGraphs = (): FlowGraph[] => Object.values(snapshots).flatMap(snapshot =>
+    (['horizontal', 'vertical'] as const).flatMap(orientation => [
+      buildEventGraph(snapshot, orientation),
+      ...snapshot.matches.map(match => buildMatchGraph(snapshot, match.id, orientation))
+    ]));
 
   it('every node carries its measured size and explicit anchors, so updates never drop handle bounds', () => {
     for (const graph of allGraphs()) {
