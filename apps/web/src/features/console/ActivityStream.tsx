@@ -73,24 +73,6 @@ export function ActivityStream({ eventId, snapshot }: { eventId: string; snapsho
   const restore = useRef<number | null>(null);
   const transition = useSafeTransition(springs.listItem);
 
-  // Layout changes (dock opening, window resizing) reflow the feed; a pinned view stays at the bottom.
-  const feed = useRef<HTMLOListElement | null>(null);
-  const pinnedRef = useRef(pin.pinned);
-  pinnedRef.current = pin.pinned;
-  const { jumpToLatest } = pin;
-  useEffect(() => {
-    const el = node.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    let frame = 0;
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => { if (pinnedRef.current) jumpToLatest('auto'); });
-    });
-    observer.observe(el);
-    if (feed.current) observer.observe(feed.current);
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [jumpToLatest]);
-
   // Keep the view still when older entries are prepended above it.
   useLayoutEffect(() => {
     const el = node.current;
@@ -146,7 +128,7 @@ export function ActivityStream({ eventId, snapshot }: { eventId: string; snapsho
           {!audit.isLoading && !audit.error && groups.length === 0 && (
             <p className="py-8 text-center text-xs text-fg-subtle">No activity yet. Applied changes appear here as they happen.</p>
           )}
-          <ol ref={feed} className="console-feed">
+          <ol className="console-feed">
             <AnimatePresence initial={false}>
               {groups.map(group => (
                 <motion.li key={group.key} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={transition}>

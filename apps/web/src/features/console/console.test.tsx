@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { renderConsole } from '../../app/testing';
 import { formatAuditEntry } from '../../data';
-import { groupActivity, judgeMatches, lineText, stepModel } from '.';
+import { groupActivity, judgeCardMode, judgeMatches, lineText, stepModel } from '.';
 
 const ready = () => screen.findByRole('heading', { name: /Needs you/ });
 
@@ -130,5 +130,54 @@ describe('activity stream', () => {
     const log = screen.getByRole('log', { name: 'Activity' });
     await waitFor(() => expect(within(log).getAllByRole('article')[0]).toHaveTextContent('Ava Chen'));
     expect(server.callsTo(`GET /events/${liveDispute.eventId}/audit`).length).toBeGreaterThan(0);
+  });
+});
+
+describe('judge cards after a resume and in history (Wave 2 review)', () => {
+  const resumed = {
+    ...liveDispute,
+    matches: liveDispute.matches.map(match => (match.id === 'M2'
+      ? { ...match, phase: 'running' as const, clock: { ...match.clock, state: 'running' as const, runningSinceMs: match.judge!.sinceMs + 30_000 } }
+      : match))
+  };
+
+  it('a running match that keeps judge attention reads calmly, without a waiting counter', async () => {
+    renderConsole({ snapshot: resumed });
+    await ready();
+    expect(judgeCardMode(judgeMatches(resumed)[0]!, false)).toBe('resumed');
+    const card = screen.getByRole('article', { name: 'M2 · play resumed' });
+    expect(card).toHaveTextContent('Play resumed · judge attention stays until the result is confirmed or resolved.');
+    expect(card).not.toHaveTextContent(/waiting/);
+    expect(card).toHaveTextContent(/since \d\d:\d\d:\d\d/);
+  });
+
+  it('a retired event shows judge attention as frozen history', async () => {
+    const user = userEvent.setup();
+    const retired = { ...liveDispute, eventId: 'retired-judge', status: 'retired' as const, retiredAtMs: liveDispute.createdAtMs + 60_000 };
+    renderConsole({ retired: [retired] });
+    await ready();
+    await user.click(within(screen.getByRole('navigation', { name: 'Event history' })).getByRole('button'));
+    const card = await screen.findByRole('article', { name: 'M2 needed a judge' });
+    expect(card).toHaveTextContent('It is history now');
+    expect(card).not.toHaveTextContent(/waiting/);
+    expect(judgeCardMode(judgeMatches(retired)[0]!, true)).toBe('history');
+  });
+});
+
+describe('activity announcements (Wave 2 review)', () => {
+  it('stays quiet during the first fill, then announces new entries', async () => {
+    renderConsole();
+    await ready();
+    const log = await screen.findByRole('log', { name: 'Activity' });
+    await waitFor(() => expect(within(log).getAllByRole('article').length).toBeGreaterThan(5));
+    await waitFor(() => expect(log).toHaveAttribute('aria-live', 'polite'));
+  });
+
+  it('starts with live announcements off while the first page loads', async () => {
+    renderConsole({ setup: server => server.always(`GET /events/${liveDispute.eventId}/audit`, () => new Promise<Response>(() => {})), stream: false });
+    // Before any entries arrive the region must not be live (the initial fill would be read out).
+    const log = await screen.findByRole('log', { name: 'Activity' });
+    expect(within(log).getByLabelText('Loading activity')).toBeInTheDocument();
+    expect(log).toHaveAttribute('aria-live', 'off');
   });
 });

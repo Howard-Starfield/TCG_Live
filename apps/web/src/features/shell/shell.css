@@ -537,8 +537,6 @@
   overflow-y: auto;
   padding: 6px 18px 18px;
   overscroll-behavior: contain;
-  /* Reflow must not nudge the scroll position (the pin reads upward moves as the user scrolling away). */
-  overflow-anchor: none;
   scrollbar-width: thin;
 }
 .console-feed { display: flex; flex-direction: column; gap: 14px; }

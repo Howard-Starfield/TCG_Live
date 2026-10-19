@@ -15,14 +15,14 @@ describe('login gate', () => {
     expect(screen.getByText(/Each new tab signs in through the link again/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
-    expect(screen.getByText(/Paste the full console link/)).toBeInTheDocument();
+    expect(screen.getByText(/Paste the console link printed in the server terminal/)).toBeInTheDocument();
   });
 
   it('shows an actionable error when the server rejects the link', async () => {
     const user = userEvent.setup();
     const { server } = renderConsole({ signedIn: false });
     server.once('POST /session', () => json(401, errorBody('unauthenticated', 'Invalid launch token.')));
-    await user.type(await screen.findByLabelText('Console link'), 'http://127.0.0.1:3000/#login=stale-token');
+    await user.type(await screen.findByLabelText('Console link'), `${window.location.origin}/#login=stale-token`);
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
     const alert = (await screen.findByText('Sign-in failed')).closest<HTMLElement>('[role="alert"]')!;
     expect(alert).toHaveTextContent('Sign-in failed');
@@ -33,7 +33,7 @@ describe('login gate', () => {
   it('signs in from the pasted link and opens the console', async () => {
     const user = userEvent.setup();
     renderConsole({ signedIn: false });
-    await user.type(await screen.findByLabelText('Console link'), 'http://127.0.0.1:3000/#login=good-token');
+    await user.type(await screen.findByLabelText('Console link'), `${window.location.origin}/#login=good-token`);
     await user.click(screen.getByRole('button', { name: 'Sign in' }));
     expect(await screen.findByRole('heading', { name: /Needs you/ })).toBeInTheDocument();
   });
@@ -67,6 +67,29 @@ describe('login gate', () => {
     expect(await screen.findByRole('heading', { name: /Needs you/ })).toBeInTheDocument();
     expect(server.callsTo('POST /session')[0]?.body).toEqual({ token: 'fragment-token' });
     expect(window.location.hash).toBe('');
+  });
+
+  it('refuses a pasted link from another origin and names that origin', async () => {
+    const user = userEvent.setup();
+    const { server } = renderConsole({ signedIn: false });
+    await user.type(await screen.findByLabelText('Console link'), 'http://127.0.0.1:9999/#login=foreign');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(screen.getByText(/belongs to the console at http:\/\/127\.0\.0\.1:9999/)).toBeInTheDocument();
+    expect(server.callsTo('POST /session')).toHaveLength(0);
+  });
+
+  it('a signed-in tab strips a console link from the address bar and keeps its session', async () => {
+    const { server } = renderConsole();
+    await screen.findByRole('heading', { name: /Needs you/ });
+    await act(async () => {
+      window.history.pushState(null, '', '/#login=rotated-token');
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(window.location.hash).toBe('');
+    expect(window.location.href).not.toContain('rotated-token');
+    expect(await screen.findByText('Already signed in')).toBeInTheDocument();
+    expect(server.callsTo('POST /session')).toHaveLength(0);
+    expect(screen.getByRole('heading', { name: /Needs you/ })).toBeInTheDocument();
   });
 
   it('sign out returns to the login screen', async () => {

@@ -3,7 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AppRoot } from '../../app/AppRoot';
-import { mockMatchMedia, renderConsole } from '../../app/testing';
+import { mockMatchMedia, renderConsole, summaryOf } from '../../app/testing';
+import { change, frame } from '../../data/test/fakes';
 import { databasePill, discordPill, eventLabel } from './labels';
 import { clampDockWidth, DOCK_MIN, MAIN_MIN } from './PreviewDock';
 import { isTypingTarget } from './useShortcuts';
@@ -103,6 +104,28 @@ describe('top bar', () => {
   });
 });
 
+describe('pane focus', () => {
+  it('closing a pane from inside returns focus to its top-bar toggle', async () => {
+    const user = userEvent.setup();
+    renderConsole({ preferences: { panes: { live: true, list: true } } });
+    await ready();
+    await user.click(screen.getByRole('button', { name: 'Close list preview' }));
+    await waitFor(() => expect(document.activeElement).toBe(toggle('List preview')));
+
+    // Alt+1 with focus inside the live pane does the same.
+    screen.getByRole('button', { name: 'Close live preview' }).focus();
+    fireEvent.keyDown(document.activeElement!, { key: '1', code: 'Digit1', altKey: true });
+    await waitFor(() => expect(document.activeElement).toBe(toggle('Live preview')));
+  });
+
+  it('the audit counter is quiet unless filters are active', async () => {
+    renderConsole({ preferences: { panes: { live: false, list: true }, listTab: 'audit' } });
+    await ready();
+    const counter = await screen.findByText(/loaded$/);
+    expect(counter).toHaveAttribute('aria-live', 'off');
+  });
+});
+
 describe('preview dock layout', () => {
   it('clamps the dock so the main controls keep their minimum width', () => {
     expect(clampDockWidth(2000, 1200)).toBe(1200 - MAIN_MIN);
@@ -175,7 +198,7 @@ describe('banners', () => {
     renderConsole({ status: { lease: 'lost', cards: { updatePending: true } } });
     await ready();
     await waitFor(() => expect(banner('lease')).toHaveTextContent('lost the session lease'));
-    expect(banner('lease')).toHaveAttribute('role', 'alert');
+    expect(banner('lease')?.querySelector('[role="alert"]')).toHaveTextContent('lost the session lease');
     expect(banner('cards')).toHaveTextContent('Discord cards update pending');
   });
 
@@ -204,6 +227,33 @@ describe('banners', () => {
     await act(async () => { bodies[0]!.end(); });
     await waitFor(() => expect(banner('reconnecting')).toHaveTextContent('Reconnecting to the live stream'));
     expect(within(banner('reconnecting') as HTMLElement).getByRole('button', { name: 'Retry now' })).toBeInTheDocument();
+    // The countdown is visible but outside the live region, so it is not re-announced every second.
+    const status = banner('reconnecting')!.querySelector('[role="status"]')!;
+    expect(status.textContent).not.toMatch(/\d+s/);
+    const ticker = banner('reconnecting')!.querySelector('[data-banner-ticker]');
+    if (ticker) {
+      expect(ticker).toHaveAttribute('aria-hidden', 'true');
+      expect(status.contains(ticker)).toBe(false);
+    }
+  });
+
+  it('a past event that was active when cached shows as retired once a new event takes over', async () => {
+    const user = userEvent.setup();
+    const { bodies, server } = renderConsole();
+    await ready();
+    await waitFor(() => expect(bodies.length).toBe(1));
+    const next = { ...liveDispute, eventId: 'event-2', version: 1, createdAtMs: liveDispute.createdAtMs + 3_600_000 };
+    const retiredCopy = { ...liveDispute, status: 'retired' as const, retiredAtMs: next.createdAtMs, version: 18 };
+    server.always('GET /events', () => new Response(JSON.stringify([summaryOf(next), summaryOf(retiredCopy)]), { status: 200, headers: { 'content-type': 'application/json' } }));
+    server.always(`GET /events/${liveDispute.eventId}/snapshot`, () => new Response(JSON.stringify(retiredCopy), { status: 200, headers: { 'content-type': 'application/json' } }));
+    server.always('GET /events/event-2/snapshot', () => new Response(JSON.stringify(next), { status: 200, headers: { 'content-type': 'application/json' } }));
+    server.always('GET /events/event-2/audit', () => new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }));
+    const { event, id } = change(next, []);
+    await act(async () => { bodies[0]!.push(frame(event, id)); });
+    const history = await screen.findByRole('navigation', { name: 'Event history' });
+    await user.click(within(history).getByRole('button'));
+    expect(await screen.findByText('Retired event · read-only history.')).toBeInTheDocument();
+    expect(within(screen.getByRole('navigation', { name: 'Breadcrumb' })).getByText('History')).toBeInTheDocument();
   });
 });
 
