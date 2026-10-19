@@ -4,8 +4,8 @@ import { formatClock, type EventSnapshotDto, type EventStage, type MatchDto, typ
 import { Position, type NodeHandle } from '@xyflow/react';
 import { seatName } from './labels';
 import type {
-  FlowEdge, FlowEdgeData, FlowEdgeState, FlowGraph, FlowNode, FlowNodeState, MatchNodeData, MatchStatus,
-  SeatRow, StageNodeData, StepId, StepNodeData
+  FlowEdge, FlowEdgeData, FlowEdgeState, FlowGraph, FlowNode, FlowNodeState, FlowOrientation, FlowRect,
+  MatchNodeData, MatchStatus, SeatRow, StageNodeData, StepId, StepNodeData
 } from './types';
 import type { FlowView } from './index';
 
@@ -117,33 +117,88 @@ function edge(source: string, from: Side, target: string, to: Side, data: FlowEd
   return { id: `${source}->${target}`, type: 'flow', source, target, ...handles(from, to), data };
 }
 
-const STAGE_Y = 102;
-const STAGE_X = { signup: 0, checkin: 140, round: 280, matches: 420, standings: 692 } as const;
-const MATCH_Y: Record<number, number> = { 0: 30, 1: 146 };
+type Point = { x: number; y: number };
+
+/** Space under a stage node for its title and subtitle, and how far that text reaches sideways. */
+const STAGE_LABEL = { below: 42, side: 22 } as const;
+/** States that mark where play is happening; the viewport keeps them in view. */
+const FOCUS_STATES: ReadonlySet<FlowNodeState> = new Set(['live', 'waiting', 'interrupted', 'current', 'alert']);
+
+/** Footprint of a node in flow pixels: its box, plus the label under a stage node. */
+export function nodeFootprint(node: FlowNode): FlowRect {
+  const { width, height } = NODE_SIZE[node.type as keyof typeof NODE_SIZE];
+  if (node.type === 'stage') {
+    return { x: node.position.x - STAGE_LABEL.side, y: node.position.y,
+      width: width + STAGE_LABEL.side * 2, height: height + STAGE_LABEL.below };
+  }
+  return { x: node.position.x, y: node.position.y, width, height };
+}
+
+function union(rects: FlowRect[]): FlowRect {
+  if (rects.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
+  const left = Math.min(...rects.map(rect => rect.x));
+  const top = Math.min(...rects.map(rect => rect.y));
+  const right = Math.max(...rects.map(rect => rect.x + rect.width));
+  const bottom = Math.max(...rects.map(rect => rect.y + rect.height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function finishGraph(layoutKey: string, orientation: FlowOrientation, nodes: FlowNode[], edges: FlowEdge[]): FlowGraph {
+  const active = nodes.filter(node => FOCUS_STATES.has(node.data.state)).map(node => {
+    const { width, height } = NODE_SIZE[node.type as keyof typeof NODE_SIZE];
+    return { x: node.position.x, y: node.position.y, width, height };
+  });
+  const area = active.length > 0 ? union(active) : null;
+  return {
+    layoutKey, orientation, nodes, edges, bounds: union(nodes.map(nodeFootprint)),
+    focus: area ? { x: area.x + area.width / 2, y: area.y + area.height / 2 } : null
+  };
+}
+
+function keyFor(base: string, orientation: FlowOrientation): string {
+  return orientation === 'vertical' ? `${base}:vertical` : base;
+}
+
+type EventNodeId = 'signup' | 'checkin' | 'round' | 'M1' | 'M2' | 'standings';
+
+/** Left to right: the stages in a row, the two matches stacked, standings last. */
+const EVENT_HORIZONTAL: Record<EventNodeId, Point> = {
+  signup: { x: 0, y: 102 }, checkin: { x: 140, y: 102 }, round: { x: 280, y: 102 },
+  M1: { x: 420, y: 30 }, M2: { x: 420, y: 146 }, standings: { x: 692, y: 102 }
+};
+/** Top to bottom: the stages in a row, the two matches side by side under them, standings below. */
+const EVENT_VERTICAL: Record<EventNodeId, Point> = {
+  signup: { x: 40, y: 0 }, checkin: { x: 180, y: 0 }, round: { x: 320, y: 0 },
+  M1: { x: 0, y: 170 }, M2: { x: 220, y: 170 }, standings: { x: 180, y: 320 }
+};
 
 /** Event view: Signup → Check-in → Round 1 → M1 / M2 → Standings. */
-export function buildEventGraph(snapshot: EventSnapshotDto): FlowGraph {
+export function buildEventGraph(snapshot: EventSnapshotDto, orientation: FlowOrientation = 'horizontal'): FlowGraph {
+  const vertical = orientation === 'vertical';
+  const place = vertical ? EVENT_VERTICAL : EVENT_HORIZONTAL;
+  const branchOut: Side = vertical ? 'bottom' : 'right';
+  const branchIn: Side = vertical ? 'top' : 'left';
   const index = STAGE_INDEX[snapshot.stage];
   const signup = snapshot.signup;
   const matches = snapshot.matches;
   const finals = matches.filter(match => match.phase === 'final').length;
 
-  const stage = (id: StageNodeData['stage'], x: number, data: Omit<StageNodeData, 'stage'>): FlowNode => ({
-    id, type: 'stage', position: { x, y: STAGE_Y }, data: { stage: id, ...data }, ...sized('stage')
+  const stage = (id: StageNodeData['stage'], data: Omit<StageNodeData, 'stage'>): FlowNode => ({
+    id, type: 'stage', position: place[id], data: { stage: id, ...data }, ...sized('stage')
   });
 
   const nodes: FlowNode[] = [
-    stage('signup', STAGE_X.signup, {
+    stage('signup', {
       title: 'Signup',
       subtitle: signup ? `${signup.roster.length} / ${signup.capacity} joined` : 'seats assigned',
       state: index === 0 ? 'live' : 'done'
     }),
-    stage('checkin', STAGE_X.checkin, {
+    stage('checkin', {
       title: 'Check-in',
       subtitle: index === 0 ? 'after signup' : `${snapshot.checkins.length} / 4 in`,
       state: index < 1 ? 'pending' : index === 1 ? 'live' : 'done'
     }),
-    stage('round', STAGE_X.round, {
+    stage('round', {
       title: 'Round 1',
       subtitle: !snapshot.published ? 'not published' : finals === matches.length ? 'complete' : `${matches.length - finals} in play`,
       state: snapshot.published ? 'done' : 'pending'
@@ -171,14 +226,15 @@ export function buildEventGraph(snapshot: EventSnapshotDto): FlowGraph {
       seats: [seatRow(snapshot, match, match.seats[0]), seatRow(snapshot, match, match.seats[1])]
     };
     nodes.push({
-      id: match.id, type: 'match', position: { x: STAGE_X.matches, y: MATCH_Y[position] ?? 30 + position * 116 },
+      id: match.id, type: 'match', position: place[match.id],
       data, ...sized('match')
     });
-    const above = position === 0;
-    edges.push(edge('round', 'right', match.id, 'left', {
+    // Stacked matches nudge their labels apart; side by side the labels sit on the curves.
+    const labelOffset = vertical ? null : { x: 0, y: position === 0 ? -10 : 10 };
+    edges.push(edge('round', branchOut, match.id, branchIn, {
       state: snapshot.published ? edgeInto(state) : 'pending',
       label: `${match.seats[0]} · ${match.seats[1]}`,
-      labelOffset: { x: 0, y: above ? -10 : 10 }
+      ...(labelOffset ? { labelOffset } : {})
     }));
     let out: FlowEdgeData;
     if (!snapshot.published) out = { state: 'pending', label: null };
@@ -186,21 +242,21 @@ export function buildEventGraph(snapshot: EventSnapshotDto): FlowGraph {
     else if (match.judge) out = { state: 'blocked', label: 'held' };
     else if (match.clock.state === 'interrupted') out = { state: 'blocked', label: 'interrupted' };
     else out = { state: 'pending', label: match.phase === 'setup' ? 'setup' : match.phase === 'paused' ? 'paused' : 'in play' };
-    edges.push(edge(match.id, 'right', 'standings', 'left', { ...out, labelOffset: { x: 0, y: above ? -10 : 10 } }));
+    edges.push(edge(match.id, branchOut, 'standings', branchIn, { ...out, ...(labelOffset ? { labelOffset } : {}) }));
   });
 
-  nodes.push(stage('standings', STAGE_X.standings, {
+  nodes.push(stage('standings', {
     title: 'Standings',
     subtitle: index === 3 ? `${finals} / ${matches.length} final` : snapshot.published ? `waiting on ${matches.length - finals}` : '—',
     state: index === 3 ? 'done' : 'pending'
   }));
 
-  return { layoutKey: 'event', nodes, edges };
+  return finishGraph(keyFor('event', orientation), orientation, nodes, edges);
 }
 
 const STEP_X = [0, 162, 324, 486, 648] as const;
 const STEP_ROW = 100;
-const STEP_POSITION: Record<StepId, { x: number; y: number }> = {
+const STEP_HORIZONTAL: Record<StepId, Point> = {
   paused: { x: STEP_X[1], y: 0 },
   ready: { x: STEP_X[0], y: STEP_ROW },
   running: { x: STEP_X[1], y: STEP_ROW },
@@ -209,6 +265,33 @@ const STEP_POSITION: Record<StepId, { x: number; y: number }> = {
   final: { x: STEP_X[4], y: STEP_ROW },
   dispute: { x: STEP_X[2], y: 196 },
   judge: { x: STEP_X[3], y: 286 }
+};
+
+/** Top to bottom: the main path in the middle column, Paused to its left, Dispute and Judge to its right. */
+const STEP_COLUMN = [0, 150, 326] as const;
+const STEP_LEVEL = [0, 104, 208, 312, 416] as const;
+const STEP_VERTICAL: Record<StepId, Point> = {
+  ready: { x: STEP_COLUMN[1], y: STEP_LEVEL[0] },
+  running: { x: STEP_COLUMN[1], y: STEP_LEVEL[1] },
+  paused: { x: STEP_COLUMN[0], y: STEP_LEVEL[1] },
+  proposal: { x: STEP_COLUMN[1], y: STEP_LEVEL[2] },
+  dispute: { x: STEP_COLUMN[2], y: STEP_LEVEL[2] },
+  confirm: { x: STEP_COLUMN[1], y: STEP_LEVEL[3] },
+  judge: { x: STEP_COLUMN[2], y: STEP_LEVEL[3] },
+  final: { x: STEP_COLUMN[1], y: STEP_LEVEL[4] }
+};
+
+/** Sides for each lifecycle edge: [horizontal from, to, vertical from, to]. */
+const STEP_EDGE_SIDES: Record<string, [Side, Side, Side, Side]> = {
+  'ready->running': ['right', 'left', 'bottom', 'top'],
+  'running->paused': ['top', 'bottom', 'left', 'right'],
+  'running->proposal': ['right', 'left', 'bottom', 'top'],
+  'proposal->confirm': ['right', 'left', 'bottom', 'top'],
+  'confirm->final': ['right', 'left', 'bottom', 'top'],
+  'proposal->dispute': ['bottom', 'top', 'right', 'left'],
+  'dispute->judge': ['right', 'top', 'bottom', 'top'],
+  'running->judge': ['bottom', 'left', 'right', 'left'],
+  'judge->final': ['right', 'bottom', 'bottom', 'right']
 };
 
 const STEP_TITLES: Record<StepId, string> = {
@@ -220,9 +303,20 @@ const STEP_TITLES: Record<StepId, string> = {
 const STEP_ORDER: StepId[] = ['ready', 'running', 'paused', 'proposal', 'confirm', 'dispute', 'judge', 'final'];
 
 /** Match view: Ready → Running ⇄ Paused → Proposal → Confirm / Dispute → Final, with the Judge branch. */
-export function buildMatchGraph(snapshot: EventSnapshotDto, matchId: MatchId): FlowGraph {
+export function buildMatchGraph(snapshot: EventSnapshotDto, matchId: MatchId,
+  orientation: FlowOrientation = 'horizontal'): FlowGraph {
+  const vertical = orientation === 'vertical';
   const match = snapshot.matches.find(item => item.id === matchId) ?? snapshot.matches[0];
-  if (!match) return { layoutKey: `match:${matchId}`, nodes: [], edges: [] };
+  if (!match) return finishGraph(keyFor(`match:${matchId}`, orientation), orientation, [], []);
+  const place = vertical ? STEP_VERTICAL : STEP_HORIZONTAL;
+  const edge = (source: StepId, target: StepId, data: FlowEdgeData): FlowEdge => {
+    const id = `${source}->${target}`;
+    const sides = STEP_EDGE_SIDES[id]!;
+    return {
+      id, type: 'flow', source, target,
+      ...handles(vertical ? sides[2] : sides[0], vertical ? sides[3] : sides[1]), data
+    };
+  };
 
   const published = snapshot.published;
   const phase = match.phase;
@@ -272,47 +366,53 @@ export function buildMatchGraph(snapshot: EventSnapshotDto, matchId: MatchId): F
       clock: step === 'running' && started ? match.clock : null, phase
     };
     return {
-      id: step, type: 'step', position: STEP_POSITION[step], data, ...sized('step')
+      id: step, type: 'step', position: place[step], data, ...sized('step')
     };
   });
 
   const edges: FlowEdge[] = [
-    edge('ready', 'right', 'running', 'left', {
+    edge('ready', 'running', {
       state: !started ? 'pending' : phase === 'running' ? (interrupted ? 'blocked' : 'active') : 'done',
       label: published ? `${match.ready.length} / 2` : null
     }),
-    edge('running', 'top', 'paused', 'bottom', {
+    // Stacked, Paused sits in a narrow gap beside Running: the double arrow speaks for itself.
+    edge('running', 'paused', {
       state: phase === 'paused' ? 'current' : everPaused ? 'done' : untakenEdge,
-      label: 'pause · resume', bidirectional: true
+      label: vertical ? null : 'pause · resume', bidirectional: true
     }),
-    edge('running', 'right', 'proposal', 'left', {
+    edge('running', 'proposal', {
       state: proposal ? (openProposal ? 'current' : 'done') : untakenEdge, label: 'report'
     }),
-    edge('proposal', 'right', 'confirm', 'left', {
+    edge('proposal', 'confirm', {
       state: agreed ? 'done' : untakenEdge, label: 'confirm'
     }),
-    edge('confirm', 'right', 'final', 'left', { state: agreed ? 'done' : untakenEdge, label: null }),
-    edge('proposal', 'bottom', 'dispute', 'top', {
+    edge('confirm', 'final', { state: agreed ? 'done' : untakenEdge, label: null }),
+    edge('proposal', 'dispute', {
       state: disputed ? 'done' : untakenEdge, label: 'dispute'
     }),
-    edge('dispute', 'right', 'judge', 'top', {
+    edge('dispute', 'judge', {
       state: judge?.reasons.includes('dispute') ? 'waiting' : adminFinal && disputed ? 'done' : untakenEdge, label: null
     }),
-    edge('running', 'bottom', 'judge', 'left', {
+    edge('running', 'judge', {
       state: otherReasons.length > 0 ? 'waiting' : adminFinal && !disputed ? 'done' : untakenEdge,
-      label: otherReasons.length > 0 ? otherReasons.join(' · ') : 'call · expiry'
+      label: otherReasons.length > 0 ? otherReasons.join(' · ') : 'call · expiry',
+      // Stacked, this curve crosses the dispute edge's midpoint; lift its label into the row gap.
+      ...(vertical ? { labelOffset: { x: 0, y: -50 } } : {})
     }),
-    edge('judge', 'right', 'final', 'bottom', {
+    edge('judge', 'final', {
       state: adminFinal ? 'done' : judge ? 'pending' : untakenEdge, label: 'resolve'
     })
   ];
 
-  return { layoutKey: `match:${match.id}`, nodes, edges };
+  return finishGraph(keyFor(`match:${match.id}`, orientation), orientation, nodes, edges);
 }
 
 /** The graph for a view. Pure: the same snapshot, view and match always give the same graph. */
-export function buildFlowGraph(snapshot: EventSnapshotDto, view: FlowView, matchId: MatchId | null): FlowGraph {
-  return view === 'event' ? buildEventGraph(snapshot) : buildMatchGraph(snapshot, resolveMatchId(snapshot, matchId));
+export function buildFlowGraph(snapshot: EventSnapshotDto, view: FlowView, matchId: MatchId | null,
+  orientation: FlowOrientation = 'horizontal'): FlowGraph {
+  return view === 'event'
+    ? buildEventGraph(snapshot, orientation)
+    : buildMatchGraph(snapshot, resolveMatchId(snapshot, matchId), orientation);
 }
 
 function sameValue(a: unknown, b: unknown): boolean {
@@ -346,5 +446,5 @@ export function reconcileGraph(previous: FlowGraph | null, next: FlowGraph): Flo
     changed = true;
     return edge;
   });
-  return changed ? { layoutKey: next.layoutKey, nodes, edges } : previous;
+  return changed ? { ...next, nodes, edges } : previous;
 }
