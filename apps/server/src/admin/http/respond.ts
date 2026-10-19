@@ -54,7 +54,7 @@ export function toHttpError(error: unknown): HttpError {
   if (error instanceof AdminNotFoundError) return new HttpError(404, 'not_found', 'Not found.');
   if (error instanceof AdminUnavailableError) return new HttpError(503, 'unavailable', 'The event store is unavailable.');
   // The contract has no internal-error code; the message stays generic.
-  return new HttpError(500, 'unavailable', 'Internal error.');
+  return new HttpError(500, 'internal', 'Internal error.');
 }
 
 /** Answers with a mapped error, or drops the connection when a response is already under way. Never throws. */

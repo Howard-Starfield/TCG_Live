@@ -163,7 +163,7 @@ test('read routes return runtime data and validate their parameters', async () =
     harness.runtime.failure = new Error('connection string postgres://user:hunter2@x');
     const broken = await call(harness.port, `/api/v1/events/${FIXTURE_EVENT_ID}/snapshot`, { token });
     assert.equal(broken.status, 500);
-    assert.deepEqual(broken.json(), { error: { code: 'unavailable', message: 'Internal error.' } });
+    assert.deepEqual(broken.json(), { error: { code: 'internal', message: 'Internal error.' } });
   } finally {
     await harness.stop();
   }

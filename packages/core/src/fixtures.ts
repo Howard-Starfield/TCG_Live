@@ -109,15 +109,16 @@ export const liveInterrupted: EventSnapshotDto = {
   ...liveDispute,
   matches: [
     { ...liveDispute.matches[0]!,
-      clock: { ...liveDispute.matches[0]!.clock, state: 'interrupted' } },
-    liveDispute.matches[1]!
+      clock: { ...liveDispute.matches[0]!.clock, state: 'interrupted' }, adminActions: [] },
+    // domain.ts and store.ts refuse every command while a running clock is interrupted.
+    { ...liveDispute.matches[1]!, adminActions: [] }
   ]
 };
 
 /** Both matches final: M1 agreed by the opponent, M2 resolved by the admin. */
 export const final: EventSnapshotDto = {
   ...liveDispute,
-  version: 24,
+  version: 20,
   stage: 'complete',
   matches: [
     { ...liveDispute.matches[0]!, phase: 'final',

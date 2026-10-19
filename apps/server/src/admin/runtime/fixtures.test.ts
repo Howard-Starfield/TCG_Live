@@ -1,7 +1,7 @@
 // Core fixtures checked against real mapper output: the audit timeline is replayed through transition().
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { EventSnapshotDto, MatchDto } from '@tcg-live/core';
+import type { EventSnapshotDto } from '@tcg-live/core';
 import { auditTimeline, checkin, final, FIXTURE_ADMIN_ID, FIXTURE_EVENT_ID, FIXTURE_NOW_MS, liveDispute,
   liveInterrupted, signupOpen } from '@tcg-live/core/fixtures';
 import { ADMIN, createSignupFixture, transition, type Command, type EventState } from '../../rehearsal/domain.js';
@@ -73,25 +73,18 @@ test('liveDispute equals mapper output at the end of the timeline', () => {
   assert.deepEqual(snapshotAt(states.get(liveDispute.version)!, rows, { cards: true, panelRevision: 2 }), liveDispute);
 });
 
-test('liveInterrupted matches except adminActions, which the rules refuse while a clock is interrupted', () => {
+test('liveInterrupted equals mapper output with another runner owning the M1 clock', () => {
   const { rows, states } = replayTimeline();
   const mapped = snapshotAt(states.get(liveInterrupted.version)!, rows, { cards: true, panelRevision: 2, runnerId: 'another-runner' });
   assert.equal(mapped.matches[0]!.clock.state, 'interrupted');
-  // Fixture inaccuracy (reported): domain.ts:207 refuses M1 commands and store.ts:273 refuses every command of
-  // an event with an interrupted running clock, so no admin action is available on either match.
-  const corrected: EventSnapshotDto = { ...liveInterrupted,
-    matches: liveInterrupted.matches.map((match): MatchDto => ({ ...match, adminActions: [] })) };
-  assert.deepEqual(mapped, corrected);
-  assert.deepEqual(liveInterrupted.matches.map(match => match.adminActions), [['resolve'], ['resolve', 'judgeResume']],
-    'documents the fixture values this test corrects');
+  assert.deepEqual(mapped, liveInterrupted);
 });
 
-test('final is reachable from liveDispute; only its version is arbitrary', () => {
+test('final equals mapper output after the shortest continuation of the timeline', () => {
   const replay = replayTimeline();
   replay.apply('player:A', { type: 'propose', matchId: 'M1', winner: 'A', expectedRevision: 0 }, CREATED_AT_MS + 2_800_000, {});
   replay.apply('player:B', { type: 'confirm', matchId: 'M1', revision: 1 }, CREATED_AT_MS + 2_815_000, {});
   replay.apply(ADMIN, { type: 'resolve', matchId: 'M2', winner: 'D', reason: 'Judge ruling' }, CREATED_AT_MS + 2_900_000, {});
   const mapped = snapshotAt(replay.state, replay.rows, { cards: true, panelRevision: 2 });
-  assert.equal(mapped.version, 20, 'the shortest continuation of the 17-entry timeline');
-  assert.deepEqual({ ...mapped, version: final.version }, final);
+  assert.deepEqual(mapped, final);
 });

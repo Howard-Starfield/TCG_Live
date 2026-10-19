@@ -172,7 +172,7 @@ export const COMMAND_CAPABILITY: Record<AdminCommandDto['type'], Capability> = {
 
 export type ErrorCode = 'unauthenticated' | 'forbidden' | 'bad_host' | 'bad_origin'
   | 'bad_request' | 'not_found' | 'method_not_allowed' | 'conflict' | 'rule'
-  | 'unavailable' | 'too_many_requests';
+  | 'unavailable' | 'too_many_requests' | 'internal';
 export interface ErrorDto { error: { code: ErrorCode; message: string }; snapshot?: EventSnapshotDto }
 
 export const API_PREFIX = '/api/v1' as const;
