@@ -12,3 +12,10 @@ backups/
 *.sql.gz
 coverage/
 .local/
+
+# Admin console
+.temp/
+apps/web/dist/
+apps/web/playwright-report/
+apps/web/test-results/
+*.tsbuildinfo

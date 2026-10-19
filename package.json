@@ -1,7 +1,7 @@
 {
   "name": "tcg-live",
   "private": true,
-  "workspaces": ["apps/server"],
+  "workspaces": ["packages/core", "apps/server", "apps/web"],
   "engines": { "node": ">=24.14.0 <25", "npm": ">=11.9.0 <12" },
   "scripts": {
     "build": "npm run build --workspace @tcg-live/server",
@@ -17,6 +17,16 @@
     "discord:run": "npm run discord:run --workspace @tcg-live/server",
     "discord:signup-prepare": "npm run discord:signup-prepare --workspace @tcg-live/server",
     "discord:signup-register": "npm run discord:signup-register --workspace @tcg-live/server",
-    "discord:signup-run": "npm run discord:signup-run --workspace @tcg-live/server"
+    "discord:signup-run": "npm run discord:signup-run --workspace @tcg-live/server",
+    "build:web": "npm run build --workspace @tcg-live/web",
+    "build:all": "npm run build && npm run build:web",
+    "typecheck:web": "npm run typecheck --workspace @tcg-live/web",
+    "typecheck:all": "npm run typecheck && npm run typecheck:web",
+    "test:core": "npm run test --workspace @tcg-live/core",
+    "test:web": "npm run test --workspace @tcg-live/web",
+    "test:all": "npm run test:core && npm test && npm run test:web",
+    "admin:demo": "npm run build:web && npm run admin:demo --workspace @tcg-live/server",
+    "web:dev": "npm run dev --workspace @tcg-live/web",
+    "test:e2e": "npm run build:all && npm run test:e2e --workspace @tcg-live/web"
   }
 }

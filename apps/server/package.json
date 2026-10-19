@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "prebuild": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve(process.cwd(),'..','..');const target=path.resolve(process.cwd(),'dist');if(target!==path.join(root,'apps','server','dist'))throw Error('Unsafe build output path');fs.rmSync(target,{recursive:true,force:true})\"",
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js dist/rehearsal/*.test.js dist/discord/*.test.js",
-    "test:db": "npm run build && node --test --test-concurrency=1 dist/rehearsal/store.db.test.js dist/discord/session.db.test.js",
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b ../../packages/core/tsconfig.json && tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/*.test.js dist/rehearsal/*.test.js dist/discord/*.test.js \"dist/admin/**/*.test.js\"",
+    "test:db": "npm run build && node --test --test-concurrency=1 dist/rehearsal/store.db.test.js dist/discord/session.db.test.js \"dist/admin/**/*.db.test.js\"",
     "db:setup": "npm run build && node dist/rehearsal/cli.js setup",
     "rehearse": "npm run build && node dist/rehearsal/cli.js rehearse",
     "db:discord-setup": "npm run build && node dist/discord/runtime.js setup",
@@ -17,9 +17,11 @@
     "discord:run": "npm run build && node dist/discord/runtime.js run",
     "discord:signup-prepare": "npm run build && node dist/discord/runtime.js signup-prepare",
     "discord:signup-register": "npm run build && node dist/discord/runtime.js signup-register",
-    "discord:signup-run": "npm run build && node dist/discord/runtime.js signup-run"
+    "discord:signup-run": "npm run build && node dist/discord/runtime.js signup-run",
+    "admin:demo": "npm run build && node dist/admin/demo.js"
   },
   "dependencies": {
+    "@tcg-live/core": "0.0.0",
     "discord.js": "14.27.0",
     "pg": "8.23.1"
   },
