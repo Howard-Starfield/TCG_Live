@@ -85,8 +85,12 @@ export type FlowEdgeData = {
 
 export type FlowEdge = Edge<FlowEdgeData, 'flow'>;
 
-/** Left-to-right for wide panes, top-to-bottom for tall or narrow ones. */
-export type FlowOrientation = 'horizontal' | 'vertical';
+/**
+ * Left-to-right for wide panes and top-to-bottom for tall or narrow ones. The Event view has two tighter
+ * forms for short panes, without the edge labels that repeat stage subtitles and match cards:
+ * `compact` (top to bottom, for short narrow panes) and `strip` (left to right, for short wide ones).
+ */
+export type FlowOrientation = 'horizontal' | 'vertical' | 'compact' | 'strip';
 
 export interface FlowRect { x: number; y: number; width: number; height: number }
 

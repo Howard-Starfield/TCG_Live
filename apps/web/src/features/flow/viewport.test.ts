@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { buildEventGraph, buildFlowGraph, buildMatchGraph, nodeFootprint } from './layout';
 import type { FlowGraph, FlowRect } from './types';
 import {
-  chooseOrientation, computeViewport, fitZoom, MAX_FIT_ZOOM, PANE_PADDING, READABLE_ZOOM, type PaneSize
+  chooseLayout, chooseOrientation, computeViewport, fitZoom, MAX_FIT_ZOOM, MIN_AUTO_ZOOM, PANE_PADDING, READABLE_ZOOM,
+  type PaneSize
 } from './viewport';
 
 /** The shell's default dock is 480 px wide; a single Live pane is tall, stacked panes are short. */
@@ -55,7 +56,7 @@ describe('orientation', () => {
 
   it('no two nodes (stage labels included) overlap in any layout', () => {
     for (const snapshot of Object.values(snapshots)) {
-      for (const orientation of ['horizontal', 'vertical'] as const) {
+      for (const orientation of ['horizontal', 'vertical', 'compact', 'strip'] as const) {
         const graphs = [buildEventGraph(snapshot, orientation),
           ...snapshot.matches.map(match => buildMatchGraph(snapshot, match.id, orientation))];
         for (const graph of graphs) {
@@ -93,16 +94,35 @@ describe('computeViewport', () => {
     expect(viewport.x).toBeCloseTo(PANE_PADDING.left + (width - 400 * MAX_FIT_ZOOM) / 2);
   });
 
-  it('stops at the readable zoom and centres the action instead of shrinking', () => {
-    const pane = { width: 300, height: 600 };
-    expect(fitZoom(graph.bounds, pane)).toBeLessThan(READABLE_ZOOM);
+  it('shows everything when that needs a zoom of at least MIN_AUTO_ZOOM', () => {
+    const pane = { width: 380, height: 600 };
+    const whole = fitZoom(graph.bounds, pane);
+    expect(whole).toBeLessThan(READABLE_ZOOM);
+    expect(whole).toBeGreaterThanOrEqual(MIN_AUTO_ZOOM);
     const viewport = computeViewport(graph, pane);
-    expect(viewport.zoom).toBe(READABLE_ZOOM);
-    const width = 300 - PANE_PADDING.left - PANE_PADDING.right;
-    // Focus x = 300 lands in the middle of the available width, within the content's clamp.
-    const centred = PANE_PADDING.left + width / 2 - 300 * READABLE_ZOOM;
-    const lowest = PANE_PADDING.left + width - 400 * READABLE_ZOOM;
-    expect(viewport.x).toBeCloseTo(Math.max(lowest, centred));
+    expect(viewport.zoom).toBeCloseTo(whole);
+    expect(viewport.x).toBeCloseTo(PANE_PADDING.left);
+  });
+
+  it('below the floor it stays at the floor, keeps the full width and clips vertically around the action', () => {
+    // Wide enough for the whole width at 0.9, far too short for the height.
+    const pane = { width: 400 * 0.9 + 28, height: 200 };
+    expect(fitZoom(graph.bounds, pane)).toBeLessThan(MIN_AUTO_ZOOM);
+    const viewport = computeViewport(graph, pane);
+    // No zooming up to fill the width: that would only clip more of the height.
+    expect(viewport.zoom).toBe(MIN_AUTO_ZOOM);
+    const width = pane.width - PANE_PADDING.left - PANE_PADDING.right;
+    expect(viewport.x).toBeCloseTo(PANE_PADDING.left + (width - 400 * MIN_AUTO_ZOOM) / 2);
+    const room = 200 - PANE_PADDING.top - PANE_PADDING.bottom;
+    const centred = PANE_PADDING.top + room / 2 - 150 * MIN_AUTO_ZOOM;
+    const lowest = PANE_PADDING.top + room - 200 * MIN_AUTO_ZOOM;
+    expect(viewport.y).toBeCloseTo(Math.max(lowest, centred));
+  });
+
+  it('never goes below the floor: a very narrow pane pans horizontally too', () => {
+    const pane = { width: 200, height: 200 };
+    const viewport = computeViewport(graph, pane);
+    expect(viewport.zoom).toBe(MIN_AUTO_ZOOM);
     // Never empty space before the first node.
     expect(viewport.x).toBeLessThanOrEqual(PANE_PADDING.left);
   });
@@ -115,13 +135,70 @@ describe('computeViewport', () => {
     expect(viewport.x).toBeCloseTo(PANE_PADDING.left);
   });
 
-  it('a short stacked dock pane keeps the text readable and shows the live matches', () => {
+  const EVENT_LAYOUTS = ['horizontal', 'vertical', 'compact', 'strip'] as const;
+  const eventLayouts = () => EVENT_LAYOUTS.map(orientation => buildEventGraph(liveDispute, orientation));
+  const pick = (pane: PaneSize) => {
+    const layouts = eventLayouts();
+    const chosen = chooseLayout(pane, layouts.map(({ orientation, bounds }) => ({ orientation, bounds })));
+    return layouts.find(layout => layout.orientation === chosen)!;
+  };
+  /** Screen rectangles of every node footprint (stage labels included). */
+  const onScreen = (graph: FlowGraph, pane: PaneSize) => {
+    const viewport = computeViewport(graph, pane);
+    return { viewport, rects: graph.nodes.map(node => {
+      const rect = nodeFootprint(node);
+      const left = rect.x * viewport.zoom + viewport.x;
+      const top = rect.y * viewport.zoom + viewport.y;
+      return { left, top, right: left + rect.width * viewport.zoom, bottom: top + rect.height * viewport.zoom };
+    }) };
+  };
+
+  // Measured in the shell: the Live pane with both panes open at 1440 x 900, and the Live pane in the
+  // previews sheet at 1000 x 800 (Live and List stacked).
+  for (const [name, pane, expected] of [
+    ['both panes at 1440x900', { width: 460, height: 363 }, 'compact'],
+    ['a slightly larger stacked pane', { width: 480, height: 380 }, 'compact'],
+    ['the sheet at 1000x800', { width: 580, height: 318 }, 'strip']
+  ] as const) {
+    it(`${name}: shows the whole Event view, clear of the overlays, at about 10 px titles`, () => {
+      const graph = pick(pane);
+      expect(graph.orientation).toBe(expected);
+      const { viewport, rects } = onScreen(graph, pane);
+      expect(viewport.zoom).toBeGreaterThanOrEqual(MIN_AUTO_ZOOM);
+      for (const rect of rects) {
+        expect(rect.left).toBeGreaterThanOrEqual(PANE_PADDING.left - 0.5);
+        expect(rect.top).toBeGreaterThanOrEqual(PANE_PADDING.top - 0.5);
+        expect(rect.right).toBeLessThanOrEqual(pane.width - PANE_PADDING.right + 0.5);
+        expect(rect.bottom).toBeLessThanOrEqual(pane.height - PANE_PADDING.bottom + 0.5);
+      }
+    });
+  }
+
+  it('an even shorter pane clips vertically at the floor, never horizontally', () => {
+    const graph = pick(STACKED_DOCK);
+    const { viewport, rects } = onScreen(graph, STACKED_DOCK);
+    expect(viewport.zoom).toBe(MIN_AUTO_ZOOM);
+    for (const rect of rects) {
+      expect(rect.left).toBeGreaterThanOrEqual(PANE_PADDING.left - 0.5);
+      expect(rect.right).toBeLessThanOrEqual(STACKED_DOCK.width - PANE_PADDING.right + 0.5);
+    }
+  });
+
+  it('the strip Event layout drops every edge label and keeps the states', () => {
+    const strip = buildEventGraph(liveDispute, 'strip');
+    const horizontal = buildEventGraph(liveDispute);
+    expect(strip.layoutKey).toBe('event:strip');
+    expect(strip.edges.map(edge => edge.data!.state)).toEqual(horizontal.edges.map(edge => edge.data!.state));
+    expect(strip.edges.filter(edge => edge.data!.label)).toEqual([]);
+    expect(strip.bounds.width).toBeLessThan(horizontal.bounds.width);
+  });
+
+  it('the compact Event layout drops only the branch labels', () => {
+    const compact = buildEventGraph(liveDispute, 'compact');
     const vertical = buildEventGraph(liveDispute, 'vertical');
-    const viewport = computeViewport(vertical, STACKED_DOCK);
-    expect(viewport.zoom).toBeGreaterThanOrEqual(READABLE_ZOOM);
-    // The focus (both matches) is on screen.
-    const screenY = vertical.focus!.y * viewport.zoom + viewport.y;
-    expect(screenY).toBeGreaterThan(PANE_PADDING.top);
-    expect(screenY).toBeLessThan(STACKED_DOCK.height - PANE_PADDING.bottom);
+    expect(compact.layoutKey).toBe('event:compact');
+    expect(compact.edges.map(edge => edge.data!.state)).toEqual(vertical.edges.map(edge => edge.data!.state));
+    expect(compact.edges.filter(edge => edge.data!.label).map(edge => edge.id)).toEqual(['signup->checkin', 'checkin->round']);
+    expect(compact.bounds.height).toBeLessThan(vertical.bounds.height);
   });
 });

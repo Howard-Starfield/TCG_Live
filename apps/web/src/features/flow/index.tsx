@@ -2,7 +2,7 @@
 // getServerNow from L4's stream clock. Keep LivePreviewProps stable.
 import '@xyflow/react/dist/base.css';
 import type { EventSnapshotDto, MatchId } from '@tcg-live/core';
-import type { FlowGraph } from './types';
+import type { FlowGraph, FlowOrientation } from './types';
 import {
   Background, BackgroundVariant, Panel, ReactFlow, ReactFlowProvider, useReactFlow, useStore
 } from '@xyflow/react';
@@ -13,7 +13,7 @@ import { EdgeMarkers, edgeTypes } from './edge';
 import { buildFlowGraph, reconcileGraph, resolveMatchId } from './layout';
 import { nodeTypes } from './nodes';
 import { useThrottledValue } from './throttle';
-import { chooseOrientation, computeViewport, type PaneSize } from './viewport';
+import { chooseLayout, computeViewport, type PaneSize } from './viewport';
 
 export type FlowView = 'event' | 'match';
 
@@ -32,7 +32,7 @@ export interface LivePreviewProps {
 export { buildEventGraph, buildFlowGraph, buildMatchGraph, reconcileGraph, resolveMatchId } from './layout';
 export { GRAPH_UPDATE_INTERVAL_MS, useThrottledValue } from './throttle';
 export type { FlowEdgeState, FlowGraph, FlowNodeState, FlowOrientation } from './types';
-export { chooseOrientation, computeViewport, READABLE_ZOOM } from './viewport';
+export { chooseLayout, chooseOrientation, computeViewport, MIN_AUTO_ZOOM, READABLE_ZOOM } from './viewport';
 
 /** Read-only live canvas for one event: the Event view or one match's lifecycle. */
 export function LivePreview(props: LivePreviewProps) {
@@ -54,16 +54,19 @@ function FlowCanvas({ snapshot, view, matchId, onViewChange, getServerNow = Date
     () => (paneWidth > 0 && paneHeight > 0 ? { width: paneWidth, height: paneHeight } : null),
     [paneWidth, paneHeight]
   );
-  const candidates = useMemo(() => ({
-    horizontal: buildFlowGraph(throttled, view, shownMatch, 'horizontal'),
-    vertical: buildFlowGraph(throttled, view, shownMatch, 'vertical')
-  }), [throttled, view, shownMatch]);
-  const orientation = chooseOrientation(pane, candidates.horizontal.bounds, candidates.vertical.bounds);
+  // Candidate layouts, canonical first. The Event view also has tight forms for short panes.
+  const candidates = useMemo(() => {
+    const orientations: FlowOrientation[] = view === 'event'
+      ? ['horizontal', 'vertical', 'compact', 'strip'] : ['horizontal', 'vertical'];
+    return orientations.map(orientation => buildFlowGraph(throttled, view, shownMatch, orientation));
+  }, [throttled, view, shownMatch]);
+  const orientation = chooseLayout(pane, candidates);
   // Unchanged nodes and edges keep their object identity, so React Flow keeps its internal state and
   // edge components (and their animations) stay mounted across updates.
   const previousGraph = useRef<FlowGraph | null>(null);
   const graph = useMemo(
-    () => reconcileGraph(previousGraph.current, candidates[orientation]),
+    () => reconcileGraph(previousGraph.current,
+      candidates.find(candidate => candidate.orientation === orientation) ?? candidates[0]!),
     [candidates, orientation]
   );
   useEffect(() => { previousGraph.current = graph; }, [graph]);
