@@ -1,8 +1,9 @@
-// Owned by L6 (web-shell), which replaces this Wave 0 scaffold with the console shell.
+import { AppRoot } from './app/AppRoot';
+import { createAdminData } from './data';
+
+// One data layer per page, created outside render.
+const data = createAdminData();
+
 export function App() {
-  return (
-    <main className="grid h-full place-items-center bg-base text-fg">
-      <p className="text-fg-muted">TCG Live console scaffold.</p>
-    </main>
-  );
+  return <AppRoot data={data} />;
 }
