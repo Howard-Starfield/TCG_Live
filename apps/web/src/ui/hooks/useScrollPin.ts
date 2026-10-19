@@ -3,11 +3,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 export interface ScrollPinOptions {
   /** Distance from the bottom, in px, that still counts as "at the bottom". */
   threshold?: number;
-  /** Scroll events within this many ms of a programmatic scroll are ignored (default 150). */
-  cooldownMs?: number;
+  /** An upward scroll counts as the user's only within this many ms of their input (default 250). */
+  intentWindowMs?: number;
   /** Changes whenever new content arrives (for example the entry count); pinned views follow it. */
   contentKey?: unknown;
-  /** Clock for the cooldown; injectable for tests. */
+  /** Clock for the intent window; injectable for tests. */
   now?: () => number;
 }
 
@@ -26,31 +26,31 @@ export function distanceFromBottom(el: Pick<HTMLElement, 'scrollHeight' | 'scrol
   return Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
 }
 
-/** Input that means the user is steering the scroll position themselves. */
-const USER_INPUT_EVENTS = ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'keydown'] as const;
-/** A scroll event this soon after user input counts as user-driven. */
-const USER_INPUT_WINDOW_MS = 250;
+/** Momentary input that means the user is steering the scroll position. */
+const INTENT_EVENTS = ['wheel', 'touchstart', 'touchmove', 'keydown'] as const;
 
 /**
  * Chat-style scroll pinning: while the user is at the bottom, new content keeps the view at the bottom;
  * once they scroll up the view stays put and `hasUnseen` flags new content.
  *
- * Rules, so programmatic scrolling can never unpin the view:
- * - reaching the bottom (within `threshold`) always pins;
- * - only upward movement (`scrollTop` decreasing) can unpin, and our own scrolls only ever move down, so a
- *   long smooth `jumpToLatest` cannot unpin part-way;
- * - for `cooldownMs` after a programmatic scroll, scroll events are ignored unless they follow user input
- *   (wheel, touch, pointer, key), so a fast stream of new content cannot swallow the user's scroll-up.
+ * Only the user can unpin. An upward scroll unpins only when it follows user input: a wheel, touch or key
+ * event within `intentWindowMs`, or a pointer held down on the container (scrollbar drags). So nothing
+ * else moving the view up unpins it: smooth `jumpToLatest` animations, browser scroll anchoring during a
+ * reflow, or the container shrinking. Reaching the bottom always pins.
+ *
+ * While pinned, resizing the container or its content (a dock opening, a window resize, images loading)
+ * keeps the view at the bottom. The hook also sets `overflow-anchor: none` on the container, so the
+ * browser's own scroll anchoring does not fight the pinning.
  */
 export function useScrollPin<T extends HTMLElement = HTMLDivElement>(options: ScrollPinOptions = {}): ScrollPin<T> {
-  const { threshold = 24, cooldownMs = 150, contentKey } = options;
+  const { threshold = 24, intentWindowMs = 250, contentKey } = options;
   const now = options.now ?? Date.now;
   const [node, setNode] = useState<T | null>(null);
   const [pinned, setPinned] = useState(true);
   const [hasUnseen, setHasUnseen] = useState(false);
   const pinnedRef = useRef(true);
-  const cooldownUntil = useRef(0);
-  const userInputAt = useRef(Number.NEGATIVE_INFINITY);
+  const intentAt = useRef(Number.NEGATIVE_INFINITY);
+  const pointerHeld = useRef(false);
   const lastTop = useRef(0);
   const nowRef = useRef(now);
   nowRef.current = now;
@@ -62,42 +62,55 @@ export function useScrollPin<T extends HTMLElement = HTMLDivElement>(options: Sc
   }, []);
 
   const scrollToBottom = useCallback((el: T, behavior: ScrollBehavior) => {
-    cooldownUntil.current = nowRef.current() + cooldownMs;
     const top = el.scrollHeight;
     if (typeof el.scrollTo === 'function') el.scrollTo({ top, behavior });
     else el.scrollTop = top;
-  }, [cooldownMs]);
+  }, []);
 
   useEffect(() => {
     if (!node) return;
     lastTop.current = node.scrollTop;
-    const onUserInput = () => { userInputAt.current = nowRef.current(); };
+    const previousAnchor = node.style.overflowAnchor;
+    node.style.overflowAnchor = 'none';
+
+    const onIntent = () => { intentAt.current = nowRef.current(); };
+    const onPointerDown = () => { pointerHeld.current = true; onIntent(); };
+    const onPointerUp = () => { pointerHeld.current = false; };
     const onScroll = () => {
       const top = node.scrollTop;
+      const movedUp = top < lastTop.current - 1;
+      lastTop.current = top;
       if (distanceFromBottom(node) <= threshold) {
-        lastTop.current = top;
         if (!pinnedRef.current) setPin(true);
         return;
       }
-      const movedUp = top < lastTop.current - 1;
-      if (!movedUp || !pinnedRef.current) {
-        lastTop.current = top;
-        return;
-      }
-      const time = nowRef.current();
-      const userDriven = time - userInputAt.current <= USER_INPUT_WINDOW_MS;
-      // Ignored events keep the old position, so the net upward move still counts after the cooldown.
-      if (time < cooldownUntil.current && !userDriven) return;
-      lastTop.current = top;
-      setPin(false);
+      if (!movedUp || !pinnedRef.current) return;
+      const userDriven = pointerHeld.current || nowRef.current() - intentAt.current <= intentWindowMs;
+      if (userDriven) setPin(false);
     };
+
+    // While pinned, any change in size keeps the newest content in view.
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      if (pinnedRef.current && distanceFromBottom(node) > 0) scrollToBottom(node, 'auto');
+    });
+    observer?.observe(node);
+    for (const child of Array.from(node.children)) observer?.observe(child);
+
     node.addEventListener('scroll', onScroll, { passive: true });
-    for (const type of USER_INPUT_EVENTS) node.addEventListener(type, onUserInput, { passive: true });
+    node.addEventListener('pointerdown', onPointerDown, { passive: true });
+    for (const type of INTENT_EVENTS) node.addEventListener(type, onIntent, { passive: true });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
     return () => {
+      observer?.disconnect();
+      node.style.overflowAnchor = previousAnchor;
       node.removeEventListener('scroll', onScroll);
-      for (const type of USER_INPUT_EVENTS) node.removeEventListener(type, onUserInput);
+      node.removeEventListener('pointerdown', onPointerDown);
+      for (const type of INTENT_EVENTS) node.removeEventListener(type, onIntent);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
     };
-  }, [node, threshold, setPin]);
+  }, [node, threshold, intentWindowMs, setPin, scrollToBottom]);
 
   // Follow new content while pinned; otherwise remember that something arrived.
   const firstRun = useRef(true);

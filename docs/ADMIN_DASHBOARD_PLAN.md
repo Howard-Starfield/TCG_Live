@@ -758,3 +758,14 @@ Accepted and carried forward:
 - **Wave 4 docs (README and `.env.example`).** `TCG_ADMIN_CONSOLE` and `TCG_ADMIN_COMMANDS` accept only 0 or 1. Discord mode refuses `TCG_ADMIN_LOGIN_TOKEN` and `TCG_ADMIN_DEV_ORIGIN` even when the console is off, so a leftover demo value stops the bot at startup. This fails closed, deliberately.
 - **Threat model.** Failed logins are limited globally (10 a minute). A local process can therefore keep the console locked; browser pages cannot, because the Origin check comes first.
 - **Wave 3.** If a command can retire the active event with no replacement, the stream must tell clients that `activeEventId` is now null. Today that cannot happen: Discord mode needs the bot's lease, and the demo replaces events atomically.
+
+## Wave 2 review follow-ups (19 October 2026)
+
+Server, fixed on `feat/admin-dashboard`:
+- The Discord runtime's safety-net poll keeps its own version baseline. Its first poll also notifies. A controller notice no longer hides an out-of-process write (the rehearsal CLI) that lands before the next poll. This gap opened when the stream tick stopped re-reading snapshots.
+- A flush that started before a newer read failure can no longer clear the retry flag.
+
+Accepted:
+- When an expired match gets a later non-judge command, its judge wait is dated from the newest match command. The stored state keeps no expiry instant to date it from.
+
+The web findings (stale retired-event cache, login fragment while signed in, needs-you wording, banner and live-region noise, pane focus return, pasted-link origin, favicon) are routed to L6, with polish rounds for L3, L5 and L7.

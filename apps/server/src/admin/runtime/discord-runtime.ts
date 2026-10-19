@@ -261,8 +261,9 @@ export class DiscordAdminRuntime implements AdminRuntime {
   private onControllerChange(change: ControllerChange): void {
     if (this.closed) return;
     if (change.type === 'status') { this.statusMaybeChanged(); return; }
-    // The next poll re-baselines silently instead of repeating this change.
-    if (change.type === 'event') this.lastVersionKey = undefined;
+    // The poll keeps its own baseline: re-baselining here would hide an out-of-process write
+    // (the rehearsal CLI) landing before the next poll. A repeated notice costs one snapshot read
+    // and the stream manager drops versions it already sent.
     this.listeners.emit({ type: change.type, eventId: change.eventId });
   }
 
@@ -292,7 +293,9 @@ export class DiscordAdminRuntime implements AdminRuntime {
       const key = active ? `${active.eventId}:${active.version}` : 'none';
       const previous = this.lastVersionKey;
       this.lastVersionKey = key;
-      if (previous !== undefined && previous !== key)
+      // The first poll notifies too: a write can land between a subscriber's own first read and
+      // this baseline, and subscribers ignore versions they already have.
+      if (previous !== key)
         this.listeners.emit(active ? { type: 'event', eventId: active.eventId } : { type: 'status' });
     } catch { /* Database status already reflects the failure. */ }
     finally {
