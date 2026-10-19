@@ -1,10 +1,10 @@
 import { CalendarX, DatabaseZap, LoaderCircle, Table2, Workflow, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { useServerClock } from '../../data';
 import { LivePreview } from '../flow';
-import { ListPreview } from '../lists';
-import { Button, EmptyState, IconButton, PaneHeader, SplitPane, focusableWithin, springs, useSafeTransition, useSafeVariants, variants } from '../../ui';
+import { ListPreview, ListTabStrip, type ListTab } from '../lists';
+import { Button, EmptyState, IconButton, PaneHeader, ScrollFade, SplitPane, focusableWithin, springs, useSafeTransition, useSafeVariants, variants } from '../../ui';
 import { useConsolePreferences } from '../../app/preferences';
 import { useShell } from './model';
 
@@ -180,8 +180,8 @@ function PaneFrame({ children }: { children: ReactNode }) {
   return <div className="shell-pane">{children}</div>;
 }
 
-function PaneBody({ children, testId }: { children: ReactNode; testId?: string }) {
-  return <div className="shell-pane-body" data-testid={testId}>{children}</div>;
+function PaneBody({ children, testId, plain = false }: { children: ReactNode; testId?: string; plain?: boolean }) {
+  return <div className={plain ? 'shell-pane-body is-plain' : 'shell-pane-body'} data-testid={testId}>{children}</div>;
 }
 
 function PaneFallback() {
@@ -221,13 +221,21 @@ function LivePane() {
 function ListPane() {
   const shell = useShell();
   const [preferences, update] = useConsolePreferences();
+  const idBase = `shell-lists${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const { snapshot } = shell.viewed;
+  const onTabChange = (listTab: ListTab) => update({ listTab });
   return (
     <PaneFrame>
-      <PaneHeader title="List preview" icon={<Table2 />} onClose={() => shell.dock.close('list')} />
-      <PaneBody testId="list-pane">
+      <PaneHeader title="List preview" icon={<Table2 />} onClose={() => shell.dock.close('list')} className="shell-list-head">
+        {snapshot && (
+          <ScrollFade axis="horizontal" fade={16} className="shell-pane-tabs">
+            <ListTabStrip snapshot={snapshot} tab={preferences.listTab} onTabChange={onTabChange} idBase={idBase} />
+          </ScrollFade>
+        )}
+      </PaneHeader>
+      <PaneBody testId="list-pane" plain={!!snapshot}>
         {snapshot
-          ? <ListPreview snapshot={snapshot} tab={preferences.listTab} onTabChange={listTab => update({ listTab })}
+          ? <ListPreview snapshot={snapshot} tab={preferences.listTab} onTabChange={onTabChange} showTabs={false} idBase={idBase}
               onOpenMatch={shell.openMatch} className="h-full" />
           : <PaneFallback />}
       </PaneBody>
