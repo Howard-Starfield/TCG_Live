@@ -2,10 +2,27 @@ import { checkin, FIXTURE_ADMIN_ID, FIXTURE_MEMBER_IDS, final, liveDispute, live
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MATCH_STACK_CLOCK_BELOW, MATCH_STACK_PLAYERS_BELOW, MATCH_WIDE_FROM } from './MatchesTab';
 import { PLAYER_COLUMN_MIN_WIDTH } from './PlayersTab';
 import { bodyRows, renderList } from './testUtils';
 
 const [AVA] = FIXTURE_MEMBER_IDS;
+
+afterEach(() => vi.unstubAllGlobals());
+
+/** Makes every ResizeObserver report this content width (the setup shim reports 800 px). */
+function stubWidth(width: number) {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target, contentRect: { width } } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
+    }
+    unobserve() {}
+    disconnect() {}
+  });
+}
+
+const headers = () => screen.getAllByRole('columnheader').map(header => header.textContent);
 
 describe('ListPreview tabs', () => {
   it('renders four labelled tabs and the selected panel', () => {
@@ -97,19 +114,6 @@ describe('Players tab', () => {
   });
 
   describe('in narrow panes', () => {
-    afterEach(() => vi.unstubAllGlobals());
-    const stubWidth = (width: number) => {
-      vi.stubGlobal('ResizeObserver', class {
-        constructor(private readonly callback: ResizeObserverCallback) {}
-        observe(target: Element) {
-          this.callback([{ target, contentRect: { width } } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
-        }
-        unobserve() {}
-        disconnect() {}
-      });
-    };
-    const headers = () => screen.getAllByRole('columnheader').map(header => header.textContent);
-
     it('keeps seat, member, status and points at 380 px', () => {
       stubWidth(380);
       renderList(liveDispute, 'players');
@@ -146,8 +150,10 @@ describe('Players tab', () => {
 });
 
 describe('Matches tab', () => {
-  it('shows seats, phase, live clock, judge reasons and the proposal', () => {
+  it('shows seats, phase, live clock, judge reasons and the proposal in wide panes', () => {
+    stubWidth(MATCH_WIDE_FROM);
     renderList(liveDispute, 'matches');
+    expect(headers()).toEqual(['Match', 'Players', 'Phase', 'Clock', 'Judge', 'Proposal', 'Open']);
     const rows = bodyRows(/^Matches/);
     const m1 = within(rows[0]!);
     expect(m1.getByText('Ava Chen')).toBeInTheDocument();
@@ -175,7 +181,8 @@ describe('Matches tab', () => {
     expect(m1.querySelector('[data-live]')).toBeNull();
   });
 
-  it('shows final winners with their source', () => {
+  it('shows final winners with their source in wide panes', () => {
+    stubWidth(MATCH_WIDE_FROM);
     renderList(final, 'matches');
     const [m1, m2] = bodyRows(/^Matches/);
     expect(within(m1!).getByText('Final')).toBeInTheDocument();
@@ -184,6 +191,57 @@ describe('Matches tab', () => {
     expect(within(m2!).getByText('admin')).toBeInTheDocument();
     expect(within(m2!).getAllByText('Dee Ross').length).toBeGreaterThan(0);
     expect(screen.queryByRole('columnheader', { name: /Judge/ })).not.toBeInTheDocument();
+  });
+
+  it('stacks judge, proposal and result under the phase in medium panes', () => {
+    stubWidth(MATCH_WIDE_FROM - 1);
+    renderList(liveDispute, 'matches');
+    expect(headers()).toEqual(['Match', 'Players', 'Phase', 'Clock', 'Open']);
+    const m2 = within(bodyRows(/^Matches/)[1]!);
+    expect(m2.getByText('Paused')).toBeInTheDocument();
+    expect(m2.getByText('Dispute')).toBeInTheDocument();
+    expect(m2.getByText('by D')).toBeInTheDocument();
+    expect(m2.getByText('C won')).toBeInTheDocument();
+    expect(m2.getByText('by C · rev 1')).toBeInTheDocument();
+    expect(m2.getByText('disputed')).toBeInTheDocument();
+    expect(within(bodyRows(/^Matches/)[0]!).getByText('Ava Chen')).toBeInTheDocument();
+    expect(within(bodyRows(/^Matches/)[0]!).getByText('vs')).toBeInTheDocument();
+  });
+
+  it('keeps match, players, phase and clock in narrow panes, players stacked', () => {
+    stubWidth(MATCH_STACK_PLAYERS_BELOW - 1);
+    renderList(final, 'matches');
+    expect(headers()).toEqual(['Match', 'Players', 'Phase', 'Clock', 'Open']);
+    const [m1, m2] = bodyRows(/^Matches/);
+    expect(within(m1!).queryByText('vs')).not.toBeInTheDocument();
+    expect(within(m1!).getByText('Won by')).toBeInTheDocument();
+    expect(within(m1!).getByText('agreed')).toHaveAttribute('title', 'Agreed by both players, confirmed by B');
+    expect(within(m2!).getByText('admin')).toBeInTheDocument();
+    expect(within(m2!).getByText('22:25')).toBeInTheDocument();
+  });
+
+  it('moves the clock under the match ID in very narrow panes', async () => {
+    stubWidth(MATCH_STACK_CLOCK_BELOW - 1);
+    const user = userEvent.setup();
+    const { onOpenMatch } = renderList(final, 'matches');
+    expect(headers()).toEqual(['Match · clock', 'Players', 'Phase']);
+    const [m1, m2] = bodyRows(/^Matches/);
+    expect(within(m1!).getByText('12:05')).toBeInTheDocument();
+    expect(within(m2!).getAllByRole('img', { name: 'Seat D' })).toHaveLength(2);   // player and winner
+    expect(within(m2!).getAllByText('Dee Ross')).toHaveLength(1);                 // the result names only the seat
+    expect(within(m2!).getByText('admin')).toBeInTheDocument();
+    m2!.focus();
+    await user.keyboard('{Enter}');
+    expect(onOpenMatch).toHaveBeenLastCalledWith('M2');
+  });
+
+  it('marks a table that still scrolls sideways', () => {
+    stubWidth(360);
+    renderList(liveDispute, 'matches');
+    const cue = document.querySelector('.lists-scroll-cue')!;
+    expect(cue).toBeInTheDocument();
+    // jsdom has no layout, so nothing overflows: no edge is faded.
+    expect(cue).not.toHaveAttribute('data-more-end');
   });
 
   it('opens a match on click and with Enter', async () => {
