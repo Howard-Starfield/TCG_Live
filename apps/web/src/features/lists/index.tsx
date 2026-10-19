@@ -3,8 +3,8 @@
 // Needs `AdminDataProvider` above it (audit and runtime status come from `src/data`).
 import type { EventSnapshotDto } from '@tcg-live/core';
 import { History, MessageSquare, Swords, Users } from 'lucide-react';
-import { useId } from 'react';
-import { CountBadge, TabPanel, TabStrip, cx, type TabItem } from '../../ui';
+import { useEffect, useId } from 'react';
+import { CountBadge, TabPanel, TabStrip, cx, tabId, type TabItem } from '../../ui';
 import { AuditTab } from './AuditTab';
 import { MatchesTab } from './MatchesTab';
 import { judgeCount, playerRows } from './model';
@@ -48,8 +48,20 @@ export interface ListTabStripProps {
   className?: string;
 }
 
-/** The four list tabs (arrow keys move and select). Exported so the shell may host it in a header. */
+/**
+ * The four list tabs (arrow keys move and select). Exported so the shell may host it in a header; in a
+ * header narrower than the strip it scrolls sideways (focus scrolls the active tab into view).
+ */
 export function ListTabStrip({ snapshot, tab, onTabChange, idBase, className }: ListTabStripProps) {
+  useEffect(() => {
+    // Keep the selected tab fully visible when the strip scrolls inside a tight header.
+    const node = document.getElementById(tabId(idBase, tab));
+    const strip = node?.parentElement;
+    if (!node || !strip || strip.scrollWidth <= strip.clientWidth) return;
+    const left = node.offsetLeft - strip.offsetLeft;
+    if (left < strip.scrollLeft) strip.scrollLeft = left;
+    else if (left + node.offsetWidth > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = left + node.offsetWidth - strip.clientWidth;
+  }, [idBase, tab]);
   const judges = judgeCount(snapshot);
   const people = playerRows(snapshot).filter(row => row.memberId).length;
   const tabs: Array<TabItem<ListTab>> = LIST_TABS.map(({ value, label }) => {
@@ -67,7 +79,7 @@ export function ListTabStrip({ snapshot, tab, onTabChange, idBase, className }: 
   });
   return (
     <TabStrip<ListTab> label="List views" idBase={idBase} tabs={tabs} value={tab} onChange={onTabChange}
-      className={cx('lists-tabs w-max rounded-[9px] bg-line-faint p-0.5', className)} />
+      className={cx('lists-tabs w-max min-w-0 max-w-full overflow-x-auto rounded-[9px] bg-line-faint p-0.5 [&>[role=tab]]:shrink-0', className)} />
   );
 }
 
