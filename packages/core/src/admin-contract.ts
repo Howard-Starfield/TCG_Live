@@ -123,6 +123,14 @@ export type StreamEventDto =
 
 export type StreamEventType = StreamEventDto['type'];
 
+/**
+ * Encodes one stream event in the pinned wire format: `event:`, an `id:` line only when given
+ * (change events), then single-line JSON `data:`. The server writes these and the web parser reads them.
+ */
+export function formatStreamFrame(event: StreamEventDto, id?: string): string {
+  return `event: ${event.type}\n${id ? `id: ${id}\n` : ''}data: ${JSON.stringify(event)}\n\n`;
+}
+
 /** Stream event IDs are `<bootId>.<eventId>.<version>.<panelRevision>`. */
 export interface StreamCursor { bootId: string; eventId: string; version: number; panelRevision: number }
 

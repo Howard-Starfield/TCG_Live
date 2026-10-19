@@ -740,3 +740,21 @@ The reviewer asked to preserve:
 - string Snowflakes and a server-authoritative clock;
 - Host and Origin allowlists, no CORS, the fragment login token, JSON-only bodies and generic errors;
 - `web:<uuid>` idempotency with preconditions, and `principal_kind = 'web'` needing no migration.
+
+## Wave 1 review follow-ups (19 October 2026)
+
+Fixed on `feat/admin-dashboard`:
+- `hello` reports the status read after the first snapshot read, which can itself change the database state.
+- During a database outage a stream still opens. `hello` carries `database: 'unavailable'` and `activeEventId: null`, and the snapshot follows as a `change` once a retry succeeds, either on a status change or on the 5 s tick.
+- The 5 s tick no longer reads a snapshot. The runtimes' own polls report version changes; the tick re-reads only after a failed read.
+- Unexpected errors still answer a generic 500 and now write one token-free line to stderr (error class, method and path).
+- Health paths are matched case-insensitively and after percent-decoding, so `/LIVEZ` gets the server's 404 rather than the app shell.
+- `admin.close()` drops in-flight API requests, so a slow read cannot hold shutdown past the watchdog.
+- A judge wait caused by an expiry from an ordinary command is dated from the newest match command, not from kickoff.
+- The web stream client's watchdog also bounds the connect.
+- The stream frame encoder now lives in core (`formatStreamFrame`). The server writes with it and the web client tests read its output, so the wire format cannot drift between lanes.
+
+Accepted and carried forward:
+- **Wave 4 docs (README and `.env.example`).** `TCG_ADMIN_CONSOLE` and `TCG_ADMIN_COMMANDS` accept only 0 or 1. Discord mode refuses `TCG_ADMIN_LOGIN_TOKEN` and `TCG_ADMIN_DEV_ORIGIN` even when the console is off, so a leftover demo value stops the bot at startup. This fails closed, deliberately.
+- **Threat model.** Failed logins are limited globally (10 a minute). A local process can therefore keep the console locked; browser pages cannot, because the Origin check comes first.
+- **Wave 3.** If a command can retire the active event with no replacement, the stream must tell clients that `activeEventId` is now null. Today that cannot happen: Discord mode needs the bot's lease, and the demo replaces events atomically.

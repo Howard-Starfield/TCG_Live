@@ -29,9 +29,15 @@ export const MIME_TYPES: Readonly<Record<string, string>> = {
 export const INDEX_CACHE_CONTROL = 'no-cache';
 export const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
-/** True for `/livez`, `/readyz` and every path that merely starts with them; the server owns those. */
+/**
+ * True for `/livez`, `/readyz` and every path that merely starts with them, in any letter case or
+ * percent-encoding, so a misspelled probe gets the server's 404 and never a 200 from the app shell.
+ */
 export function isHealthPath(pathname: string): boolean {
-  return pathname.startsWith('/livez') || pathname.startsWith('/readyz');
+  let path = pathname;
+  try { path = decodeURIComponent(pathname); } catch { /* malformed escapes: compare the raw path */ }
+  path = path.toLowerCase();
+  return path.startsWith('/livez') || path.startsWith('/readyz');
 }
 
 /** URL path segments safe to join under the root, or null for traversal and other malformed paths. */

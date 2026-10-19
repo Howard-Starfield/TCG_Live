@@ -4,7 +4,8 @@ import { ADMIN_API_VERSION, formatStreamId, parseStreamId } from '@tcg-live/core
 import { FIXTURE_BOOT_ID, FIXTURE_EVENT_ID, liveDispute } from '@tcg-live/core/fixtures';
 import { SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from './sessions.js';
 import { MAX_STREAMS } from './stream.js';
-import { SECOND_EVENT_ID } from './test-runtime.js';
+import { AdminUnavailableError } from '../runtime-types.js';
+import { fixtureStatus, SECOND_EVENT_ID, StubRuntime } from './test-runtime.js';
 import { call, delay, login, openStream, startHarness, waitFor, type StreamClient } from './test-support.js';
 
 const sequences = (audit: { sequence: number }[]) => audit.map(entry => entry.sequence);
@@ -171,7 +172,7 @@ test('streams on different cursors share one audit read from the lowest sequence
   }
 });
 
-test('ping comments, heartbeats and the version check run on their intervals', async () => {
+test('ping comments and heartbeats run on their intervals; the tick leaves version checks to the runtime', async () => {
   const harness = await startHarness({}, { timings: { pingMs: 30, heartbeatMs: 45, versionCheckMs: 60 } });
   try {
     const token = await login(harness);
@@ -188,9 +189,14 @@ test('ping comments, heartbeats and the version check run on their intervals', a
         heartbeat = true;
       }
     }
+    // The runtimes poll the store themselves, so a tick must not read the snapshot again.
+    const reads = harness.runtime.reads.snapshot;
     harness.runtime.advance(undefined, false);
-    const safetyNet = await stream.nextEvent('change', 1_000);
-    assert.equal(safetyNet.version, 18, 'the version check catches unnotified changes');
+    await delay(200);
+    assert.equal(harness.runtime.reads.snapshot, reads, 'no snapshot read per tick');
+    assert(stream.pending().every(frame => frame.event !== 'change'));
+    harness.runtime.emit({ type: 'event', eventId: FIXTURE_EVENT_ID });
+    assert.equal((await stream.nextEvent('change', 1_000)).version, 18);
     stream.close();
   } finally {
     await harness.stop();
@@ -213,6 +219,80 @@ test('without an active event, hello says so and no change is sent until one sta
     stream.close();
   } finally {
     await harness.stop();
+  }
+});
+
+test('hello carries the status as it stands after the snapshot read, which can change it', async () => {
+  class RecoveringRuntime extends StubRuntime {
+    override async snapshot(eventId?: string) {
+      const snapshot = await super.snapshot(eventId);
+      this.statusValue = { ...this.statusValue, database: 'ready' };   // as discord-runtime's read() does
+      this.emit({ type: 'status' });
+      return snapshot;
+    }
+  }
+  const runtime = new RecoveringRuntime();
+  runtime.statusValue = fixtureStatus({ database: 'unavailable' });
+  const harness = await startHarness({}, { timings: { coalesceMs: 10 } }, runtime);
+  try {
+    const token = await login(harness);
+    const stream = await openStream(harness.port, token);
+    const hello = await stream.nextEvent('hello');
+    assert.equal(hello.status.database, 'ready');
+    stream.close();
+  } finally {
+    await harness.stop();
+  }
+});
+
+test('during a database outage the stream still opens, then sends the snapshot once a retry succeeds', async () => {
+  for (const recovery of ['status change', 'tick'] as const) {
+    const harness = await startHarness({}, { timings: { coalesceMs: 10, versionCheckMs: recovery === 'tick' ? 50 : 60_000 } });
+    try {
+      const runtime = harness.runtime;
+      runtime.statusValue = fixtureStatus({ database: 'unavailable' });
+      runtime.failure = new AdminUnavailableError('down');
+      const token = await login(harness);
+      const stream = await openStream(harness.port, token);
+      assert.equal(stream.status, 200, recovery);
+      const hello = await stream.nextEvent('hello');
+      assert.equal(hello.status.database, 'unavailable');
+      assert.equal(hello.activeEventId, null);
+      await delay(30);
+      assert(stream.pending().every(frame => frame.event !== 'change'), 'no change while the store is down');
+
+      runtime.failure = null;
+      runtime.statusValue = fixtureStatus({ database: 'ready' });
+      if (recovery === 'status change') {
+        runtime.emit({ type: 'status' });
+        assert.equal((await stream.nextEvent('status', 1_000)).status.database, 'ready');
+      }
+      const change = await stream.nextEvent('change', 1_000);
+      assert.equal(change.eventId, FIXTURE_EVENT_ID, recovery);
+      assert.deepEqual(sequences(change.audit), range(1, 17), recovery);
+      stream.close();
+    } finally {
+      await harness.stop();
+    }
+  }
+});
+
+test('close() drops in-flight API requests so a slow read cannot hold shutdown open', async () => {
+  const harness = await startHarness();
+  let stopped = false;
+  try {
+    const token = await login(harness);
+    harness.runtime.gate = new Promise(() => {});   // the snapshot read never finishes
+    const pending = call(harness.port, `/api/v1/events/${FIXTURE_EVENT_ID}/snapshot`, { token })
+      .then(() => 'answered', () => 'dropped');
+    await waitFor(() => harness.runtime.reads.snapshot > 0, 'snapshot read started');
+    const started = Date.now();
+    await harness.stop();
+    stopped = true;
+    assert(Date.now() - started < 2_000, 'stopped well inside the 5 s watchdog');
+    assert.equal(await pending, 'dropped');
+  } finally {
+    if (!stopped) await harness.stop();
   }
 });
 

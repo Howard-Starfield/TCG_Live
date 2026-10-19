@@ -143,6 +143,26 @@ describe('StreamClient', () => {
     client.stop();
   });
 
+  it('the watchdog also bounds the connect: a stream whose headers never arrive is retried', async () => {
+    const { server, client } = setup();
+    let aborted = false;
+    server.once('GET /stream', call => new Promise<Response>((_, reject) => {
+      call.signal?.addEventListener('abort', () => {
+        aborted = true;
+        reject(new DOMException('Aborted', 'AbortError'));
+      });
+    }));
+    client.start();
+    await settle();
+    expect(client.getSnapshot().state).toBe('connecting');
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(aborted).toBe(true);
+    expect(client.getSnapshot().state).toBe('reconnecting');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(server.callsTo('GET /stream')).toHaveLength(2);
+    client.stop();
+  });
+
   it('backs off exponentially with jitter up to the cap, honoring Retry-After on 429', async () => {
     expect([0, 1, 2, 3, 4, 5, 6, 10].map(attempt => backoffDelay(attempt, () => 0))).toEqual(
       [500, 1000, 2000, 4000, 8000, 15000, 15000, 15000]);

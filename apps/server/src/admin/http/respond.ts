@@ -53,12 +53,21 @@ export function toHttpError(error: unknown): HttpError {
   if (error instanceof HttpError) return error;
   if (error instanceof AdminNotFoundError) return new HttpError(404, 'not_found', 'Not found.');
   if (error instanceof AdminUnavailableError) return new HttpError(503, 'unavailable', 'The event store is unavailable.');
-  // The contract has no internal-error code; the message stays generic.
+  // The message stays generic; fail() logs the error class when given a location.
   return new HttpError(500, 'internal', 'Internal error.');
 }
 
+/** Writes a fixed, token-free line for errors the console did not expect, so operators can debug a 500. */
+export function logUnexpected(error: unknown, where: string): void {
+  if (error instanceof HttpError || error instanceof AdminNotFoundError || error instanceof AdminUnavailableError) return;
+  const kind = error instanceof Error ? error.constructor.name : typeof error;
+  const place = where.replace(/[^\x20-\x7e]/g, '?').slice(0, 120);
+  try { process.stderr.write(`Admin console: internal error (${kind}) in ${place}\n`); } catch { /* best effort */ }
+}
+
 /** Answers with a mapped error, or drops the connection when a response is already under way. Never throws. */
-export function fail(response: ServerResponse, error: unknown): void {
+export function fail(response: ServerResponse, error: unknown, where?: string): void {
+  if (where !== undefined) logUnexpected(error, where);
   try {
     if (response.headersSent) {
       if (!response.writableEnded) response.destroy();

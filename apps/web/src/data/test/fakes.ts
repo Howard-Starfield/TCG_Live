@@ -1,5 +1,5 @@
 // Test doubles for the data layer: a scripted fetch, pushable SSE response bodies, frames, storage.
-import { formatStreamId, type AuditEntryDto, type EventSnapshotDto, type RuntimeStatusDto,
+import { formatStreamFrame, formatStreamId, type AuditEntryDto, type EventSnapshotDto, type RuntimeStatusDto,
   type StreamEventDto } from '@tcg-live/core';
 import { FIXTURE_BOOT_ID, FIXTURE_NOW_MS } from '@tcg-live/core/fixtures';
 import type { FetchLike } from '../client';
@@ -96,10 +96,8 @@ export function noContent(): Response {
   return new Response(null, { status: 204 });
 }
 
-/** Serializes a stream event as the server does. */
-export function frame(event: StreamEventDto, id?: string): string {
-  return `event: ${event.type}\n${id ? `id: ${id}\n` : ''}data: ${JSON.stringify(event)}\n\n`;
-}
+/** The server's own encoder, so client tests read exactly the wire format the server writes. */
+export const frame = formatStreamFrame;
 
 export function status(overrides: Partial<RuntimeStatusDto> = {}): RuntimeStatusDto {
   return {

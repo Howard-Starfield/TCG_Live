@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { ADMIN_API_VERSION, AUDIT_PAGE_LIMIT, formatStreamId, parseStreamId, STREAM_RESUME_AUDIT_LIMIT,
+import { ADMIN_API_VERSION, AUDIT_PAGE_LIMIT, formatStreamFrame, formatStreamId, parseStreamId, STREAM_RESUME_AUDIT_LIMIT,
   type AuditEntryDto, type EventSnapshotDto, type RuntimeStatusDto, type StreamCursor,
   type StreamEventDto } from '@tcg-live/core';
-import { AdminNotFoundError, type AdminRuntime, type AdminRuntimeChange } from '../runtime-types.js';
+import { AdminNotFoundError, AdminUnavailableError, type AdminRuntime, type AdminRuntimeChange } from '../runtime-types.js';
 import { HttpError, SECURITY_HEADERS, unavailable } from './respond.js';
 import type { Session, SessionStore } from './sessions.js';
 
@@ -40,9 +40,7 @@ interface Connection {
   panelRevision: number;
 }
 
-export function frame(event: StreamEventDto, id?: string): string {
-  return `event: ${event.type}\n${id ? `id: ${id}\n` : ''}data: ${JSON.stringify(event)}\n\n`;
-}
+export const frame: (event: StreamEventDto, id?: string) => string = formatStreamFrame;
 
 const statusKey = (status: RuntimeStatusDto) => JSON.stringify({ ...status, serverTimeMs: 0 });
 const auditFloor = (snapshot: EventSnapshotDto) => Math.max(0, snapshot.version - STREAM_RESUME_AUDIT_LIMIT);
@@ -70,6 +68,8 @@ export class StreamManager {
   private flushing = false;
   private flushAgain = false;
   private changes = 0;
+  /** A snapshot read failed with the store unavailable; ticks and status changes retry it. */
+  private retryPending = false;
   private lastStatus = '';
   private closed = false;
   private drained: (() => void) | null = null;
@@ -102,11 +102,24 @@ export class StreamManager {
     this.start();
     try {
       const marker = this.changes;
+      const bootId = this.runtime.status().bootId;
+      let snapshot: EventSnapshotDto | null = null;
+      let audit: AuditEntryDto[] = [];
+      try {
+        snapshot = await this.activeSnapshot();
+        const cursor = parseStreamId(firstHeader(request.headers['last-event-id']));
+        const seen = cursor && cursor.bootId === bootId ? cursor : null;
+        if (snapshot) audit = await this.readAudit(snapshot, resumeAfter(seen, snapshot));
+      } catch (error) {
+        // During an outage the stream still opens, so the client learns the database state from
+        // hello; the snapshot follows as a change once a retry succeeds.
+        if (!(error instanceof AdminUnavailableError)) throw error;
+        snapshot = null;
+        audit = [];
+        this.retryPending = true;
+      }
+      // Read after the snapshot: the read itself can change the status (database ready or unavailable).
       const status = this.runtime.status();
-      const snapshot = await this.activeSnapshot();
-      const cursor = parseStreamId(firstHeader(request.headers['last-event-id']));
-      const seen = cursor && cursor.bootId === status.bootId ? cursor : null;
-      const audit = snapshot ? await this.readAudit(snapshot, resumeAfter(seen, snapshot)) : [];
       if (this.closed) throw unavailable();
       if (connection.ended || !this.sessions.isLive(session)) throw new HttpError(401, 'unauthenticated', 'Sign in again.');
       if (response.destroyed) return;
@@ -166,10 +179,12 @@ export class StreamManager {
     };
     every(this.timings.pingMs, () => this.broadcast(': ping\n\n'));
     every(this.timings.heartbeatMs, () => this.broadcast(frame({ type: 'heartbeat', serverTimeMs: this.now() })));
+    // The runtime reports version changes itself (its own poll included), so the tick reads a
+    // snapshot again only after a failed read.
     every(this.timings.versionCheckMs, () => {
       this.sessions.sweep();
       this.checkStatus();
-      this.scheduleFlush();
+      if (this.retryPending) this.scheduleFlush();
     });
   }
 
@@ -181,6 +196,7 @@ export class StreamManager {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = null;
     this.flushAgain = false;
+    this.retryPending = false;
     try { unsubscribe?.(); } catch { /* the runtime owns its own cleanup */ }
   }
 
@@ -188,8 +204,10 @@ export class StreamManager {
     if (this.closed || !this.unsubscribe) return;
     this.changes += 1;
     try {
-      if (change.type === 'status') this.checkStatus();
-      else this.scheduleFlush();
+      if (change.type === 'status') {
+        this.checkStatus();
+        if (this.retryPending) this.scheduleFlush();
+      } else this.scheduleFlush();
     } catch {
       this.scheduleFlush();
     }
@@ -219,8 +237,9 @@ export class StreamManager {
     this.flushing = true;
     try {
       await this.flushOnce();
+      this.retryPending = false;
     } catch {
-      // The next notification or version check retries.
+      this.retryPending = true;   // the next tick or status change retries
     } finally {
       this.flushing = false;
       if (this.flushAgain) {

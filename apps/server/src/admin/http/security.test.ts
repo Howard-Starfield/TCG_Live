@@ -227,7 +227,8 @@ test('static files: MIME types, cache rules, SPA fallback, HEAD, and non-GET fal
     assert.equal(post.status, 404);
     assert.deepEqual(post.json(), { status: 'not_found' });
 
-    for (const variant of ['/livez/', '/readyz?x=1', '/livez/index.html', '/readyz/']) {
+    // Case and percent-encoding variants must not reach the app shell's 200 fallback either.
+    for (const variant of ['/livez/', '/readyz?x=1', '/livez/index.html', '/readyz/', '/LIVEZ', '/Readyz/x', '/%6civez']) {
       const reply = await call(harness.port, variant);
       assert.equal(reply.status, 404, variant);
       assert.deepEqual(reply.json(), { status: 'not_found' }, variant);
@@ -269,5 +270,29 @@ test('without a web build, non-API paths fall through to the server 404', async 
     } finally {
       await harness.stop();
     }
+  }
+});
+
+test('unexpected errors answer a generic 500 and log one token-free line', async () => {
+  const harness = await startHarness();
+  const original = process.stderr.write;
+  const written: string[] = [];
+  try {
+    const token = await login(harness);
+    harness.runtime.failure = new TypeError('detail that must not leak');
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    const reply = await call(harness.port, '/api/v1/events', { token });
+    process.stderr.write = original;
+    assert.equal(reply.status, 500);
+    assert.deepEqual(reply.json(), { error: { code: 'internal', message: 'Internal error.' } });
+    assert.deepEqual(written.filter(line => line.startsWith('Admin console:')),
+      ['Admin console: internal error (TypeError) in GET /api/v1/events\n']);
+    assert(!written.join('').includes(token) && !written.join('').includes('must not leak'));
+  } finally {
+    process.stderr.write = original;
+    await harness.stop();
   }
 });

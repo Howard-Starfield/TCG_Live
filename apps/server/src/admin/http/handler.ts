@@ -71,6 +71,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
   const statics = createStaticFiles(options.webDist);
   let closed = false;
   let closing: Promise<void> | null = null;
+  /** API requests still being answered; close() drops them so a slow read cannot hold shutdown open. */
+  const inFlight = new Set<ServerResponse>();
 
   const sessions: SessionStore = new SessionStore({
     port, now, fixedLoginToken: options.mode === 'demo' ? options.fixedLoginToken : null,
@@ -194,7 +196,11 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
           fail(response, new HttpError(403, 'bad_origin', 'Unexpected Origin header.'));
           return true;
         }
-        dispatch(request, response, pathname, queryAt === -1 ? '' : raw.slice(queryAt + 1)).catch(error => fail(response, error));
+        inFlight.add(response);
+        response.on('close', () => inFlight.delete(response));
+        dispatch(request, response, pathname, queryAt === -1 ? '' : raw.slice(queryAt + 1))
+          .catch(error => fail(response, error, `${method} ${pathname}`))
+          .finally(() => inFlight.delete(response));
         return true;
       } catch (error) {
         fail(response, error);
@@ -208,7 +214,10 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
 
     close() {
       closed = true;
-      closing ??= streams.close().catch(() => {});
+      closing ??= streams.close().catch(() => {}).then(() => {
+        for (const response of inFlight) if (!response.writableEnded) response.destroy();
+        inFlight.clear();
+      });
       return closing;
     }
   };

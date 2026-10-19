@@ -156,7 +156,12 @@ export function deriveJudge(match: MatchState, audit: readonly AuditEntryDto[], 
     if (entry.actor.kind === 'player' && reason !== 'expired' && !raisedBy.includes(entry.actor.seat)) raisedBy.push(entry.actor.seat);
   }
   // Any command on a running match can materialize an expiry (domain.ts:117-131); the phase records it.
-  if (match.phase === 'expired') reasons.add('expired');
+  if (match.phase === 'expired') {
+    reasons.add('expired');
+    // The audit does not record which command tripped the expiry; the newest match command is the
+    // closest bound (usually exact), where the oldest would date the wait from kickoff.
+    sinceMs ??= since.at(-1)?.occurredAtMs ?? null;
+  }
   sinceMs ??= since[0]?.occurredAtMs ?? entries.at(-1)?.occurredAtMs ?? fallbackMs;
   const order: JudgeReason[] = ['dispute', 'called', 'expired'];
   return { reasons: order.filter(reason => reasons.has(reason)), sinceMs, raisedBy };

@@ -183,6 +183,15 @@ test('judge: called, then judge-resume (attention stays), then expiry adds a rea
   assert.equal(snapshotOf(r).matches[0]!.judge, null);
 });
 
+test('an expiry tripped by an ordinary command dates the wait from that command, not from kickoff', () => {
+  const r = Replay.legacy(30_000).published()
+    .run('player:C', { type: 'ready', matchId: 'M2' }).run('player:D', { type: 'ready', matchId: 'M2' })
+    .after(40_000, 'player:C', { type: 'propose', matchId: 'M2', winner: 'C', expectedRevision: 0 });
+  const m2 = snapshotOf(r).matches[1]!;
+  assert.equal(m2.phase, 'expired');
+  assert.deepEqual(m2.judge, { reasons: ['expired'], sinceMs: r.now, raisedBy: [] });
+});
+
 test('judge falls back to the match audit or event creation when no raising entry is visible', () => {
   const r = Replay.legacy().published();
   const match = { ...r.state.matches[0], judgeAttention: true, phase: 'paused' as const };

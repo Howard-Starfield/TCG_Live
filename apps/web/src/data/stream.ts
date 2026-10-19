@@ -260,6 +260,9 @@ export class StreamClient {
   private async run(generation: number, controller: AbortController): Promise<void> {
     const current = () => generation === this.generation && this.running;
     try {
+      // Also a connect timeout: the server sends no headers until its first snapshot read, and a
+      // half-open socket (sleep or wake) would otherwise hang here with no reconnect.
+      this.armWatchdog(generation);
       const response = await this.options.api.openStream({ lastEventId: this.snapshot.lastEventId, signal: controller.signal });
       if (!current()) {
         await response.body?.cancel().catch(() => undefined);
