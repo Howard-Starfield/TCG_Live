@@ -323,9 +323,13 @@ export class StreamClient {
         if (this.buildMismatch(event)) return;
         const bootChanged = this.snapshot.bootId !== null && this.snapshot.bootId !== event.bootId;
         if (bootChanged) this.cursor = null;
+        // During a database outage the server cannot read the active event and reports none. Keep
+        // the one we already know (same boot), so the console keeps showing its last state.
+        const activeEventId = event.activeEventId === null && event.status.database === 'unavailable' && !bootChanged
+          ? this.snapshot.activeEventId : event.activeEventId;
         this.update({
           state: 'live', helloReceived: true, attempt: 0, lastError: null, retryAtMs: null,
-          bootId: event.bootId, buildId: event.buildId, activeEventId: event.activeEventId,
+          bootId: event.bootId, buildId: event.buildId, activeEventId,
           ...(bootChanged ? { lastEventId: null } : {})
         });
         this.options.onEvent(event, { auditMode: 'replace', bootChanged, receivedAtMs });

@@ -49,6 +49,27 @@ function summaryFrom(snapshot: EventSnapshotDto): EventSummaryDto {
     createdAtMs: snapshot.createdAtMs, retiredAtMs: snapshot.retiredAtMs, version: snapshot.version };
 }
 
+/** How long an unobserved snapshot or audit log of a non-active event stays cached. */
+export const INACTIVE_EVENT_GC_MS = 5 * 60_000;
+
+/**
+ * A new event became active: the stream no longer updates the previous one, whose cached snapshot
+ * still says `active`. Observed queries refetch (they are retired now); unobserved ones are dropped,
+ * so they neither show stale state later nor stay cached forever.
+ */
+function releasePreviousActive(queryClient: QueryClient, activeEventId: string): void {
+  const cache = queryClient.getQueryCache();
+  for (const [key, snapshot] of queryClient.getQueriesData<EventSnapshotDto>({ queryKey: adminKeys.snapshots() })) {
+    if (!snapshot || snapshot.status !== 'active' || snapshot.eventId === activeEventId) continue;
+    for (const queryKey of [key, adminKeys.audit(snapshot.eventId)]) {
+      const query = cache.find({ queryKey, exact: true });
+      if (!query) continue;
+      if (query.getObserversCount() > 0) void queryClient.invalidateQueries({ queryKey, exact: true });
+      else queryClient.removeQueries({ queryKey, exact: true });
+    }
+  }
+}
+
 /** Applies one stream event to the query cache and the server clock. */
 export function applyStreamEvent(queryClient: QueryClient, clock: ServerClock, event: StreamEventDto,
   info: StreamEventInfo): void {
@@ -66,6 +87,7 @@ export function applyStreamEvent(queryClient: QueryClient, clock: ServerClock, e
       return;
     }
     case 'change': {
+      if (event.snapshot.status === 'active') releasePreviousActive(queryClient, event.eventId);
       queryClient.setQueryData<EventSnapshotDto>(adminKeys.snapshot(event.eventId), event.snapshot);
       queryClient.setQueryData<AuditLog>(adminKeys.audit(event.eventId),
         log => applyStreamAudit(log, event.audit, info.auditMode));

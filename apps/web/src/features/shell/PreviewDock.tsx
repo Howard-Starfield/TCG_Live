@@ -176,8 +176,8 @@ function DockPanes() {
   return live ? <LivePane /> : list ? <ListPane /> : null;
 }
 
-function PaneFrame({ children }: { children: ReactNode }) {
-  return <div className="shell-pane">{children}</div>;
+function PaneFrame({ pane, children }: { pane: 'live' | 'list'; children: ReactNode }) {
+  return <div className="shell-pane" data-pane={pane}>{children}</div>;
 }
 
 function PaneBody({ children, testId, plain = false }: { children: ReactNode; testId?: string; plain?: boolean }) {
@@ -206,7 +206,7 @@ function LivePane() {
   const clock = useServerClock();
   const { snapshot } = shell.viewed;
   return (
-    <PaneFrame>
+    <PaneFrame pane="live">
       <PaneHeader title="Live preview" icon={<Workflow />} onClose={() => shell.dock.close('live')} />
       <PaneBody testId="live-pane">
         {snapshot
@@ -225,7 +225,7 @@ function ListPane() {
   const { snapshot } = shell.viewed;
   const onTabChange = (listTab: ListTab) => update({ listTab });
   return (
-    <PaneFrame>
+    <PaneFrame pane="list">
       <PaneHeader title="List preview" icon={<Table2 />} onClose={() => shell.dock.close('list')} className="shell-list-head">
         {snapshot && (
           <ScrollFade axis="horizontal" fade={16} className="shell-pane-tabs">

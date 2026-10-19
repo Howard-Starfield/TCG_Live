@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { createAdminData, type AdminData } from './admin-data';
 import { applyStreamAudit, type AuditLog } from './audit-log';
-import { adminKeys, applyStreamEvent, createAdminQueryClient } from './cache';
+import { adminKeys, applyStreamEvent, createAdminQueryClient, INACTIVE_EVENT_GC_MS } from './cache';
 import { ServerClock } from './clock';
 import { useActiveSnapshot, useAudit, useEvents, useEventSnapshot, useRuntimeStatus, useStreamConnection } from './hooks';
 import { AdminDataProvider } from './provider';
@@ -182,5 +182,42 @@ describe('query hooks', () => {
     const { result } = renderHook(() => useActiveSnapshot(), { wrapper });
     await waitFor(() => expect(result.current.status).toBe('ready'));
     expect(result.current.eventId).toBe(liveDispute.eventId);
+  });
+});
+
+describe('caches of events that are no longer active (Wave 2 review)', () => {
+  it('drops the previous active event when a new one takes over, so it is re-read as retired', () => {
+    const queryClient = createAdminQueryClient();
+    const clock = new ServerClock();
+    applyStreamEvent(queryClient, clock, change(liveDispute, auditTimeline).event, info);
+    expect(queryClient.getQueryData(adminKeys.snapshot(liveDispute.eventId))).toBeDefined();
+    const next = { ...liveDispute, eventId: 'event-2', version: 1 };
+    applyStreamEvent(queryClient, clock, change(next, []).event, info);
+    // Unobserved: removed (no stale "active" copy, no unbounded growth).
+    expect(queryClient.getQueryData(adminKeys.snapshot(liveDispute.eventId))).toBeUndefined();
+    expect(queryClient.getQueryData(adminKeys.audit(liveDispute.eventId))).toBeUndefined();
+    expect(queryClient.getQueryData(adminKeys.snapshot('event-2'))).toBeDefined();
+  });
+
+  it('refetches the previous active event when someone is looking at it', async () => {
+    const { bodies, wrapper, server } = harness();
+    const retiredCopy = { ...liveDispute, status: 'retired' as const, retiredAtMs: FIXTURE_NOW_MS, version: 18 };
+    const { result } = renderHook(() => useEventSnapshot(liveDispute.eventId), { wrapper });
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const first = change(liveDispute, []);
+    await act(async () => { bodies[0]!.push(frame(hello({ activeEventId: liveDispute.eventId })) + frame(first.event, first.id)); });
+    await waitFor(() => expect(result.current.data?.status).toBe('active'));
+    server.always(`GET /events/${liveDispute.eventId}/snapshot`, () => json(200, retiredCopy));
+    const next = change({ ...liveDispute, eventId: 'event-2', version: 1 }, []);
+    await act(async () => { bodies[0]!.push(frame(next.event, next.id)); });
+    await waitFor(() => expect(result.current.data?.status).toBe('retired'));
+  });
+
+  it('gives non-active events a finite gcTime', async () => {
+    const { data, wrapper } = harness();
+    const { result } = renderHook(() => useEventSnapshot('retired-1'), { wrapper });
+    await waitFor(() => expect(result.current.data?.status).toBe('retired'));
+    const query = data.queryClient.getQueryCache().find({ queryKey: adminKeys.snapshot('retired-1'), exact: true });
+    expect(query?.gcTime).toBe(INACTIVE_EVENT_GC_MS);
   });
 });

@@ -1,6 +1,6 @@
 import { CircleAlert, KeyRound, LoaderCircle, LogIn, Terminal } from 'lucide-react';
-import { useEffect, useState, type FormEvent } from 'react';
-import { launchTokenFromInput, useSession, type ApiError, type SignedOutReason } from '../../data';
+import { useState, type FormEvent } from 'react';
+import { checkConsoleLink, useSession, type ApiError, type SignedOutReason } from '../../data';
 import { Button, Field, Input } from '../../ui';
 import { BrandMark } from './BrandMark';
 
@@ -36,22 +36,6 @@ export function LoginScreen() {
   const [submitted, setSubmitted] = useState(false);
   const { state } = session;
   const pending = state.status === 'signing-in';
-  const { login } = session;
-
-  // Opening the console link in this tab again only changes the fragment (no reload): sign in from it.
-  useEffect(() => {
-    const onHashChange = () => {
-      const hash = window.location.hash;
-      if (!/[#&]login=/.test(hash)) return;
-      window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`);
-      const token = launchTokenFromInput(hash);
-      if (!token) return;
-      setSubmitted(false);
-      void login(token);
-    };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, [login]);
 
   // Fragment logins and stored-token checks sign in without the form: show a quiet splash.
   if (pending && !submitted) {
@@ -69,8 +53,9 @@ export function LoginScreen() {
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
-    if (!launchTokenFromInput(value)) {
-      setFieldError('Paste the full console link (it contains #login=) or the token after it.');
+    const check = checkConsoleLink(value, window.location.origin);
+    if (!check.ok) {
+      setFieldError(check.message);
       return;
     }
     setFieldError(null);

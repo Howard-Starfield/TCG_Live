@@ -4,7 +4,7 @@ import { AUDIT_PAGE_LIMIT, type AuditEntryDto, type Capability, type EventSnapsh
 import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useAdminData, type AdminData } from './admin-data';
 import { auditHasOlder, mergeAuditEntries, olderPageQuery, type AuditLog } from './audit-log';
-import { adminKeys, isSnapshotNewer } from './cache';
+import { adminKeys, INACTIVE_EVENT_GC_MS, isSnapshotNewer } from './cache';
 import { ApiError } from './errors';
 import type { SessionState } from './session';
 import type { StreamConnection } from './stream';
@@ -103,8 +103,12 @@ export function useEventSnapshot(eventId: string | null | undefined): UseQueryRe
   const data = useAdminData();
   const signedIn = useSignedIn(data);
   const id = eventId ?? '';
+  const activeId = useSyncExternalStore(data.stream.subscribe, () => data.stream.getSnapshot().activeEventId,
+    () => data.stream.getSnapshot().activeEventId);
   return useQuery({
     queryKey: adminKeys.snapshot(id),
+    // The stream keeps the active event's cache current; other events are re-read when needed.
+    gcTime: eventId && eventId === activeId ? Infinity : INACTIVE_EVENT_GC_MS,
     queryFn: async ({ signal }) => {
       const fetched = await data.api.getSnapshot(id, signal);
       const cached = data.queryClient.getQueryData<EventSnapshotDto>(adminKeys.snapshot(id));
@@ -195,6 +199,7 @@ export function useAudit(eventId: string | null | undefined, pageSize: number = 
   const id = eventId ?? '';
   const query = useQuery({
     queryKey: adminKeys.audit(id),
+    gcTime: eventId && eventId === connection.activeEventId ? Infinity : INACTIVE_EVENT_GC_MS,
     queryFn: ({ signal }) => loadAuditHead(data, id, signal),
     enabled: signedIn && !!eventId
   });

@@ -14,6 +14,8 @@ export interface BannerSpec {
   icon: ReactNode;
   title: string;
   body?: string;
+  /** Changing detail (a countdown): shown, but kept out of the live region so it is not re-announced. */
+  ticker?: string;
   action?: { label: string; onClick: () => void };
 }
 
@@ -34,7 +36,8 @@ export function Banners() {
     const retryIn = connection.retryAtMs ? Math.max(0, Math.ceil((connection.retryAtMs - Date.now()) / 1000)) : null;
     banners.push({ id: 'reconnecting', tone: 'warning', icon: <LoaderCircle className="animate-spin" />,
       title: 'Reconnecting to the live stream…',
-      body: `${retryIn ? `Next attempt in ${retryIn}s. ` : ''}The console shows the last state it received.`,
+      body: 'The console shows the last state it received.',
+      ...(retryIn ? { ticker: `Next attempt in ${retryIn}s.` } : {}),
       action: { label: 'Retry now', onClick: connection.reconnect } });
   }
   if (status?.lease === 'lost') {
@@ -79,12 +82,14 @@ export function Banners() {
 
 function Banner({ banner }: { banner: BannerSpec }) {
   return (
-    <div role={banner.tone === 'danger' ? 'alert' : 'status'} data-banner={banner.id} data-tone={banner.tone}
-      className={cx('shell-banner', `is-${banner.tone}`)}>
+    <div data-banner={banner.id} data-tone={banner.tone} className={cx('shell-banner', `is-${banner.tone}`)}>
       <span aria-hidden className="shell-banner-icon">{banner.icon}</span>
       <p className="min-w-0 flex-1">
-        <span className="font-semibold text-fg">{banner.title}</span>
-        {banner.body && <span className="text-fg-muted"> {banner.body}</span>}
+        <span role={banner.tone === 'danger' ? 'alert' : 'status'} data-banner-message="">
+          <span className="font-semibold text-fg">{banner.title}</span>
+          {banner.body && <span className="text-fg-muted"> {banner.body}</span>}
+        </span>
+        {banner.ticker && <span aria-hidden className="text-fg-muted tabular-nums" data-banner-ticker=""> {banner.ticker}</span>}
       </p>
       {banner.action && <Button size="sm" variant="ghost" onClick={banner.action.onClick}>{banner.action.label}</Button>}
     </div>

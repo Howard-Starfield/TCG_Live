@@ -108,7 +108,7 @@ function FilterBar({ filters, onChange, types, shown, loaded }: {
           {filters.type !== 'all' && !types.includes(filters.type) && <option value={filters.type}>{filters.type}</option>}
         </Select>
       </span>
-      <span className="ml-auto flex items-center gap-1.5 text-2xs text-fg-subtle tabular-nums" aria-live="polite">
+      <span className="ml-auto flex items-center gap-1.5 text-2xs text-fg-subtle tabular-nums" aria-live={active ? 'polite' : 'off'}>
         {active ? `${shown} of ${loaded}` : `${loaded} loaded`}
         {active && <Button size="sm" variant="ghost" className="h-6 px-2" onClick={() => onChange(EMPTY_AUDIT_FILTERS)}>Clear</Button>}
       </span>

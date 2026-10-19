@@ -20,8 +20,8 @@ export type { ApiErrorCode } from './errors';
 export { useSession } from './hooks';
 export type { SessionApi } from './hooks';
 /** Session controller, fragment-login helpers and the sessionStorage token key. */
-export { SessionController, SESSION_TOKEN_KEY, consumeLoginFragment, launchTokenFromInput } from './session';
-export type { SessionState, SignedOutReason } from './session';
+export { SessionController, SESSION_TOKEN_KEY, consumeLoginFragment, launchTokenFromInput, checkConsoleLink } from './session';
+export type { SessionState, SignedOutReason, ConsoleLinkCheck } from './session';
 
 // Stream
 /** Live stream connection: state (`connecting|live|reconnecting|offline|signed-out`), active event, reconnect(). */

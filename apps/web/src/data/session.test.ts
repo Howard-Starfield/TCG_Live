@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createAdminData } from './admin-data';
 import { createApiClient } from './client';
 import { ApiError } from './errors';
-import { consumeLoginFragment, launchTokenFromInput, SESSION_TOKEN_KEY, SessionController } from './session';
+import { checkConsoleLink, consumeLoginFragment, launchTokenFromInput, SESSION_TOKEN_KEY, SessionController } from './session';
 import { createMemoryStorage } from './storage';
 import { FakeServer, flush, json, noContent } from './test/fakes';
 
@@ -205,5 +205,27 @@ describe('session lifecycle', () => {
       storage, location: null, history: null });
     session.handleUnauthorized('old');
     expect(storage.getItem(SESSION_TOKEN_KEY)).toBe('new');
+  });
+});
+
+describe('pasted console links (Wave 2 review)', () => {
+  it('refuses a link printed for another origin and names it', () => {
+    const result = checkConsoleLink('http://127.0.0.1:3000/#login=abc', 'http://127.0.0.1:4410');
+    expect(result).toEqual({ ok: false, message: expect.stringContaining('belongs to the console at http://127.0.0.1:3000') });
+    expect(checkConsoleLink('http://127.0.0.1:4410/#login=abc', 'http://127.0.0.1:4410')).toEqual({ ok: true, token: 'abc' });
+    expect(checkConsoleLink('abc-token', 'http://127.0.0.1:4410')).toEqual({ ok: true, token: 'abc-token' });
+    expect(checkConsoleLink('   ', null).ok).toBe(false);
+  });
+
+  it('login() never posts a token from another origin', async () => {
+    const server = new FakeServer();
+    const api = createApiClient({ fetch: server.fetch, getToken: () => null });
+    const location = { hash: '', pathname: '/', search: '', origin: 'http://127.0.0.1:4410' };
+    const controller = new SessionController({ api, storage: createMemoryStorage(), location, history: null });
+    await controller.login('http://localhost:5173/#login=foreign');
+    expect(server.calls).toHaveLength(0);
+    const state = controller.getState();
+    expect(state.status).toBe('error');
+    expect(state.status === 'error' && state.error.message).toContain('http://localhost:5173');
   });
 });

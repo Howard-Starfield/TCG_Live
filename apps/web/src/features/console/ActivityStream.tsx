@@ -4,7 +4,7 @@ import {
   ShieldCheck, ThumbsUp, Timer, TriangleAlert, Trophy, UserCheck, UserMinus, UserPlus, UserX
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { formatAuditEntry, formatTimeOfDay, useAudit, type AuditIconKey, type AuditTone, type FormattedAuditEntry } from '../../data';
 import { Avatar, Badge, Button, ScrollFade, StatusDot, Tooltip, cx, mergeRefs, springs, useSafeTransition, useScrollPin } from '../../ui';
 
@@ -73,24 +73,6 @@ export function ActivityStream({ eventId, snapshot }: { eventId: string; snapsho
   const restore = useRef<number | null>(null);
   const transition = useSafeTransition(springs.listItem);
 
-  // Layout changes (dock opening, window resizing) reflow the feed; a pinned view stays at the bottom.
-  const feed = useRef<HTMLOListElement | null>(null);
-  const pinnedRef = useRef(pin.pinned);
-  pinnedRef.current = pin.pinned;
-  const { jumpToLatest } = pin;
-  useEffect(() => {
-    const el = node.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    let frame = 0;
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => { if (pinnedRef.current) jumpToLatest('auto'); });
-    });
-    observer.observe(el);
-    if (feed.current) observer.observe(feed.current);
-    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [jumpToLatest]);
-
   // Keep the view still when older entries are prepended above it.
   useLayoutEffect(() => {
     const el = node.current;
@@ -98,6 +80,15 @@ export function ActivityStream({ eventId, snapshot }: { eventId: string; snapsho
     el.scrollTop += el.scrollHeight - restore.current;
     restore.current = null;
   }, [firstSequence]);
+
+  // role=log is a polite live region. Announce only entries that arrive after the first fill, and
+  // stay quiet while older pages are prepended (event switches remount this component).
+  const [announce, setAnnounce] = useState(false);
+  const filled = !audit.isLoading;
+  useEffect(() => {
+    if (filled && !announce) setAnnounce(true);
+  }, [filled, announce]);
+  const prepending = audit.isFetchingOlder || audit.isFetchingMore;
 
   const loadOlder = () => {
     if (node.current) restore.current = node.current.scrollHeight;
@@ -119,8 +110,8 @@ export function ActivityStream({ eventId, snapshot }: { eventId: string; snapsho
       </header>
 
       <div className="relative min-h-0 flex-1">
-        <ScrollFade ref={setRef} fade={20} className="console-activity-scroll" role="log" aria-label="Activity" aria-live="polite"
-          aria-relevant="additions" data-testid="activity-log">
+        <ScrollFade ref={setRef} fade={20} className="console-activity-scroll" role="log" aria-label="Activity"
+          aria-live={announce && !prepending ? 'polite' : 'off'} aria-relevant="additions" data-testid="activity-log">
           {audit.hasOlder && (
             <div className="flex justify-center pb-2">
               <Button size="sm" variant="ghost" loading={audit.isFetchingOlder} onClick={loadOlder}>Load older activity</Button>
@@ -137,7 +128,7 @@ export function ActivityStream({ eventId, snapshot }: { eventId: string; snapsho
           {!audit.isLoading && !audit.error && groups.length === 0 && (
             <p className="py-8 text-center text-xs text-fg-subtle">No activity yet. Applied changes appear here as they happen.</p>
           )}
-          <ol ref={feed} className="console-feed">
+          <ol className="console-feed">
             <AnimatePresence initial={false}>
               {groups.map(group => (
                 <motion.li key={group.key} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={transition}>
