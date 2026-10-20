@@ -1,7 +1,8 @@
 // Shell: top bar, preview toggles (click and Alt+1/Alt+2), dock persistence, sidebar and theme.
 import { expect, test } from '@playwright/test';
 import {
-  activityLog, apiGet, apiLogin, canvas, chooseTheme, dock, listPreviewToggle, livePreviewToggle, openConsole, storedPreferences
+  activityLog, apiGet, apiLogin, canvas, chooseTheme, dock, listPreviewToggle, livePreviewToggle, openConsole, SHARED_ORIGIN,
+  sharedBearer, storedPreferences
 } from './support/console';
 import { startDemo, type DemoProcess } from './support/demo';
 
@@ -22,15 +23,53 @@ test.describe('top bar', () => {
     await expect(listPreviewToggle(page)).toHaveAttribute('aria-keyshortcuts', 'Alt+2');
   });
 
-  test('sidebar footer shows the stream state and the account; no command composer before Wave 3', async ({ page }) => {
+  test('sidebar footer shows the stream state and the account; the demo console can act (composer and actions)', async ({ page }) => {
     await openConsole(page);
     const sidebar = page.getByRole('complementary', { name: 'Sidebar' });
     await expect(sidebar.locator('.shell-stream')).toContainText('Live updates');
     await expect(sidebar.getByRole('button', { name: /Local admin/ })).toContainText('demo');
-    // Wave 3 adds the composer; the read-only console ships no inert input or action controls.
-    await expect(page.getByRole('main', { name: 'Console' }).getByRole('textbox')).toHaveCount(0);
-    await expect(page.getByRole('main', { name: 'Console' }).getByRole('button', { name: /resolve|publish|remove|correct/i })).toHaveCount(0);
+    // Wave 3: the demo always allows commands (decision 4), so the composer sits below the activity stream
+    // and the stepper has its actions row (at least the panel refresh, at any stage of the looping demo).
+    const main = page.getByRole('main', { name: 'Console' });
+    await expect(main.getByRole('combobox', { name: 'Admin command' })).toBeVisible();
+    await expect(main.getByRole('group', { name: 'Event actions' }).getByRole('button', { name: 'Refresh panels' })).toBeVisible();
+    const session = await apiGet<{ commandsEnabled: boolean; capabilities: string[] }>(SHARED_ORIGIN, await sharedBearer(), '/session');
+    expect(session.commandsEnabled).toBe(true);
+    expect(session.capabilities).toHaveLength(6);
   });
+});
+
+test.describe('a read-only console (commands off, as in Discord mode without TCG_ADMIN_COMMANDS=1)', () => {
+  for (const [steps, state] of [[4, 'signup open with four members'], [24, 'round live, M2 disputed']] as const) {
+    test.describe(state, () => {
+      let demo: DemoProcess;
+      test.beforeAll(async () => { demo = await startDemo({ scenario: { steps, commands: 'off' } }); });
+      test.afterAll(async () => { await demo?.kill(); });
+
+      test('no composer and no action controls anywhere', async ({ page }) => {
+        await expect.poll(async () => (await demo.state()).step, { timeout: 20_000 }).toBe(steps);
+        await openConsole(page, { origin: demo.origin, token: demo.token,
+          preferences: { panes: { live: true, list: true }, listTab: steps === 4 ? 'players' : 'matches' } });
+        const main = page.getByRole('main', { name: 'Console' });
+        await expect(main.getByRole('combobox')).toHaveCount(0);
+        await expect(main.getByRole('textbox')).toHaveCount(0);
+        await expect(page.getByTestId('command-composer')).toHaveCount(0);
+        await expect(page.getByRole('group', { name: 'Event actions' })).toHaveCount(0);
+        await expect(main.getByRole('button', { name: /resolve|resume play|publish|close signup|reopen|remove|correct|refresh/i })).toHaveCount(0);
+        const lists = page.getByTestId('list-pane');
+        if (steps === 4) {
+          await expect(lists).toContainText('Eli Moss');
+          await expect(lists.getByRole('button', { name: /^Remove / })).toHaveCount(0);
+        } else {
+          // The needs-you card is still there, with its read-only link only.
+          await expect(main.getByRole('button', { name: 'Open M2 in live preview' })).toBeVisible();
+          await expect(lists.getByRole('table', { name: /^Matches/ })).toBeVisible();
+          await expect(lists.getByRole('button', { name: /^Actions for/ })).toHaveCount(0);
+          await expect(lists.getByRole('columnheader', { name: 'Actions' })).toHaveCount(0);
+        }
+      });
+    });
+  }
 });
 
 test.describe('preview toggles', () => {
