@@ -170,7 +170,9 @@ export interface AdminCommandResultDto {
   applied: boolean; result: string; version: number;
   cards: 'updated' | 'pending'; roomWarning: string | null;
 }
+export interface PanelRefreshRequestDto { eventId: string }   // must be the active event
 export interface PanelRefreshResultDto { cards: 'refreshed' | 'pending'; roomWarning: string | null }
+export const ADMIN_REASON_MAX_LENGTH = 500;                    // after trimming; at least 1 character
 
 export const COMMAND_CAPABILITY: Record<AdminCommandDto['type'], Capability> = {
   publish: 'event.publish', signupClose: 'signup.manage', signupReopen: 'signup.manage',
