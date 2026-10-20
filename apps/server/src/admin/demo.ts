@@ -29,7 +29,8 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
   // Only PORT matters here; the demo never connects to PostgreSQL.
   const { port } = readConfig({ PORT: env.PORT });
   const adminConfig = readAdminConfig('demo', env);
-  const runtime = new DemoAdminRuntime(options.runtime);
+  // TCG_ADMIN_DEMO_MODE picks autoplay (default) or interactive; an explicit runtime option wins.
+  const runtime = new DemoAdminRuntime({ mode: adminConfig.demoMode, ...options.runtime });
   const handler = (options.createHandler ?? createAdminHandler)({
     runtime, port, mode: 'demo', commandsEnabled: true, webDist: adminConfig.webDist,
     devOrigin: adminConfig.devOrigin, fixedLoginToken: adminConfig.fixedLoginToken
@@ -43,7 +44,7 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
     throw error;
   }
   runtime.start();
-  write(`TCG Live admin demo listening on 127.0.0.1:${port}\n`);
+  write(`TCG Live admin demo listening on 127.0.0.1:${port} (${runtime.playMode})\n`);
   const url = handler.loginUrl();
   write(url ? `Admin console: ${url}\n` : 'Admin console link unavailable: the admin HTTP layer did not issue a launch token.\n');
   if (!existsSync(join(adminConfig.webDist, 'index.html')))

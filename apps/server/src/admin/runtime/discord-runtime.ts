@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { AUDIT_PAGE_LIMIT, type AuditEntryDto, type EventSnapshotDto, type EventSummaryDto,
-  type RuntimeStatusDto } from '@tcg-live/core';
-import type { ControllerChange, ControllerStatus } from '../../discord/controller.js';
-import { RuleError } from '../../rehearsal/domain.js';
-import { AdminNotFoundError, AdminUnavailableError, type AdminRuntime, type AdminRuntimeChange,
-  type AdminRuntimeListener } from '../runtime-types.js';
+import { AUDIT_PAGE_LIMIT, type AdminCommandRequestDto, type AdminCommandResultDto, type AuditEntryDto,
+  type EventSnapshotDto, type EventSummaryDto, type PanelRefreshResultDto, type RuntimeStatusDto } from '@tcg-live/core';
+import { ControllerUnavailableError, type AdminApplyResult, type ControllerChange, type ControllerStatus,
+  type ExplicitRefreshResult, type WebAdminRequest } from '../../discord/controller.js';
+import { RuleError, type Command } from '../../rehearsal/domain.js';
+import { CommandConflictError, PreconditionFailedError, RetiredSessionError, UnknownEventError } from '../../rehearsal/store.js';
+import { commandContent, CONFLICT, preconditionHolds, toDomainCommand, webCommandId } from '../commands.js';
+import { AdminConflictError, AdminNotFoundError, AdminRuleError, AdminUnavailableError, type AdminPrincipal,
+  type AdminRuntime, type AdminRuntimeChange, type AdminRuntimeListener } from '../runtime-types.js';
 import { IdentityCache, type MemberFetcher } from './identity.js';
 import { defaultBuildId, ListenerSet } from './listeners.js';
 import { mapAuditRow, mapSnapshot, mapSummary, memberIdsFor } from './mappers.js';
@@ -19,10 +22,15 @@ export interface AdminGateway {
   watch(onChange: (state: GatewayState) => void): () => void;
 }
 
-/** The controller surface the admin runtime reads (PrivateDiscordController satisfies it). */
+/** The controller surface the admin runtime uses (PrivateDiscordController satisfies it). */
 export interface AdminController {
+  readonly config: { adminId: string };
   subscribe(listener: (change: ControllerChange) => void): () => void;
   status(): ControllerStatus;
+  /** Wave 3: a console command through the controller's gates, store transaction, rooms, timers and cards. */
+  applyAdmin(request: WebAdminRequest): Promise<AdminApplyResult>;
+  /** Wave 3: the explicit card and room repair behind /tcg-test refresh. */
+  refreshExplicit(): Promise<ExplicitRefreshResult>;
 }
 
 /** The room reconciler surface (MatchRoomReconciler satisfies it). */
@@ -209,6 +217,41 @@ export class DiscordAdminRuntime implements AdminRuntime {
     };
   }
 
+  /**
+   * Delegates to the late-bound controller, so a console command gets the same gates, transaction body,
+   * room sync, timer scheduling and card refresh as the slash command. 503 before the controller is
+   * attached, while the gateway is not ready, after the lease is lost, or while the controller stops.
+   */
+  async applyAdminCommand(request: AdminCommandRequestDto, principal: AdminPrincipal): Promise<AdminCommandResultDto> {
+    const controller = this.commandController();
+    if (!UUID.test(request.eventId)) throw new AdminNotFoundError('Unknown event.');
+    let result: AdminApplyResult;
+    try {
+      const command: Command = toDomainCommand(request.command, controller.config.adminId);
+      result = await controller.applyAdmin({ eventId: request.eventId, principalId: principal.id,
+        commandId: webCommandId(request.commandId), content: commandContent(request),
+        precondition: state => preconditionHolds(state, request.precondition), command });
+    } catch (error) { throw this.commandError(error); }
+    this.setDatabase('ready');
+    return { applied: result.outcome.applied, result: result.reply, version: result.outcome.version,
+      cards: result.cards, roomWarning: result.roomWarning };
+  }
+
+  async refreshPanels(eventId: string): Promise<PanelRefreshResultDto> {
+    const controller = this.commandController();
+    if (!UUID.test(eventId)) throw new AdminNotFoundError('Unknown event.');
+    if (await this.read(store => store.activeEventId()) !== eventId) {
+      if (await this.read(store => store.readAudit(eventId, 0, 1)) === null) throw new AdminNotFoundError('Unknown event.');
+      throw new AdminConflictError(CONFLICT.inactive);
+    }
+    let result: ExplicitRefreshResult;
+    try { result = await controller.refreshExplicit(); }
+    catch (error) { throw this.commandError(error); }
+    if (result.cardError)
+      throw new AdminRuleError(result.cardError + (result.roomWarning ? ` Room setup pending: ${result.roomWarning}` : ''));
+    return { cards: result.cards, roomWarning: result.roomWarning };
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -221,6 +264,28 @@ export class DiscordAdminRuntime implements AdminRuntime {
   }
 
   // Internals ------------------------------------------------------------------------------------
+
+  private commandController(): AdminController {
+    if (this.closed) throw new AdminUnavailableError('The admin console is shutting down.');
+    let lost = false;
+    try { lost = !!this.options.lease?.isLost(); } catch { lost = true; }
+    if (lost) throw new AdminUnavailableError('The Discord session lease is lost.');
+    if (!this.controller || this.gatewayState !== 'ready') throw new AdminUnavailableError('Discord is not ready.');
+    return this.controller;
+  }
+
+  /** Store and controller refusals as admin errors; messages are fixed or rule messages, never internals. */
+  private commandError(error: unknown): Error {
+    if (error instanceof UnknownEventError) return new AdminNotFoundError('Unknown event.');
+    if (error instanceof RetiredSessionError) return new AdminConflictError(CONFLICT.inactive);
+    if (error instanceof PreconditionFailedError) return new AdminConflictError(CONFLICT.changed);
+    if (error instanceof CommandConflictError) return new AdminConflictError(CONFLICT.reused);
+    if (error instanceof ControllerUnavailableError) return new AdminUnavailableError('Discord is not accepting commands.');
+    if (error instanceof RuleError) return new AdminRuleError(error.message);
+    // withClient turns every non-rule failure into its generic database error.
+    this.setDatabase('unavailable');
+    return new AdminUnavailableError('The rehearsal database is unavailable.');
+  }
 
   private async read<T>(operation: (store: AdminStore) => Promise<T>): Promise<T> {
     let value: T;

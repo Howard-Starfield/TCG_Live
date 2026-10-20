@@ -223,6 +223,22 @@ export async function applyRehearsalCommand(
   }));
 }
 
+// Store refusals with a specific meaning for the admin console. Each extends RuleError and keeps the
+// message the Discord path always replied with, so slash commands and buttons behave as before.
+/** The event row (or, for a console principal, its session) does not exist. */
+export class UnknownEventError extends RuleError {}
+/** The event's session is retired: it is no longer the active event. */
+export class RetiredSessionError extends RuleError {}
+/** The command ID was stored before with different content. */
+export class CommandConflictError extends RuleError {}
+/** The state the console admin saw no longer matches the locked aggregate. */
+export class PreconditionFailedError extends RuleError {}
+
+const WEB_COMMAND_ID = /^web:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** A console principal issues admin commands only, the same set as the /tcg-test admin subcommands. */
+const WEB_COMMAND_TYPES: ReadonlySet<string> = new Set<Command['type']>(
+  ['publish', 'signupClose', 'signupReopen', 'signupRemove', 'judgeResume', 'resolve', 'correct']);
+
 export interface DiscordCommandContext {
   config: PrivateDiscordConfig;
   eventId: string;
@@ -232,10 +248,34 @@ export interface DiscordCommandContext {
   timer?: { matchId: 'M1' | 'M2'; pauseGeneration: number; deadlineMs: number };
 }
 
-export async function applyDiscordCommand(
-  context: DiscordCommandContext, command: Command, runnerId: string,
-  clock: () => number = Date.now
-): Promise<Outcome> {
+export interface WebCommandContext {
+  config: PrivateDiscordConfig;
+  eventId: string;
+  /** The console principal, for example `local-admin`; stored as principal_id. */
+  principalId: string;
+  /** `web:<uuid v4>` from the browser. */
+  commandId: string;
+  /** Canonical request content (event, command, precondition). A reused command ID with other content conflicts. */
+  content: string;
+  /** The state the admin saw. Checked under the event's FOR UPDATE lock, after the prior-result lookup. */
+  precondition(state: EventState): boolean;
+}
+
+/** One transaction body for every principal kind, so the Discord and console paths cannot drift. */
+export type PrincipalCommandContext =
+  | ({ kind: 'discord' } & DiscordCommandContext)
+  | ({ kind: 'web' } & WebCommandContext);
+
+type QueryClient = Pick<pg.Client, 'query'>;
+
+/** The stored command ID and content hash. Validates identity before any connection is opened. */
+function principalCommand(context: PrincipalCommandContext, command: Command): { commandId: string; hash: string } {
+  if (context.kind === 'web') {
+    if (!WEB_COMMAND_ID.test(context.commandId)) throw new RuleError('Invalid console command ID.');
+    if (!WEB_COMMAND_TYPES.has(command.type)) throw new RuleError('Console principal action denied.');
+    return { commandId: context.commandId,
+      hash: createHash('sha256').update(JSON.stringify(['web', context.principalId, context.content])).digest('hex') };
+  }
   if (!context.interactionId && !context.timer) throw new RuleError('Discord command identity is required.');
   if (context.timer && (command.type !== 'clockCheck' || command.matchId !== context.timer.matchId ||
       context.principalId !== 'system:timer')) throw new RuleError('Invalid timer command.');
@@ -243,78 +283,142 @@ export async function applyDiscordCommand(
     ? `timer:${context.timer.matchId}:${context.timer.pauseGeneration}:${context.timer.deadlineMs}`
     : `discord:${context.interactionId}`;
   if (commandId.length > 128) throw new RuleError('Invalid Discord command ID.');
-  return withClient(client => transaction(client, async () => {
-    const row = await client.query<{ state: EventState; version: number }>(
-      'SELECT state, version FROM public.tcg_rehearsal_events WHERE id = $1 FOR UPDATE', [context.eventId]
-    );
-    if (!row.rows[0]) throw new RuleError('Unknown private Discord event.');
-    verifyState(row.rows[0].state, context.eventId, row.rows[0].version);
-    const sessionRow = await client.query<SessionRow>(
-      'SELECT * FROM public.tcg_rehearsal_sessions WHERE event_id = $1', [context.eventId]
-    );
-    const session = sessionRow.rows[0];
-    if (!session || session.status !== 'active') throw new RuleError('Private Discord session is retired.');
-    if (session.application_id !== context.config.applicationId ||
-        session.guild_id !== context.config.guildId || session.channel_id !== context.config.channelId ||
-        !sameIdentityMap(session.identity_map, context.config)) {
-      throw new RuleError('Private Discord configuration differs from the saved session.');
+  return { commandId, hash: createHash('sha256').update(JSON.stringify([context.principalId, command])).digest('hex') };
+}
+
+/**
+ * The transaction body, run inside BEGIN/COMMIT. Order: lock the event row (FOR UPDATE), then the
+ * prior result for the command ID, then the session and precondition checks, then the domain apply.
+ * A console command looks up its prior result before the session checks, so a retried success is
+ * answered from the stored outcome even after the event changed or retired. The Discord order is the
+ * historical one (prior result after the session, card and actor checks).
+ */
+export async function runPrincipalCommand(
+  client: QueryClient, context: PrincipalCommandContext, command: Command, runnerId: string, clock: () => number
+): Promise<Outcome> {
+  const { commandId, hash } = principalCommand(context, command);
+  const discord = context.kind === 'discord' ? context : null;
+  const web = context.kind === 'web' ? context : null;
+  const row = await client.query<{ state: EventState; version: number }>(
+    'SELECT state, version FROM public.tcg_rehearsal_events WHERE id = $1 FOR UPDATE', [context.eventId]
+  );
+  const event = row.rows[0];
+  if (!event) throw new UnknownEventError(web ? 'Unknown event.' : 'Unknown private Discord event.');
+  verifyState(event.state, context.eventId, event.version);
+  const priorOutcome = async (): Promise<Outcome | null> => {
+    if (web) {
+      // Command IDs are browser UUIDs: one found under another event is a reuse with different content.
+      const prior = await client.query<{ event_id: string; command_hash: string; outcome: Outcome }>(
+        'SELECT event_id::text AS event_id, command_hash, outcome FROM public.tcg_rehearsal_audit WHERE command_id = $1',
+        [commandId]
+      );
+      const found = prior.rows[0];
+      if (!found) return null;
+      if (found.event_id !== context.eventId || found.command_hash !== hash)
+        throw new CommandConflictError('Command ID conflicts with different content.');
+      return found.outcome;
     }
-    const players = resolvePlayers(session, row.rows[0].state);
-    if (context.message) {
-      const expectedSlot = ['checkin', 'signupJoin', 'signupWithdraw'].includes(command.type) ? 'checkin'
-        : 'matchId' in command ? command.matchId : null;
-      if (context.message.slot !== expectedSlot) throw new RuleError('This control is on the wrong practice card.');
-      if (context.message.channelId !== channelForSlot(context.config, context.message.slot))
-        throw new RuleError('This control is in the wrong practice channel.');
-      const field = context.message.slot === 'checkin' ? session.checkin_message_id
-        : context.message.slot === 'M1' ? session.m1_message_id : session.m2_message_id;
-      if (!field || field !== context.message.id) throw new RuleError('This control is not on the canonical card.');
-    }
-    if (row.rows[0].state.matches.some(match => match.phase === 'running' && match.runnerId !== runnerId)) {
-      throw new RuleError('Private Discord session has an interrupted running clock; stop and prepare --replace.');
-    }
-    let actor = 'admin:fixture';
-    if (!context.timer) {
-      const player = (Object.entries(players ?? {}) as Array<['A' | 'B' | 'C' | 'D', string]>)
-        .find(([, id]) => id === context.principalId)?.[0];
-      if (context.principalId === session.identity_map.adminId) actor = 'admin:fixture';
-      else if (command.type === 'signupJoin' || command.type === 'signupWithdraw') actor = `member:${context.principalId}`;
-      else if (player) actor = `player:${player}`;
-      else throw new RuleError('Discord actor is not in the private fixture.');
-      if (player && !context.message) throw new RuleError('Player action requires its canonical card.');
-      if ((command.type === 'signupJoin' || command.type === 'signupWithdraw') && !context.message)
-        throw new RuleError('Signup action requires its canonical card.');
-      if (command.type === 'signupClose' && command.adminId !== session.identity_map.adminId)
-        throw new RuleError('Signup admin identity differs from the saved session.');
-    }
-    const hash = createHash('sha256').update(JSON.stringify([context.principalId, command])).digest('hex');
     const prior = await client.query<{ command_hash: string; outcome: Outcome }>(
       'SELECT command_hash, outcome FROM public.tcg_rehearsal_audit WHERE event_id = $1 AND command_id = $2',
       [context.eventId, commandId]
     );
-    if (prior.rows[0]) {
-      if (prior.rows[0].command_hash !== hash) throw new RuleError('Command ID conflicts with different content.');
-      return prior.rows[0].outcome;
+    if (!prior.rows[0]) return null;
+    if (prior.rows[0].command_hash !== hash) throw new CommandConflictError('Command ID conflicts with different content.');
+    return prior.rows[0].outcome;
+  };
+  if (web) {
+    const replay = await priorOutcome();
+    if (replay) return replay;
+  }
+  const sessionRow = await client.query<SessionRow>(
+    'SELECT * FROM public.tcg_rehearsal_sessions WHERE event_id = $1', [context.eventId]
+  );
+  const session = sessionRow.rows[0];
+  // A rehearsal CLI event has no session: the console never lists it, so it is unknown there.
+  if (!session && web) throw new UnknownEventError('Unknown event.');
+  if (!session || session.status !== 'active') throw new RetiredSessionError('Private Discord session is retired.');
+  if (session.application_id !== context.config.applicationId ||
+      session.guild_id !== context.config.guildId || session.channel_id !== context.config.channelId ||
+      !sameIdentityMap(session.identity_map, context.config)) {
+    throw new RuleError('Private Discord configuration differs from the saved session.');
+  }
+  const players = resolvePlayers(session, event.state);
+  if (discord?.message) {
+    const expectedSlot = ['checkin', 'signupJoin', 'signupWithdraw'].includes(command.type) ? 'checkin'
+      : 'matchId' in command ? command.matchId : null;
+    if (discord.message.slot !== expectedSlot) throw new RuleError('This control is on the wrong practice card.');
+    if (discord.message.channelId !== channelForSlot(context.config, discord.message.slot))
+      throw new RuleError('This control is in the wrong practice channel.');
+    const field = discord.message.slot === 'checkin' ? session.checkin_message_id
+      : discord.message.slot === 'M1' ? session.m1_message_id : session.m2_message_id;
+    if (!field || field !== discord.message.id) throw new RuleError('This control is not on the canonical card.');
+  }
+  if (event.state.matches.some(match => match.phase === 'running' && match.runnerId !== runnerId)) {
+    throw new RuleError('Private Discord session has an interrupted running clock; stop and prepare --replace.');
+  }
+  // A console principal is the configured admin (decision 4); timers act as the admin too.
+  let actor = 'admin:fixture';
+  if (discord && !discord.timer) {
+    const player = (Object.entries(players ?? {}) as Array<['A' | 'B' | 'C' | 'D', string]>)
+      .find(([, id]) => id === context.principalId)?.[0];
+    if (context.principalId === session.identity_map.adminId) actor = 'admin:fixture';
+    else if (command.type === 'signupJoin' || command.type === 'signupWithdraw') actor = `member:${context.principalId}`;
+    else if (player) actor = `player:${player}`;
+    else throw new RuleError('Discord actor is not in the private fixture.');
+    if (player && !discord.message) throw new RuleError('Player action requires its canonical card.');
+    if ((command.type === 'signupJoin' || command.type === 'signupWithdraw') && !discord.message)
+      throw new RuleError('Signup action requires its canonical card.');
+  }
+  if ((web || (discord && !discord.timer)) && command.type === 'signupClose' && command.adminId !== session.identity_map.adminId)
+    throw new RuleError('Signup admin identity differs from the saved session.');
+  if (discord) {
+    const replay = await priorOutcome();
+    if (replay) return replay;
+  }
+  if (web && !web.precondition(event.state))
+    throw new PreconditionFailedError('The event changed since this action was prepared; review the latest state.');
+  const nowMs = clock();
+  if (discord?.timer) {
+    const timer = discord.timer;
+    const match = event.state.matches.find(item => item.id === timer.matchId);
+    const expected = match?.startedAtMs === null || !match ? null : match.startedAtMs + match.remainingMs;
+    if (!match || match.phase !== 'running' || match.pauseGeneration !== timer.pauseGeneration ||
+        expected !== timer.deadlineMs || nowMs < timer.deadlineMs) {
+      return { eventId: context.eventId, version: event.version, result: 'obsolete_or_early_timer', applied: false };
     }
-    const nowMs = clock();
-    if (context.timer) {
-      const match = row.rows[0].state.matches.find(item => item.id === context.timer!.matchId);
-      const expected = match?.startedAtMs === null || !match ? null : match.startedAtMs + match.remainingMs;
-      if (!match || match.phase !== 'running' || match.pauseGeneration !== context.timer.pauseGeneration ||
-          expected !== context.timer.deadlineMs || nowMs < context.timer.deadlineMs) {
-        return { eventId: context.eventId, version: row.rows[0].version, result: 'obsolete_or_early_timer', applied: false };
-      }
-    }
-    const result = transition(row.rows[0].state, actor, command, nowMs, runnerId);
-    if (!result.outcome.applied) return result.outcome;
-    await client.query('UPDATE public.tcg_rehearsal_events SET version = $2, state = $3::jsonb WHERE id = $1',
-      [context.eventId, result.state.version, JSON.stringify(result.state)]);
-    await client.query(
-      'INSERT INTO public.tcg_rehearsal_audit (event_id,sequence,command_id,actor_id,command_hash,action,outcome,occurred_at_ms,mode,principal_kind,principal_id,interaction_id) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12)',
-      [context.eventId, result.state.version, commandId, actor, hash, JSON.stringify(command),
-        JSON.stringify(result.outcome), nowMs, 'matchId' in command ? 'CAM' : null,
-        context.timer ? 'system' : 'discord', context.principalId, context.interactionId ?? null]
-    );
-    return result.outcome;
-  }));
+  }
+  const result = transition(event.state, actor, command, nowMs, runnerId);
+  if (!result.outcome.applied) return result.outcome;
+  await client.query('UPDATE public.tcg_rehearsal_events SET version = $2, state = $3::jsonb WHERE id = $1',
+    [context.eventId, result.state.version, JSON.stringify(result.state)]);
+  await client.query(
+    'INSERT INTO public.tcg_rehearsal_audit (event_id,sequence,command_id,actor_id,command_hash,action,outcome,occurred_at_ms,mode,principal_kind,principal_id,interaction_id) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12)',
+    [context.eventId, result.state.version, commandId, actor, hash, JSON.stringify(command),
+      JSON.stringify(result.outcome), nowMs, 'matchId' in command ? 'CAM' : null,
+      discord?.timer ? 'system' : context.kind, context.principalId, discord?.interactionId ?? null]
+  );
+  return result.outcome;
 }
+
+export async function applyPrincipalCommand(
+  context: PrincipalCommandContext, command: Command, runnerId: string, clock: () => number = Date.now
+): Promise<Outcome> {
+  principalCommand(context, command);
+  return withClient(client => transaction(client, () => runPrincipalCommand(client, context, command, runnerId, clock)));
+}
+
+/** Slash commands, buttons and timers. A thin wrapper over the shared transaction body. */
+export async function applyDiscordCommand(
+  context: DiscordCommandContext, command: Command, runnerId: string,
+  clock: () => number = Date.now
+): Promise<Outcome> {
+  return applyPrincipalCommand({ ...context, kind: 'discord' }, command, runnerId, clock);
+}
+
+/** Admin console commands (principal_kind 'web'). A thin wrapper over the shared transaction body. */
+export async function applyWebCommand(
+  context: WebCommandContext, command: Command, runnerId: string, clock: () => number = Date.now
+): Promise<Outcome> {
+  return applyPrincipalCommand({ ...context, kind: 'web' }, command, runnerId, clock);
+}
+

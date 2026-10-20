@@ -1,4 +1,5 @@
-import type { AuditEntryDto, EventSnapshotDto, EventSummaryDto, RuntimeStatusDto } from '@tcg-live/core';
+import type { AdminCommandRequestDto, AdminCommandResultDto, AuditEntryDto, EventSnapshotDto, EventSummaryDto,
+  PanelRefreshResultDto, RuntimeStatusDto } from '@tcg-live/core';
 import type { AdminMode } from './config.js';
 
 /** What changed. The stream manager reads one snapshot per change and fans it out. */
@@ -13,11 +14,21 @@ export type AdminRuntimeListener = (change: AdminRuntimeChange) => void;
 export class AdminNotFoundError extends Error {}
 /** The backing store cannot be read right now. Maps to 503. */
 export class AdminUnavailableError extends Error {}
+/**
+ * Wave 3. The command cannot apply to the state the admin saw: the event is not the active one, the
+ * precondition no longer holds, or the command ID was used for different content. Maps to 409 with the
+ * latest snapshot of the active event. The message is safe to show.
+ */
+export class AdminConflictError extends Error {}
+/** Wave 3. The domain refused the command. Maps to 422 `rule`; the message is the rule message, safe to show. */
+export class AdminRuleError extends Error {}
+
+/** The principal behind a console command. Only the local admin exists until multi-user login. */
+export interface AdminPrincipal { kind: 'local'; id: 'local-admin' }
 
 /**
- * Server-internal read model behind the admin HTTP layer.
+ * Server-internal model behind the admin HTTP layer.
  * Implemented by DiscordAdminRuntime (live bot) and DemoAdminRuntime (in-memory scenario).
- * Wave 3 adds applyAdminCommand() and refreshPanels().
  */
 export interface AdminRuntime {
   readonly mode: AdminMode;
@@ -36,6 +47,16 @@ export interface AdminRuntime {
    * The runtime polls only while it has at least one subscriber.
    */
   subscribe(listener: AdminRuntimeListener): () => void;
+  /**
+   * Wave 3. Applies a validated console command (see admin/commands.ts) for `principal`, audited as
+   * principal_kind 'web' under `web:<commandId>`. A stored result for the same command ID and content is
+   * returned before any precondition check. A successful command notifies subscribers through the
+   * normal change path. Throws AdminNotFoundError (404), AdminConflictError (409), AdminRuleError (422)
+   * or AdminUnavailableError (503).
+   */
+  applyAdminCommand(request: AdminCommandRequestDto, principal: AdminPrincipal): Promise<AdminCommandResultDto>;
+  /** Wave 3. Explicit card and room repair for the active event; throws like applyAdminCommand. */
+  refreshPanels(eventId: string): Promise<PanelRefreshResultDto>;
   /** Stops timers and polling. Idempotent. */
   close(): Promise<void>;
 }

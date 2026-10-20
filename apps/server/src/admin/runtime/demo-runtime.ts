@@ -1,11 +1,16 @@
 // In-memory admin runtime for `npm run admin:demo`: a scripted event driven by the real domain transition().
 import { randomUUID } from 'node:crypto';
-import { AUDIT_PAGE_LIMIT, type AuditEntryDto, type EventSnapshotDto, type EventSummaryDto, type MemberDto,
-  type RuntimeStatusDto, type Snowflake } from '@tcg-live/core';
+import { AUDIT_PAGE_LIMIT, type AdminCommandRequestDto, type AdminCommandResultDto, type AuditEntryDto,
+  type EventSnapshotDto, type EventSummaryDto, type MemberDto, type PanelRefreshResultDto, type RuntimeStatusDto,
+  type Snowflake } from '@tcg-live/core';
 import { ADMIN, createSignupFixture, RuleError, transition, type Command, type EventState, type MatchId,
-  type Player } from '../../rehearsal/domain.js';
+  type Outcome, type Player, type Transition } from '../../rehearsal/domain.js';
+import { noChangeReply, savedReply } from '../../discord/controller.js';
 import type { CardSlot } from '../../discord/session.js';
-import { AdminNotFoundError, type AdminRuntime, type AdminRuntimeChange, type AdminRuntimeListener } from '../runtime-types.js';
+import { commandContent, CONFLICT, preconditionHolds, toDomainCommand, webCommandId } from '../commands.js';
+import type { DemoPlayMode } from '../config.js';
+import { AdminConflictError, AdminNotFoundError, AdminRuleError, AdminUnavailableError, type AdminPrincipal,
+  type AdminRuntime, type AdminRuntimeChange, type AdminRuntimeListener } from '../runtime-types.js';
 import { defaultBuildId, ListenerSet } from './listeners.js';
 import { mapAuditRow, mapSnapshot, type AdminAuditRow, type AdminSessionRow } from './mappers.js';
 
@@ -88,6 +93,24 @@ interface DemoEvent {
   panelRevision: number;
 }
 
+/** Where an interactive scenario waits for the admin. */
+export interface DemoPause {
+  /** Index of the script step the scenario waits at. */
+  step: number;
+  /** The admin decision it waits for. */
+  decision: 'publish' | 'signupClose' | 'signupReopen' | 'signupRemove' | 'judgeResume' | 'resolve' | 'correct';
+  /** The match the decision concerns, or null for an event-level decision. */
+  matchId: MatchId | null;
+}
+
+interface PausePoint extends DemoPause {
+  /** skip: the scripted admin step is replaced by the admin's command; rerun: replay the step without
+   * pausing again (the final hold before a restart); after: the step already ran (an expiry). */
+  resume: 'skip' | 'rerun' | 'after';
+}
+
+type StepResult = 'advance' | 'stay' | 'hold';
+
 export interface DemoAdminRuntimeOptions {
   clock?: DemoClock;
   newEventId?: () => string;
@@ -98,17 +121,25 @@ export interface DemoAdminRuntimeOptions {
   /** Retired events kept for the sidebar. */
   keepRetired?: number;
   script?: DemoStep[];
+  /**
+   * 'autoplay' (default) applies the scripted admin steps itself. 'interactive' keeps the players acting
+   * but pauses wherever an admin decision is required, until the admin's console command lands.
+   */
+  mode?: DemoPlayMode;
 }
 
 /**
- * Autoplays a scripted signup event with fake names, using the real domain rules, then retires it and
+ * Plays a scripted signup event with fake names, using the real domain rules, then retires it and
  * starts another under a new event ID so a long-running demo keeps moving. No Discord, no PostgreSQL.
+ * Console commands use the same validation, preconditions, prior-result semantics and audit as the
+ * Discord runtime, with the store held in memory.
  */
 export class DemoAdminRuntime implements AdminRuntime {
   readonly mode = 'demo' as const;
   readonly bootId: string;
   readonly buildId: string;
   readonly runnerId = 'demo-runner';
+  readonly playMode: DemoPlayMode;
   private readonly clock: DemoClock;
   private readonly newEventId: () => string;
   private readonly durationMs: number;
@@ -117,6 +148,8 @@ export class DemoAdminRuntime implements AdminRuntime {
   private readonly startedAtMs: number;
   private readonly listeners = new ListenerSet<AdminRuntimeChange>();
   private readonly members = new Map(DEMO_MEMBERS.map(member => [member.id, member]));
+  /** Applied console commands by stored command ID, like the audit table's unique (event, command_id). */
+  private readonly webResults = new Map<string, { eventId: string; content: string; outcome: Outcome }>();
   private current: DemoEvent;
   private retired: DemoEvent[] = [];
   private stepIndex = 0;
@@ -124,6 +157,9 @@ export class DemoAdminRuntime implements AdminRuntime {
   private running = false;
   private closed = false;
   private snowflake = 0n;
+  private pause: PausePoint | null = null;
+  /** A rerun pause point that was released; its step then runs without pausing again. */
+  private released = -1;
   /** Completed scenario runs. */
   cycles = 0;
 
@@ -135,15 +171,38 @@ export class DemoAdminRuntime implements AdminRuntime {
     this.durationMs = options.durationMs ?? 90_000;
     this.keepRetired = options.keepRetired ?? 5;
     this.script = options.script ?? demoScript();
+    this.playMode = options.mode ?? 'autoplay';
     this.startedAtMs = this.clock.now();
     this.current = this.createEvent();
   }
 
-  /** Starts autoplay. */
+  /** Starts the scenario. */
   start(): void {
     if (this.running || this.closed) return;
     this.running = true;
     this.scheduleNext();
+  }
+
+  /** Interactive mode: where the scenario waits for the admin, or null while it plays. */
+  get pausedAt(): DemoPause | null {
+    return this.pause ? { step: this.pause.step, decision: this.pause.decision, matchId: this.pause.matchId } : null;
+  }
+
+  /** Index of the next script step. */
+  get step(): number { return this.stepIndex; }
+
+  /**
+   * Continues a paused interactive scenario without an admin command (the decision is skipped).
+   * For tests and E2E. Returns false when the scenario was not paused.
+   */
+  resumeScript(): boolean {
+    const pause = this.pause;
+    if (!pause || this.closed) return false;
+    this.pause = null;
+    if (pause.resume === 'skip') this.stepIndex++;
+    else if (pause.resume === 'rerun') this.released = this.stepIndex;
+    this.scheduleNext();
+    return true;
   }
 
   status(): RuntimeStatusDto {
@@ -185,12 +244,76 @@ export class DemoAdminRuntime implements AdminRuntime {
     return this.listeners.add(listener);
   }
 
+  /**
+   * The Discord store's order, atomically in memory: the event must exist (404), a stored result for the
+   * command ID is returned before anything else (or 409 for other content), then the active-event and
+   * precondition checks (409), then the real domain transition (422 on a rule error).
+   */
+  async applyAdminCommand(request: AdminCommandRequestDto, principal: AdminPrincipal): Promise<AdminCommandResultDto> {
+    if (this.closed) throw new AdminUnavailableError('The demo has stopped.');
+    const event = this.find(request.eventId);
+    const command = this.ruled(() => toDomainCommand(request.command, event.session.identity_map.adminId));
+    const commandId = webCommandId(request.commandId);
+    const content = commandContent(request);
+    const prior = this.webResults.get(commandId);
+    if (prior) {
+      if (prior.eventId !== request.eventId || prior.content !== content) throw new AdminConflictError(CONFLICT.reused);
+      return this.commandResult(command, prior.outcome);
+    }
+    if (event !== this.current) throw new AdminConflictError(CONFLICT.inactive);
+    if (!preconditionHolds(event.state, request.precondition)) throw new AdminConflictError(CONFLICT.changed);
+    const nowMs = this.clock.now();
+    const result = this.ruled(() => transition(event.state, ADMIN, command, nowMs, this.runnerId));
+    if (result.outcome.applied) {
+      this.record(result, ADMIN, command, nowMs, 'web', principal.id, commandId);
+      this.webResults.set(commandId, { eventId: event.state.id, content, outcome: result.outcome });
+      this.adminCommandLanded(command);
+    }
+    return this.commandResult(command, result.outcome);
+  }
+
+  /** A no-op repair in the demo: the cards are in memory. It moves panelRevision like a Discord rebind. */
+  async refreshPanels(eventId: string): Promise<PanelRefreshResultDto> {
+    if (this.closed) throw new AdminUnavailableError('The demo has stopped.');
+    const event = this.find(eventId);
+    if (event !== this.current) throw new AdminConflictError(CONFLICT.inactive);
+    event.panelRevision++;
+    this.listeners.emit({ type: 'panels', eventId });
+    return { cards: 'refreshed', roomWarning: null };
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     this.running = false;
     if (this.timer !== undefined) this.clock.clearTimeout(this.timer);
     this.timer = undefined;
     this.listeners.clear();
+  }
+
+  // Commands -------------------------------------------------------------------------------------
+
+  private ruled<T>(operation: () => T): T {
+    try { return operation(); }
+    catch (error) {
+      if (error instanceof RuleError) throw new AdminRuleError(error.message);
+      throw error;
+    }
+  }
+
+  /** The text the Discord path replies with; the demo's cards always update. */
+  private commandResult(command: Command, outcome: Outcome): AdminCommandResultDto {
+    return { applied: outcome.applied, result: outcome.applied ? savedReply(command.type, false, '') : noChangeReply(outcome.result),
+      version: outcome.version, cards: 'updated', roomWarning: null };
+  }
+
+  /** Interactive mode: an applied admin command for the decision being waited on resumes the scenario. */
+  private adminCommandLanded(command: Command): void {
+    const pause = this.pause;
+    if (!pause) return;
+    const matchId = 'matchId' in command ? command.matchId : null;
+    const relevant = pause.decision === 'correct' && pause.matchId === null ? command.type === 'correct'
+      : pause.matchId !== null ? matchId === pause.matchId : matchId === null;
+    if (relevant) this.resumeScript();
   }
 
   // Scenario -------------------------------------------------------------------------------------
@@ -222,7 +345,9 @@ export class DemoAdminRuntime implements AdminRuntime {
   }
 
   private scheduleNext(): void {
-    if (!this.running || this.closed) return;
+    if (!this.running || this.closed || this.pause) return;
+    if (this.timer !== undefined) this.clock.clearTimeout(this.timer);
+    this.timer = undefined;
     const step = this.script[this.stepIndex];
     if (!step) {
       if (!this.script.length) return;
@@ -238,8 +363,10 @@ export class DemoAdminRuntime implements AdminRuntime {
     this.timer = this.clock.setTimeout(() => {
       this.timer = undefined;
       if (!this.running || this.closed) return;
-      if (this.runStep(step)) this.stepIndex++;
-      this.scheduleNext();
+      const result = this.runStep(step);
+      if (result === 'hold') return;                         // An admin command (or resumeScript) continues.
+      if (result === 'advance') this.stepIndex++;
+      this.scheduleNext();                                   // Returns at once while paused after a step.
     }, wait);
   }
 
@@ -248,28 +375,62 @@ export class DemoAdminRuntime implements AdminRuntime {
     return match?.phase === 'running' && match.startedAtMs !== null ? match.startedAtMs + match.remainingMs : null;
   }
 
-  /** Applies one step. False only for a timer that fired early; it is rescheduled for the true deadline. */
-  private runStep(step: DemoStep): boolean {
+  private get interactive(): boolean { return this.playMode === 'interactive'; }
+
+  /**
+   * Applies one step. 'stay' re-runs the same index (a timer that fired early is rescheduled for the true
+   * deadline; a restart starts over), 'hold' pauses at this step for the admin.
+   */
+  private runStep(step: DemoStep): StepResult {
     const nowMs = this.clock.now();
-    if ('restart' in step) { this.restart(); return false; }
+    if ('restart' in step) {
+      // Interactive: hold a finished event so the admin can still correct a result.
+      if (this.interactive && this.released !== this.stepIndex &&
+          this.current.state.matches.some(match => match.phase === 'final')) {
+        this.pause = { step: this.stepIndex, decision: 'correct', matchId: null, resume: 'rerun' };
+        return 'hold';
+      }
+      this.restart();
+      return 'stay';
+    }
     if ('repost' in step) {
       const column = step.repost === 'checkin' ? 'checkin_message_id' : step.repost === 'M1' ? 'm1_message_id' : 'm2_message_id';
       this.current.session = { ...this.current.session, [column]: this.nextSnowflake() };
       this.current.panelRevision++;
       this.listeners.emit({ type: 'panels', eventId: this.current.state.id });
-      return true;
+      return 'advance';
     }
     if ('expire' in step) {
       const match = this.current.state.matches.find(item => item.id === step.expire)!;
       const deadline = this.deadline(step.expire);
-      if (deadline === null) return true;                    // Already decided; nothing to expire.
-      if (nowMs < deadline) return false;                   // Early timer, like obsolete_or_early_timer.
+      if (deadline === null) return 'advance';               // Already decided; nothing to expire.
+      if (nowMs < deadline) return 'stay';                   // Early timer, like obsolete_or_early_timer.
       this.apply(ADMIN, { type: 'clockCheck', matchId: step.expire }, nowMs, 'system', 'system:timer',
         `timer:${step.expire}:${match.pauseGeneration}:${deadline}`);
-      return true;
+      // Interactive: an expired match waits for the judge's resolution.
+      if (this.interactive && this.current.state.matches.find(item => item.id === step.expire)?.phase === 'expired')
+        this.pause = { step: this.stepIndex + 1, decision: 'resolve', matchId: step.expire, resume: 'after' };
+      return 'advance';
     }
+    if (this.interactive && step.who === 'admin') return this.holdFor(step.command, nowMs) ? 'hold' : 'advance';
     const { actor, principal } = this.resolveWho(step.who);
     this.apply(actor, step.command, nowMs, 'discord', principal, `discord:${this.nextSnowflake()}`);
+    return 'advance';
+  }
+
+  /**
+   * Interactive: pauses at a scripted admin step while the domain would accept it now. A decision that
+   * is already moot (the admin acted early, or the state moved on) is skipped without pausing.
+   */
+  private holdFor(command: Command, nowMs: number): boolean {
+    try {
+      if (!transition(this.current.state, ADMIN, command, nowMs, this.runnerId).outcome.applied) return false;
+    } catch (error) {
+      if (error instanceof RuleError) return false;
+      throw error;
+    }
+    this.pause = { step: this.stepIndex, decision: command.type as DemoPause['decision'],
+      matchId: 'matchId' in command ? command.matchId : null, resume: 'skip' };
     return true;
   }
 
@@ -285,11 +446,18 @@ export class DemoAdminRuntime implements AdminRuntime {
     let result;
     try { result = transition(this.current.state, actor, command, nowMs, this.runnerId); }
     catch (error) {
-      // The script follows the rules; a rejection means the scenario drifted. Skip the step and keep playing.
+      // The script follows the rules; a rejection means the scenario drifted (or the admin acted first).
+      // Skip the step and keep playing.
       if (error instanceof RuleError) return;
       throw error;
     }
     if (!result.outcome.applied) return;
+    this.record(result, actor, command, nowMs, principalKind, principalId, commandId);
+  }
+
+  /** Commits a transition to the active event, with its audit row, and notifies subscribers. */
+  private record(result: Transition, actor: string, command: Command, nowMs: number,
+    principalKind: 'discord' | 'system' | 'web', principalId: string, commandId: string): void {
     this.current.state = result.state;
     this.current.audit.push({
       sequence: result.state.version, command_id: commandId, actor_id: actor, action: command,
@@ -299,13 +467,19 @@ export class DemoAdminRuntime implements AdminRuntime {
     this.listeners.emit({ type: 'event', eventId: result.state.id });
   }
 
+  /** Retires the active event and starts the next one in the same step, so an active event always exists. */
   private restart(): void {
     const finished = this.current;
     finished.session = { ...finished.session, status: 'retired', retired_at_ms: this.clock.now() };
     this.retired = [finished, ...this.retired].slice(0, this.keepRetired);
     this.current = this.createEvent();
     this.stepIndex = 0;
+    this.released = -1;
+    this.pause = null;
     this.cycles++;
+    const kept = new Set([this.current, ...this.retired].map(event => event.state.id));
+    for (const [commandId, stored] of this.webResults) if (!kept.has(stored.eventId)) this.webResults.delete(commandId);
     this.listeners.emit({ type: 'event', eventId: this.current.state.id });
   }
 }
+

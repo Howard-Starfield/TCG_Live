@@ -2,6 +2,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export type AdminMode = 'discord' | 'demo';
+/** Demo only: autoplay advances on its own; interactive pauses wherever an admin decision is required. */
+export type DemoPlayMode = 'autoplay' | 'interactive';
 
 export interface AdminConfig {
   /** Serve the console. Always true in demo mode; TCG_ADMIN_CONSOLE=1 in Discord mode. */
@@ -14,6 +16,8 @@ export interface AdminConfig {
   fixedLoginToken: string | null;
   /** Absolute path of the built web assets. */
   webDist: string;
+  /** Demo only (TCG_ADMIN_DEMO_MODE): autoplay by default, or interactive. Always autoplay in Discord mode. */
+  demoMode: DemoPlayMode;
 }
 
 const ERROR = 'Invalid configuration:';
@@ -43,6 +47,10 @@ export function readAdminConfig(mode: AdminMode, env: NodeJS.ProcessEnv = proces
   const rawOrigin = env.TCG_ADMIN_DEV_ORIGIN?.trim() || null;
   if (mode === 'discord' && rawToken) throw new Error(`${ERROR} TCG_ADMIN_LOGIN_TOKEN is demo-only; unset it to run the Discord runtime.`);
   if (mode === 'discord' && rawOrigin) throw new Error(`${ERROR} TCG_ADMIN_DEV_ORIGIN is demo-only; unset it to run the Discord runtime.`);
+  const rawDemoMode = env.TCG_ADMIN_DEMO_MODE?.trim() || null;
+  if (mode === 'discord' && rawDemoMode) throw new Error(`${ERROR} TCG_ADMIN_DEMO_MODE is demo-only; unset it to run the Discord runtime.`);
+  if (rawDemoMode && rawDemoMode !== 'autoplay' && rawDemoMode !== 'interactive')
+    throw new Error(`${ERROR} TCG_ADMIN_DEMO_MODE must be autoplay or interactive.`);
   if (rawToken && !/^[A-Za-z0-9_-]{32,128}$/.test(rawToken))
     throw new Error(`${ERROR} TCG_ADMIN_LOGIN_TOKEN must be 32 to 128 URL-safe characters.`);
   const rawDist = env.TCG_ADMIN_WEB_DIST?.trim();
@@ -51,6 +59,7 @@ export function readAdminConfig(mode: AdminMode, env: NodeJS.ProcessEnv = proces
     commandsEnabled: mode === 'demo' ? true : flag(env, 'TCG_ADMIN_COMMANDS'),
     devOrigin: rawOrigin ? devOrigin(rawOrigin) : null,
     fixedLoginToken: rawToken,
-    webDist: rawDist ? path.resolve(rawDist) : DEFAULT_WEB_DIST
+    webDist: rawDist ? path.resolve(rawDist) : DEFAULT_WEB_DIST,
+    demoMode: rawDemoMode === 'interactive' ? 'interactive' : 'autoplay'
   };
 }

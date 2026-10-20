@@ -1,7 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { AUDIT_PAGE_LIMIT, CAPABILITIES, type Capability, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
+import { AUDIT_PAGE_LIMIT, type Capability, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
+import { sessionCapabilities } from '../commands.js';
 import type { AdminHandler, AdminHandlerOptions } from '../mount.js';
 import { readEmptyBody, readLoginBody } from './body.js';
+import { commandRoutes } from './routes-commands.js';
 import { fail, HttpError, sendJson, sendNoContent, unavailable } from './respond.js';
 import { SessionStore, type Session } from './sessions.js';
 import { createStaticFiles, isHealthPath } from './static.js';
@@ -11,7 +13,7 @@ import { DEFAULT_STREAM_TIMINGS, StreamManager, type StreamTimings } from './str
 export interface AdminHttpInternals {
   now?: () => number;
   timings?: Partial<StreamTimings>;
-  /** Capabilities held by the local principal. Defaults to all of them. */
+  /** Capabilities held by the local principal. Defaults to decision 4: all of them only when commands are enabled. */
   capabilities?: readonly Capability[];
 }
 
@@ -63,7 +65,7 @@ function eventIdParam(raw: string | undefined): string {
 export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHttpInternals = {}): AdminHttp {
   const { runtime, port } = options;
   const now = internals.now ?? Date.now;
-  const capabilities: Capability[] = [...(internals.capabilities ?? CAPABILITIES)];
+  const capabilities: Capability[] = [...(internals.capabilities ?? sessionCapabilities(options.commandsEnabled))];
   const print = options.printLoginUrl ?? ((url: string) => { process.stdout.write(`Admin console: ${url}\n`); });
   const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
@@ -136,7 +138,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
     } },
     { pattern: /^\/api\/v1\/stream$/, methods: {
       GET: { access: 'dashboard.read', run: ({ request, response, session }) => streams.open(request, response, session!) }
-    } }
+    } },
+    ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 
   async function dispatch(request: IncomingMessage, response: ServerResponse, pathname: string, search: string): Promise<void> {

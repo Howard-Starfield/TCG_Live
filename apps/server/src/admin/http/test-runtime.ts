@@ -1,7 +1,8 @@
 // Stub AdminRuntime for the HTTP tests, backed by @tcg-live/core fixtures.
-import type { AuditEntryDto, EventSnapshotDto, EventSummaryDto, RuntimeStatusDto } from '@tcg-live/core';
+import type { AdminCommandRequestDto, AdminCommandResultDto, AuditEntryDto, EventSnapshotDto, EventSummaryDto,
+  PanelRefreshResultDto, RuntimeStatusDto } from '@tcg-live/core';
 import { auditTimeline, FIXTURE_BOOT_ID, FIXTURE_EVENT_ID, FIXTURE_NOW_MS, liveDispute } from '@tcg-live/core/fixtures';
-import { AdminNotFoundError, type AdminRuntime, type AdminRuntimeChange,
+import { AdminNotFoundError, type AdminPrincipal, type AdminRuntime, type AdminRuntimeChange,
   type AdminRuntimeListener } from '../runtime-types.js';
 
 export const SECOND_EVENT_ID = '0a1b2c3d-0000-4000-8000-000000000002';
@@ -101,6 +102,26 @@ export class StubRuntime implements AdminRuntime {
     }));
     this.events.set(eventId, { snapshot: { ...structuredClone(liveDispute), eventId, version: count, panelRevision: 0 }, audit });
     this.activeId = eventId;
+  }
+
+  /** Console commands received, in order. */
+  readonly commands: Array<{ request: AdminCommandRequestDto; principal: AdminPrincipal }> = [];
+  readonly refreshes: string[] = [];
+  commandResult: AdminCommandResultDto = { applied: true, result: 'Saved: publish.', version: 8, cards: 'updated', roomWarning: null };
+  refreshResult: PanelRefreshResultDto = { cards: 'refreshed', roomWarning: null };
+  /** Thrown by the next command or refresh while set. */
+  commandFailure: Error | null = null;
+
+  async applyAdminCommand(request: AdminCommandRequestDto, principal: AdminPrincipal): Promise<AdminCommandResultDto> {
+    this.commands.push({ request: structuredClone(request), principal });
+    if (this.commandFailure) throw this.commandFailure;
+    return structuredClone(this.commandResult);
+  }
+
+  async refreshPanels(eventId: string): Promise<PanelRefreshResultDto> {
+    this.refreshes.push(eventId);
+    if (this.commandFailure) throw this.commandFailure;
+    return structuredClone(this.refreshResult);
   }
 
   async close(): Promise<void> {

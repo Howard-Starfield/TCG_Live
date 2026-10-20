@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CAPABILITIES } from '@tcg-live/core';
 import { auditTimeline, FIXTURE_EVENT_ID, liveDispute } from '@tcg-live/core/fixtures';
 import { AdminUnavailableError } from '../runtime-types.js';
 import { LOGIN_MAX_FAILURES, SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from './sessions.js';
@@ -20,7 +19,8 @@ test('the launch token is exchanged for a bearer session describing the local pr
     assert.match(grant.token, /^[A-Za-z0-9_-]{43}$/);
     assert.notEqual(grant.token, harness.launchToken());
     const expected = {
-      principal: { kind: 'local', id: 'local-admin', label: 'Local admin' }, capabilities: [...CAPABILITIES],
+      // Decision 4: with commands off (TCG_ADMIN_COMMANDS unset) the session may only read.
+      principal: { kind: 'local', id: 'local-admin', label: 'Local admin' }, capabilities: ['dashboard.read'],
       expiresAtMs: now + SESSION_ABSOLUTE_MS, idleExpiresAtMs: now + SESSION_IDLE_MS, mode: 'discord', commandsEnabled: false
     };
     assert.deepEqual(grant.session, expected);
