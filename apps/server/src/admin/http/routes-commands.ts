@@ -3,7 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Capability, ErrorDto } from '@tcg-live/core';
 import { LOCAL_ADMIN, parseCommandRequest, parsePanelRefreshRequest, requiredCapability } from '../commands.js';
-import { AdminConflictError, AdminRuleError, AdminUnavailableError, type AdminRuntime } from '../runtime-types.js';
+import { AdminConflictError, AdminForbiddenError, AdminRuleError, AdminUnavailableError, type AdminRuntime } from '../runtime-types.js';
 import { readJsonBody } from './body.js';
 import { HttpError, sendJson } from './respond.js';
 
@@ -37,6 +37,7 @@ async function refuse(response: ServerResponse, runtime: AdminRuntime, error: un
     return;
   }
   if (error instanceof AdminRuleError) throw new HttpError(422, 'rule', error.message);
+  if (error instanceof AdminForbiddenError) throw forbidden(DISABLED);
   if (error instanceof AdminUnavailableError) throw new HttpError(503, 'unavailable', error.message);
   throw error;
 }

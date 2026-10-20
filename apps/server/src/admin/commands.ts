@@ -32,6 +32,10 @@ export function requiredCapability(command: AdminCommandDto): Capability {
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EVENT_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SNOWFLAKE = /^[1-9]\d{14,21}$/;
+/** A reason needs one character that is neither whitespace nor a Unicode format character (Cf). */
+const VISIBLE = /[^\s\p{Cf}]/u;
+/** Any UUID. Event IDs in this form are compared in lower case, as PostgreSQL and randomUUID() write them. */
+const ANY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PHASES: readonly MatchPhase[] = ['setup', 'running', 'paused', 'expired', 'final'];
 /** Fields each command type carries besides `type`, in contract order. */
 const COMMAND_FIELDS: Record<AdminCommandDto['type'], readonly string[]> = {
@@ -71,11 +75,14 @@ function integer(value: unknown, name: string, min: number, max = Number.MAX_SAF
   return value;
 }
 
-/** Trimmed; 1 to ADMIN_REASON_MAX_LENGTH characters after trimming. */
+/**
+ * Whitespace is trimmed; 1 to ADMIN_REASON_MAX_LENGTH characters after trimming. A reason made only of
+ * whitespace and format characters (zero-width spaces and joiners, bidi marks) counts as missing.
+ */
 function reason(value: unknown): string {
   if (typeof value !== 'string') throw bad('command.reason must be a string.');
   const trimmed = value.trim();
-  if (!trimmed) throw bad('A reason is required.');
+  if (!VISIBLE.test(trimmed)) throw bad('A reason is required.');
   if (trimmed.length > ADMIN_REASON_MAX_LENGTH) throw bad(`A reason may be at most ${ADMIN_REASON_MAX_LENGTH} characters.`);
   return trimmed;
 }
@@ -142,9 +149,9 @@ export function parseCommandRequest(body: unknown): AdminCommandRequestDto {
   if (body === undefined) throw bad('Request body is required.');
   const source = fields(body, 'Request body', ['commandId', 'eventId', 'command', 'precondition']);
   if (typeof source.commandId !== 'string' || !UUID_V4.test(source.commandId)) throw bad('commandId must be a UUID v4.');
-  if (typeof source.eventId !== 'string' || !EVENT_ID.test(source.eventId)) throw bad('Invalid event ID.');
+  const event = eventId(source.eventId);
   const command = parseCommand(source.command);
-  return { commandId: source.commandId.toLowerCase(), eventId: source.eventId, command,
+  return { commandId: source.commandId.toLowerCase(), eventId: event, command,
     precondition: parsePrecondition(source.precondition, command) };
 }
 
@@ -152,8 +159,13 @@ export function parseCommandRequest(body: unknown): AdminCommandRequestDto {
 export function parsePanelRefreshRequest(body: unknown): PanelRefreshRequestDto {
   if (body === undefined) throw bad('Request body is required.');
   const source = fields(body, 'Request body', ['eventId']);
-  if (typeof source.eventId !== 'string' || !EVENT_ID.test(source.eventId)) throw bad('Invalid event ID.');
-  return { eventId: source.eventId };
+  return { eventId: eventId(source.eventId) };
+}
+
+/** A valid event ID; a UUID is lowercased, so an upper-case copy names the same event. */
+export function eventId(value: unknown): string {
+  if (typeof value !== 'string' || !EVENT_ID.test(value)) throw bad('Invalid event ID.');
+  return ANY_UUID.test(value) ? value.toLowerCase() : value;
 }
 
 /** The stored command ID of a console command. */

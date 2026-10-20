@@ -7,7 +7,7 @@ import { ControllerUnavailableError } from '../../discord/controller.js';
 import { createFixture, RuleError } from '../../rehearsal/domain.js';
 import { CommandConflictError, PreconditionFailedError, RetiredSessionError, UnknownEventError } from '../../rehearsal/store.js';
 import { CONFLICT, LOCAL_ADMIN } from '../commands.js';
-import { AdminConflictError, AdminNotFoundError, AdminRuleError, AdminUnavailableError } from '../runtime-types.js';
+import { AdminConflictError, AdminForbiddenError, AdminNotFoundError, AdminRuleError, AdminUnavailableError } from '../runtime-types.js';
 import { DiscordAdminRuntime, type AdminGateway, type IntervalScheduler } from './discord-runtime.js';
 import type { AdminStore } from './queries.js';
 import { EVENT_ID, IDS } from './testing.js';
@@ -48,10 +48,10 @@ function controller() {
   };
 }
 
-function runtime(options: { ready?: boolean; lost?: boolean; attach?: boolean; fail?: { value: boolean } } = {}) {
+function runtime(options: { ready?: boolean; lost?: boolean; attach?: boolean; fail?: { value: boolean }; commandsEnabled?: boolean } = {}) {
   const fake = controller();
   const lease = { lost: options.lost ?? false };
-  const admin = new DiscordAdminRuntime({ runnerId: 'runner-1', commandsEnabled: true, publicMatchRooms: false,
+  const admin = new DiscordAdminRuntime({ runnerId: 'runner-1', commandsEnabled: options.commandsEnabled ?? true, publicMatchRooms: false,
     store: store(options.fail), scheduler, lease: { isLost: () => lease.lost } });
   admin.attachGateway(gateway(options.ready ?? true), null);
   if (options.attach ?? true) admin.attachController(fake.controller);
@@ -133,6 +133,23 @@ test('503 before the controller attaches, while the gateway is not ready, after 
   await assert.rejects(closed.admin.applyAdminCommand(resolve, LOCAL_ADMIN), AdminUnavailableError);
   for (const item of [unattached, connecting, lost, closed]) assert.equal(item.fake.requests.length, 0);
   await Promise.all([unattached, connecting, lost].map(item => item.admin.close()));
+});
+
+test('defence in depth: with commands disabled the runtime refuses commands and panel refreshes itself', async () => {
+  const { admin, fake } = runtime({ commandsEnabled: false });
+  await assert.rejects(admin.applyAdminCommand(resolve, LOCAL_ADMIN), AdminForbiddenError);
+  await assert.rejects(admin.refreshPanels(EVENT_ID), AdminForbiddenError);
+  assert.equal(fake.requests.length + fake.refreshes, 0);
+  await admin.close();
+});
+
+test('an upper-case event UUID names the same event (lowercased, as PostgreSQL stores it)', async () => {
+  const { admin, fake } = runtime();
+  await admin.applyAdminCommand({ ...resolve, eventId: EVENT_ID.toUpperCase() }, LOCAL_ADMIN);
+  assert.equal(fake.requests[0]!.eventId, EVENT_ID);
+  assert.equal(fake.requests[0]!.content, JSON.stringify([EVENT_ID, resolve.command, resolve.precondition]));
+  assert.deepEqual(await admin.refreshPanels(EVENT_ID.toUpperCase()), { cards: 'refreshed', roomWarning: null });
+  await admin.close();
 });
 
 test('panel refresh: active event only (409 retired, 404 unknown), card rule refusals are 422, results pass through', async () => {

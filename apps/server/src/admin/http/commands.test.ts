@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { CAPABILITIES } from '@tcg-live/core';
 import { FIXTURE_EVENT_ID, liveDispute } from '@tcg-live/core/fixtures';
 import { LOCAL_ADMIN } from '../commands.js';
-import { AdminConflictError, AdminNotFoundError, AdminRuleError, AdminUnavailableError } from '../runtime-types.js';
+import { AdminConflictError, AdminForbiddenError, AdminNotFoundError, AdminRuleError, AdminUnavailableError } from '../runtime-types.js';
 import { MAX_BODY_BYTES } from './body.js';
 import { call, login, startHarness, type Harness } from './test-support.js';
 
@@ -141,6 +141,8 @@ test('runtime refusals: 404, 409 with the active snapshot, 422 rule, 503 unavail
       { error: { code: 'rule', message: 'Admin resolution is unavailable.' } });
     await expect(new AdminUnavailableError('Discord is not ready.'), 503,
       { error: { code: 'unavailable', message: 'Discord is not ready.' } });
+    await expect(new AdminForbiddenError('Admin commands are disabled.'), 403,
+      { error: { code: 'forbidden', message: 'Admin commands are disabled for this console (TCG_ADMIN_COMMANDS).' } });
     await expect(new Error('secret detail'), 500, { error: { code: 'internal', message: 'Internal error.' } });
     // The conflict stands when the snapshot cannot be read.
     harness.runtime.commandFailure = new AdminConflictError('The event changed since this action was prepared; review the latest state.');
