@@ -73,6 +73,14 @@ describe('reason validation', () => {
     expect(checkReason(`  ${'x'.repeat(ADMIN_REASON_MAX_LENGTH)}  `)).toEqual({ ok: true, reason: 'x'.repeat(500) });
     expect(checkReason('  Judge ruling ')).toEqual({ ok: true, reason: 'Judge ruling' });
   });
+
+  it('treats only-format-character reasons as empty, but trims only whitespace', () => {
+    for (const blank of ['​', ' ‍⁠ ', '﻿', '­‎\n']) {
+      expect(checkReason(blank)).toMatchObject({ ok: false, error: expect.stringMatching(/Enter a reason/) });
+    }
+    expect(checkReason(' ​x​ ')).toEqual({ ok: true, reason: '​x​' });
+    expect(checkReason(`​${'x'.repeat(500)}`)).toMatchObject({ ok: false, length: 501 });
+  });
 });
 
 describe('result toasts', () => {

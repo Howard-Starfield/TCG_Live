@@ -1,13 +1,17 @@
 // Console admin actions end to end over the real data layer and a scripted fetch (no server).
 import type { AdminCommandRequestDto, AdminCommandResultDto, EventSnapshotDto, SessionDto } from '@tcg-live/core';
 import { checkin, final, liveDispute, signupOpen } from '@tcg-live/core/fixtures';
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MotionGlobalConfig } from 'motion/react';
+import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
-import { renderConsole, sessionFixture, type HarnessOptions } from '../../app/testing';
-import { adminKeys } from '../../data';
-import { json, type FakeServer } from '../../data/test/fakes';
+import { createHarness, renderConsole, sessionFixture, type HarnessOptions } from '../../app/testing';
+import { AdminDataProvider, adminKeys } from '../../data';
+import { change, frame, json, type FakeServer } from '../../data/test/fakes';
+import { ToastProvider } from '../../ui';
+import { createCommandClient } from './client';
+import { useAdminCommand, type CommandOutcome } from './useAdminCommand';
 
 MotionGlobalConfig.skipAnimations = true;
 
@@ -369,5 +373,185 @@ describe('command composer', () => {
     fireEvent.change(composer(), { target: { value: '/publish' } });
     act(() => { fireEvent.keyDown(composer(), { key: 'Enter', keyCode: 229 }); });
     expect(server.callsTo('POST /commands')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------- review fix round
+
+/** Pushes a stream `change` for `snapshot` on the open stream. */
+async function streamChange(bodies: Array<{ push(text: string): void }>, snapshot: EventSnapshotDto) {
+  const { event, id } = change(snapshot, []);
+  await act(async () => { bodies[bodies.length - 1]!.push(frame(event, id)); });
+}
+
+function withMatch(snapshot: EventSnapshotDto, id: 'M1' | 'M2', patch: Partial<EventSnapshotDto['matches'][number]>, version: number): EventSnapshotDto {
+  return { ...snapshot, version, matches: snapshot.matches.map(match => (match.id === id ? { ...match, ...patch } : match)) };
+}
+
+const preconditionOf = (server: FakeServer, index = 0) => bodies(server)[index]!.precondition;
+
+describe('dialogs decide on the state captured when they open', () => {
+  it('a stream change to the match is not sent until the admin reviews it and confirms again', async () => {
+    const user = userEvent.setup();
+    const harness = renderConsole({ setup: respond('POST /commands', result({ result: 'resolve' })) });
+    await ready();
+    await user.click(screen.getByRole('button', { name: 'Resolve M2' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Resolve M2' });
+    await user.click(within(dialog).getByRole('radio', { name: /Seat C/ }));
+    fireEvent.change(within(dialog).getByRole('textbox', { name: /Reason/ }), { target: { value: 'Ruling' } });
+
+    // While the admin types, a new proposal revision arrives for the same paused match.
+    const moved = withMatch(liveDispute, 'M2', { proposal: { revision: 2, winner: 'D', reporter: 'C', decision: 'open' } }, 18);
+    await streamChange(harness.bodies, moved);
+    const notice = await within(dialog).findByTestId('changed-notice');
+    expect(notice).toHaveTextContent('M2 changed since you opened this. Now:');
+    expect(notice).toHaveTextContent('rev 2');
+    // What the admin read stays on screen.
+    expect(within(dialog).getAllByRole('list', { name: 'Match details' })[0]).toHaveTextContent('rev 1');
+    expect(within(dialog).queryByRole('button', { name: 'Resolve match' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Review the change' })).toBeInTheDocument();
+    // Enter (form submit) while changed only adopts the new state; it never sends.
+    fireEvent.submit(within(dialog).getByTestId('match-action-form'));
+    expect(harness.server.callsTo('POST /commands')).toHaveLength(0);
+    expect(within(dialog).queryByTestId('changed-notice')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('list', { name: 'Match details' })).toHaveTextContent('rev 2');
+    await user.click(within(dialog).getByRole('button', { name: 'Resolve match' }));
+    await waitFor(() => expect(harness.server.callsTo('POST /commands')).toHaveLength(1));
+    expect(preconditionOf(harness.server))
+      .toEqual({ match: { matchId: 'M2', phase: 'paused', proposalRevision: 2, finalWinner: null, pauseGeneration: 1 } });
+  });
+
+  it('a correction must be acknowledged again after reviewing a change', async () => {
+    const user = userEvent.setup();
+    const harness = renderConsole({ snapshot: final, preferences: { panes: { list: true }, listTab: 'matches' },
+      setup: respond('POST /commands', result({ result: 'correct' })) });
+    await ready();
+    await user.click(await screen.findByRole('button', { name: 'Actions for M1' }));
+    await user.click(await screen.findByRole('menuitem', { name: /Correct result/ }));
+    const dialog = await screen.findByRole('alertdialog', { name: "Correct M1's result" });
+    await user.click(within(dialog).getByRole('radio', { name: /Seat B/ }));
+    fireEvent.change(within(dialog).getByRole('textbox', { name: /Reason/ }), { target: { value: 'Scoresheet' } });
+    await user.click(within(dialog).getByRole('checkbox'));
+    expect(within(dialog).getByRole('checkbox')).toBeChecked();
+
+    await streamChange(harness.bodies, withMatch(final, 'M1', { pauseGeneration: 2 }, 21));
+    await user.click(await within(dialog).findByRole('button', { name: 'Review the change' }));
+    expect(within(dialog).getByRole('checkbox')).not.toBeChecked();
+    await user.click(within(dialog).getByRole('button', { name: 'Correct result' }));
+    expect(dialog).toHaveTextContent('Confirm that you mean to change a final result.');
+    expect(harness.server.callsTo('POST /commands')).toHaveLength(0);
+    await user.click(within(dialog).getByRole('checkbox'));
+    await user.click(within(dialog).getByRole('button', { name: 'Correct result' }));
+    await waitFor(() => expect(harness.server.callsTo('POST /commands')).toHaveLength(1));
+    expect(preconditionOf(harness.server).match?.pauseGeneration).toBe(2);
+  });
+
+  it('a roster change under the removal dialog needs a review before Remove', async () => {
+    const user = userEvent.setup();
+    const harness = renderConsole({ snapshot: signupOpen, audit: [], preferences: { panes: { list: true }, listTab: 'players' },
+      setup: respond('POST /commands', result({ result: 'signupRemove' })) });
+    await screen.findByRole('table', { name: /Signup roster/ });
+    await user.click(screen.getByRole('button', { name: 'Remove Cy Park from the signup' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove Cy Park from the signup?' });
+    await streamChange(harness.bodies, { ...signupOpen, version: 4, signup: { ...signupOpen.signup!, roster: signupOpen.signup!.roster.slice(1) } });
+    expect(await within(dialog).findByTestId('changed-notice')).toHaveTextContent('2 of 4 joined: Ben Ortiz, Cy Park');
+    expect(within(dialog).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Review the change' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(harness.server.callsTo('POST /commands')).toHaveLength(1));
+    expect(preconditionOf(harness.server)).toEqual({ signup: { status: 'open', rosterSize: 2 } });
+  });
+});
+
+describe('dialog focus and Escape', () => {
+  it('returns focus to the row menu trigger that opened the dialog', async () => {
+    const user = userEvent.setup();
+    renderConsole({ snapshot: final, preferences: { panes: { list: true }, listTab: 'matches' } });
+    await ready();
+    await user.click(await screen.findByRole('button', { name: 'Actions for M2' }));
+    await user.click(await screen.findByRole('menuitem', { name: /Correct result/ }));
+    await screen.findByRole('alertdialog', { name: "Correct M2's result" });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Actions for M2' })).toHaveFocus());
+  });
+
+  it('falls back to the match row when the trigger unmounted while the dialog was open', async () => {
+    const user = userEvent.setup();
+    const harness = renderConsole({ snapshot: final, preferences: { panes: { list: true }, listTab: 'matches' } });
+    await ready();
+    await user.click(await screen.findByRole('button', { name: 'Actions for M2' }));
+    await user.click(await screen.findByRole('menuitem', { name: /Correct result/ }));
+    const dialog = await screen.findByRole('alertdialog', { name: "Correct M2's result" });
+    // Nothing is actionable any more: the actions column, and the trigger with it, disappear.
+    await streamChange(harness.bodies, { ...final, version: 21, matches: final.matches.map(match => ({ ...match, adminActions: [] })) });
+    await within(dialog).findByText(/no longer available/);
+    expect(screen.queryByRole('button', { name: 'Actions for M2' })).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('TR'));
+    expect(document.activeElement).toHaveTextContent('M2');
+  });
+
+  it('swallows Escape while the request is in flight, then closes on success', async () => {
+    const user = userEvent.setup();
+    let answer!: (response: Response) => void;
+    const harness = renderConsole({ setup: server => {
+      server.always('POST /commands', () => new Promise<Response>(resolve => { answer = resolve; }));
+    } });
+    await ready();
+    await user.click(screen.getByRole('button', { name: 'Resume play M2' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Resume M2 by judge override' });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: /Reason/ }), { target: { value: 'Agreed' } });
+    await user.click(within(dialog).getByRole('button', { name: 'Resume play' }));
+    await waitFor(() => expect(harness.server.callsTo('POST /commands')).toHaveLength(1));
+
+    const prevented: boolean[] = [];
+    const listener = (event: KeyboardEvent) => { if (event.key === 'Escape') prevented.push(event.defaultPrevented); };
+    document.addEventListener('keydown', listener);
+    try {
+      await user.keyboard('{Escape}');
+    } finally {
+      document.removeEventListener('keydown', listener);
+    }
+    // Claimed by the dialog's escape layer (so no lower layer acts on it), and ignored while pending.
+    expect(prevented).toEqual([true]);
+    expect(screen.getByRole('dialog', { name: 'Resume M2 by judge override' })).toBeInTheDocument();
+    await act(async () => { answer(json(200, result({ result: 'judgeResume' }))); });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Resume M2 by judge override' })).not.toBeInTheDocument());
+  });
+});
+
+describe('useAdminCommand retries', () => {
+  it('retries a 503 with the same commandId and stays pending throughout', async () => {
+    const harness = createHarness({ snapshot: publishable, audit: [] });
+    harness.server.once('POST /commands', () => json(503, { error: { code: 'unavailable', message: 'busy' } }));
+    harness.server.once('POST /commands', () => json(200, result({ result: 'publish' })));
+    const waits: number[] = [];
+    let release!: () => void;
+    const client = createCommandClient(harness.data.api, {
+      retryDelaysMs: [500],
+      sleep: ms => { waits.push(ms); return new Promise<void>(resolve => { release = resolve; }); }
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <AdminDataProvider data={harness.data}><ToastProvider>{children}</ToastProvider></AdminDataProvider>
+    );
+    const { result: hook } = renderHook(() => useAdminCommand(sessionFixture, { client }), { wrapper });
+
+    let first!: Promise<CommandOutcome>;
+    act(() => { first = hook.current.run(publishable, { type: 'publish' }); });
+    expect(hook.current.isPending('publish')).toBe(true);
+    await waitFor(() => expect(waits).toEqual([500]));
+    expect(harness.server.callsTo('POST /commands')).toHaveLength(1);
+    expect(hook.current.isPending('publish')).toBe(true);
+    // A second click during the retry wait is not a second intent.
+    await act(async () => { expect(await hook.current.run(publishable, { type: 'publish' })).toEqual({ status: 'skipped' }); });
+    expect(hook.current.isPending('publish')).toBe(true);
+
+    await act(async () => { release(); await first; });
+    await expect(first).resolves.toMatchObject({ status: 'applied' });
+    const ids = bodies(harness.server).map(body => body.commandId);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
+    expect(hook.current.isPending('publish')).toBe(false);
   });
 });

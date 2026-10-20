@@ -57,6 +57,19 @@ describe('composer parsing', () => {
     expect(error(`/resolve M2 C ${'x'.repeat(501)}`, ctx(liveDispute))).toMatch(/500 characters \(it has 501\)/);
   });
 
+  it('refuses an option given twice instead of letting the later one win', () => {
+    expect(error('/resolve M1 A winner:B ruling', ctx(liveDispute))).toMatch(/The winner is given twice \("A" and "B"\)/);
+    expect(error('/judge-resume M1 match:M2 ruling', ctx(liveDispute))).toMatch(/The match is given twice \("M1" and "M2"\)/);
+    expect(error('/resolve match:M1 match:M2 A ruling', ctx(liveDispute))).toMatch(/match is given twice/);
+    expect(error(`/signup-remove @Cy_Park member-id:${ben}`, ctx(signupOpen))).toMatch(/member is given twice/);
+  });
+
+  it('treats a reason of only whitespace or invisible format characters as missing', () => {
+    expect(error('/resolve M2 C ​‍', ctx(liveDispute))).toMatch(/Enter a reason/);
+    expect(error('/resolve M2 C reason:⁠', ctx(liveDispute))).toMatch(/Enter a reason/);
+    expect(ok('/resolve M2 C ​ok', ctx(liveDispute))).toMatchObject({ reason: '​ok' });
+  });
+
   it('follows adminActions and the capabilities', () => {
     expect(error('/publish', ctx(checkin))).toMatch(/not available right now. It needs all four check-ins/);
     expect(error('/correct M1 A x', ctx(liveDispute))).toMatch(/Correct result is not available for M1 right now \(it is running\)/);
@@ -90,6 +103,13 @@ describe('mentions', () => {
     const twins = { members: { ...liveDispute.members, x: { id: 'x', displayName: 'Cy  Park', avatarUrl: null } } };
     expect(mentionFor(twins, cy)).toBe(`@${cy}`);
     expect(mentionFor({ members: {} }, cy)).toBe(`@${cy}`);
+    // Clashes are case-insensitive, as matching is.
+    const cased = { members: { ...liveDispute.members, y: { id: 'y', displayName: 'cy park', avatarUrl: null } } };
+    expect(mentionFor(cased, cy)).toBe(`@${cy}`);
+    expect(mentionFor(cased, 'y')).toBe('@y');
+    // An all-digit name would read as a member ID.
+    const digits = { members: { ...liveDispute.members, [cy]: { id: cy, displayName: '1337', avatarUrl: null } } };
+    expect(mentionFor(digits, cy)).toBe(`@${cy}`);
     expect(resolveMention(liveDispute, '@cy_park')).toEqual({ memberId: cy });
     expect(resolveMention(liveDispute, '@c')).toEqual({ seat: 'C' });
     expect(resolveMention(liveDispute, 'd')).toEqual({ seat: 'D' });
