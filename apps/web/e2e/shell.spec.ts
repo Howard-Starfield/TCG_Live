@@ -114,7 +114,7 @@ test.describe('persistence', () => {
     await expect(dockHandle).toHaveAttribute('aria-valuenow', '512');
     // The dock springs to its new width; grab the handle once it has settled.
     await expect.poll(async () => Math.round((await dock(page).boundingBox())!.width)).toBe(512);
-    // Grab it in the top quarter: at mid-height the live/list divider overlaps it (see the fixme below).
+    // Grab it in the top quarter; the regressions block below covers the spot where the live/list divider meets it.
     const box = (await dockHandle.boundingBox())!;
     const y = box.y + box.height / 4;
     await page.mouse.move(box.x + box.width / 2, y);
@@ -183,7 +183,7 @@ test.describe('sidebar history (one retired event, a fresh active one)', () => {
   test.afterAll(async () => { await demo?.kill(); });
 
   test('the active event is listed first with a live marker; a retired one opens read-only', async ({ page }) => {
-    // Open the console once the first event has retired (see the fixme below for a tab that saw it retire).
+    // Open the console once the first event has retired (the next test covers a tab that saw it retire).
     const bearer = await apiLogin(demo.origin, demo.token);
     await expect.poll(async () => (await apiGet<Array<{ status: string }>>(demo.origin, bearer, '/events')).map(event => event.status),
       { timeout: 20_000 }).toEqual(['active', 'retired']);
