@@ -28,7 +28,10 @@ describe('stage stepper', () => {
     const steps = within(screen.getByRole('region', { name: 'Event progress' })).getAllByRole('listitem');
     expect(steps.map(step => step.getAttribute('aria-current'))).toEqual([null, null, 'step', null]);
     expect(steps[2]).toHaveTextContent('Round 1');
-    expect(screen.queryByRole('button', { name: /publish|refresh/i })).not.toBeInTheDocument();   // no actions in Wave 2
+    // Wave 3: the actions row follows adminActions (liveDispute allows no event action; refresh needs only
+    // panels.refresh). Read-only sessions are covered in features/commands/commands.test.tsx.
+    expect(screen.queryByRole('button', { name: /publish/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh panels' })).toBeInTheDocument();
   });
 });
 

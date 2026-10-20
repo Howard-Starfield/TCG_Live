@@ -8,6 +8,7 @@ import { ChevronRight, Swords } from 'lucide-react';
 import { useMemo } from 'react';
 import { formatTimeOfDay, memberName, useMatchCountdown } from '../../data';
 import { DataTable, EmptyState, StatusDot, cx, type Column } from '../../ui';
+import { MatchActions, useMatchActionsAvailable } from '../commands';
 import { JUDGE_REASON_LABEL, PHASE_META, matchPhaseMeta } from './model';
 import { None, ScrollCue, SeatTag, StatusChip, ToneBadge, useElementWidth } from './shared';
 
@@ -130,6 +131,7 @@ export function MatchesTab({ snapshot, onOpenMatch }: MatchesTabProps) {
   const wide = width === null || width >= MATCH_WIDE_FROM;
   const stackPlayers = width !== null && width < MATCH_STACK_PLAYERS_BELOW;
   const tight = width !== null && width < MATCH_STACK_CLOCK_BELOW;
+  const actionable = useMatchActionsAvailable(snapshot);
 
   const columns = useMemo<Array<Column<MatchDto>>>(() => {
     const list: Array<Column<MatchDto>> = [
@@ -175,12 +177,17 @@ export function MatchesTab({ snapshot, onOpenMatch }: MatchesTabProps) {
           cell: match => <ProposalCell match={match} /> });
       }
     }
+    if (actionable) {
+      // Wave 3 (L10): resolve / judge-resume / correct in a row menu; empty cells where none apply.
+      list.push({ id: 'actions', header: <span className="sr-only">Actions</span>, width: '40px', align: 'end',
+        cell: match => <MatchActions snapshot={snapshot} match={match} variant="menu" /> });
+    }
     if (onOpenMatch && !tight) {
       list.push({ id: 'open', header: <span className="sr-only">Open</span>, width: '28px', align: 'end',
         cell: () => <ChevronRight aria-hidden className="inline size-3.5 text-fg-subtle group-hover/row:text-fg" /> });
     }
     return list;
-  }, [onOpenMatch, snapshot, stackPlayers, tight, wide]);
+  }, [actionable, onOpenMatch, snapshot, stackPlayers, tight, wide]);
 
   const judges = snapshot.matches.filter(match => match.judge).length;
   return (

@@ -5,7 +5,8 @@ import { lazy } from 'react';
 export const galleries: Record<string, ComponentType> = {
   '#/__kit': lazy(() => import('./KitGallery').then(module => ({ default: module.KitGallery }))),
   '#/__flow': lazy(() => import('./FlowGallery').then(module => ({ default: module.FlowGallery }))),
-  '#/__lists': lazy(() => import('./ListsGallery').then(module => ({ default: module.ListsGallery })))
+  '#/__lists': lazy(() => import('./ListsGallery').then(module => ({ default: module.ListsGallery }))),
+  '#/__commands': lazy(() => import('./CommandsGallery').then(module => ({ default: module.CommandsGallery })))
 };
 
 export function resolveGallery(hash: string): ComponentType | null {

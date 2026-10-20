@@ -1,6 +1,8 @@
-// Main controls (L6): stage stepper, needs-you queue and activity stream. Wave 3 adds actions here.
+// Main controls (L6): stage stepper, needs-you queue and activity stream; Wave 3 (L10) adds the
+// action slots and the command composer, which render nothing when the session cannot act.
 import { CalendarClock, CalendarX, DatabaseZap, LoaderCircle } from 'lucide-react';
 import { Button, EmptyState } from '../../ui';
+import { ConsoleComposer } from '../commands';
 import { useShell } from '../shell/model';
 import { ActivityStream } from './ActivityStream';
 import { NeedsYou } from './NeedsYou';
@@ -56,6 +58,7 @@ export function MainControls() {
         <NeedsYou snapshot={snapshot} onOpenMatch={shell.openMatch} readOnly={viewed.retired} />
       </div>
       <ActivityStream key={snapshot.eventId} eventId={snapshot.eventId} snapshot={snapshot} />
+      <ConsoleComposer key={`composer-${snapshot.eventId}`} snapshot={snapshot} readOnly={viewed.retired} />
     </div>
   );
 }
