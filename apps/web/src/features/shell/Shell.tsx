@@ -1,5 +1,6 @@
 import type { SessionDto } from '@tcg-live/core';
 import { useEffect, useState } from 'react';
+import { CommandsProvider } from '../commands';
 import { MainControls } from '../console';
 import { useConsolePreferences } from '../../app/preferences';
 import { Banners } from './Banners';
@@ -37,21 +38,24 @@ export function Shell({ session }: { session: SessionDto }) {
 
   return (
     <ShellProvider value={model}>
-      <div className="shell" data-sidebar={preferences.sidebarCollapsed ? 'collapsed' : 'expanded'}
-        data-narrow={model.dock.narrow || undefined}>
-        <Sidebar />
-        <div className="shell-workspace">
-          <TopBar />
-          <Banners />
-          <div ref={setBody} className="shell-body">
-            <main className="shell-main" aria-label="Console">
-              <MainControls />
-            </main>
-            <PreviewDock bodyWidth={bodyWidth} />
+      {/* Wave 3: admin actions; every slot stays empty unless the session reports commandsEnabled. */}
+      <CommandsProvider session={session}>
+        <div className="shell" data-sidebar={preferences.sidebarCollapsed ? 'collapsed' : 'expanded'}
+          data-narrow={model.dock.narrow || undefined}>
+          <Sidebar />
+          <div className="shell-workspace">
+            <TopBar />
+            <Banners />
+            <div ref={setBody} className="shell-body">
+              <main className="shell-main" aria-label="Console">
+                <MainControls />
+              </main>
+              <PreviewDock bodyWidth={bodyWidth} />
+            </div>
           </div>
+          <PreviewSheet />
         </div>
-        <PreviewSheet />
-      </div>
+      </CommandsProvider>
     </ShellProvider>
   );
 }

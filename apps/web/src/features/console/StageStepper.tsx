@@ -1,6 +1,7 @@
 import type { EventSnapshotDto, RuntimeStatusDto } from '@tcg-live/core';
 import { Check } from 'lucide-react';
 import { StatusDot, cx } from '../../ui';
+import { EventActions } from '../commands';
 
 type Stage = EventSnapshotDto['stage'];
 type StepState = 'done' | 'current' | 'pending';
@@ -71,6 +72,8 @@ export function StageStepper({ snapshot, status, frozen }: { snapshot: EventSnap
           </li>
         ))}
       </ol>
+      {/* Wave 3 actions row (L10): empty without commandsEnabled, the capability or a domain-allowed action. */}
+      <EventActions snapshot={snapshot} readOnly={frozen} />
       <div className="console-stepper-foot">
         <StatusDot tone={pending ? 'warning' : posted === cards.length ? 'success' : 'neutral'} size="sm" />
         <span>Discord cards posted · <span className="tabular-nums">{posted} / {cards.length}</span></span>

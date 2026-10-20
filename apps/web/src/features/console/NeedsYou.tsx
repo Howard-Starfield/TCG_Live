@@ -2,6 +2,7 @@ import type { EventSnapshotDto, JudgeReason, MatchDto, MatchId } from '@tcg-live
 import { CircleCheck, Workflow } from 'lucide-react';
 import { formatElapsed, formatTimeOfDay, useServerNow } from '../../data';
 import { Button, CountBadge, DecisionCard, type DecisionReason } from '../../ui';
+import { MatchActions } from '../commands';
 import { seatName } from '../shell/labels';
 
 const REASON: Record<JudgeReason, DecisionReason> = {
@@ -78,8 +79,14 @@ function JudgeCard({ snapshot, match, now, readOnly, onOpen }: {
       title={title}
       reasons={judge.reasons.map(reason => (mode === 'waiting' ? REASON[reason] : { ...REASON[reason], tone: 'neutral' as const }))}
       meta={meta}
-      actions={<Button size="sm" variant="secondary" icon={<Workflow aria-hidden />} onClick={onOpen}
-        aria-label={`Open ${match.id} in live preview`}>Open in live preview</Button>}>
+      actions={(
+        <>
+          {/* Wave 3 (L10): resolve / judge-resume as the domain allows; nothing in history or read-only mode. */}
+          <MatchActions snapshot={snapshot} match={match} readOnly={readOnly} />
+          <Button size="sm" variant="secondary" icon={<Workflow aria-hidden />} onClick={onOpen}
+            aria-label={`Open ${match.id} in live preview`}>Open in live preview</Button>
+        </>
+      )}>
       <p>
         {name(first)} <span className="text-fg-subtle">(Seat {first})</span> vs {name(second)} <span className="text-fg-subtle">(Seat {second})</span>
         {' · '}{match.phase === 'expired' ? 'clock expired' : match.phase}
