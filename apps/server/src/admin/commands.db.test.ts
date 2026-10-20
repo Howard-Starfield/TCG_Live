@@ -77,6 +77,23 @@ test('real database: console commands share the Discord transaction body, replay
       await runtime.close();
     }
 
+    // Two concurrent FIRST attempts with one command ID: one applies, the other waits on the FOR UPDATE
+    // lock, finds the stored row and replays it. Both answer with the same outcome; one audit row.
+    await bindCard(config, eventId, 'M2', ids[1]!);
+    for (const [index, player] of (['C', 'D'] as const).entries())
+      assert.equal((await applyDiscordCommand({ config, eventId, principalId: config.players![player],
+        interactionId: `14${String(index + 1).padStart(16, '0')}`, message: { slot: 'M2', id: ids[1]!, channelId: config.channelId } },
+      { type: 'ready', matchId: 'M2' }, RUNNER, () => 5_000)).applied, true);
+    const raceId = randomUUID();
+    const race = { commandId: raceId, eventId, command: { type: 'resolve', matchId: 'M2', winner: 'C', reason: 'Race.' },
+      precondition: { match: { matchId: 'M2', phase: 'running', proposalRevision: null, finalWinner: null, pauseGeneration: 0 } } };
+    const [left, right] = await Promise.all([web(race, 5_100), web(race, 5_200)]);
+    assert.deepEqual(left, { eventId, version: 8, result: 'resolve', applied: true });
+    assert.deepEqual(right, left);
+    const raced = await withClient(client => client.query<{ count: number }>(
+      'SELECT count(*)::integer AS count FROM public.tcg_rehearsal_audit WHERE command_id = $1', [`web:${raceId}`]));
+    assert.equal(raced.rows[0]?.count, 1, 'one audit row for the raced command ID');
+
     await prepareSession(config, true);
     // The stored success is still returned after retirement; a new command on the retired event is refused.
     assert.deepEqual(await web(publish, 4_000), first);

@@ -6,7 +6,7 @@ import { ControllerUnavailableError, type AdminApplyResult, type ControllerChang
 import { RuleError, type Command } from '../../rehearsal/domain.js';
 import { CommandConflictError, PreconditionFailedError, RetiredSessionError, UnknownEventError } from '../../rehearsal/store.js';
 import { commandContent, CONFLICT, preconditionHolds, toDomainCommand, webCommandId } from '../commands.js';
-import { AdminConflictError, AdminNotFoundError, AdminRuleError, AdminUnavailableError, type AdminPrincipal,
+import { AdminConflictError, AdminForbiddenError, AdminNotFoundError, AdminRuleError, AdminUnavailableError, type AdminPrincipal,
   type AdminRuntime, type AdminRuntimeChange, type AdminRuntimeListener } from '../runtime-types.js';
 import { IdentityCache, type MemberFetcher } from './identity.js';
 import { defaultBuildId, ListenerSet } from './listeners.js';
@@ -222,9 +222,11 @@ export class DiscordAdminRuntime implements AdminRuntime {
    * room sync, timer scheduling and card refresh as the slash command. 503 before the controller is
    * attached, while the gateway is not ready, after the lease is lost, or while the controller stops.
    */
-  async applyAdminCommand(request: AdminCommandRequestDto, principal: AdminPrincipal): Promise<AdminCommandResultDto> {
+  async applyAdminCommand(input: AdminCommandRequestDto, principal: AdminPrincipal): Promise<AdminCommandResultDto> {
     const controller = this.commandController();
-    if (!UUID.test(request.eventId)) throw new AdminNotFoundError('Unknown event.');
+    if (!UUID.test(input.eventId)) throw new AdminNotFoundError('Unknown event.');
+    // PostgreSQL matches a UUID in any case but stores it in lower case; compare and hash it that way.
+    const request = { ...input, eventId: input.eventId.toLowerCase() };
     let result: AdminApplyResult;
     try {
       const command: Command = toDomainCommand(request.command, controller.config.adminId);
@@ -237,9 +239,10 @@ export class DiscordAdminRuntime implements AdminRuntime {
       cards: result.cards, roomWarning: result.roomWarning };
   }
 
-  async refreshPanels(eventId: string): Promise<PanelRefreshResultDto> {
+  async refreshPanels(input: string): Promise<PanelRefreshResultDto> {
     const controller = this.commandController();
-    if (!UUID.test(eventId)) throw new AdminNotFoundError('Unknown event.');
+    if (!UUID.test(input)) throw new AdminNotFoundError('Unknown event.');
+    const eventId = input.toLowerCase();
     if (await this.read(store => store.activeEventId()) !== eventId) {
       if (await this.read(store => store.readAudit(eventId, 0, 1)) === null) throw new AdminNotFoundError('Unknown event.');
       throw new AdminConflictError(CONFLICT.inactive);
@@ -266,6 +269,8 @@ export class DiscordAdminRuntime implements AdminRuntime {
   // Internals ------------------------------------------------------------------------------------
 
   private commandController(): AdminController {
+    // Defence in depth: the route refuses first, but the runtime never applies a command while they are off.
+    if (!this.options.commandsEnabled) throw new AdminForbiddenError('Admin commands are disabled.');
     if (this.closed) throw new AdminUnavailableError('The admin console is shutting down.');
     let lost = false;
     try { lost = !!this.options.lease?.isLost(); } catch { lost = true; }

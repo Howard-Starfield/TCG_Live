@@ -20,6 +20,8 @@ export class AdminUnavailableError extends Error {}
  * latest snapshot of the active event. The message is safe to show.
  */
 export class AdminConflictError extends Error {}
+/** Wave 3. Console commands are disabled for this runtime (decision 4). Maps to 403 `forbidden`. */
+export class AdminForbiddenError extends Error {}
 /** Wave 3. The domain refused the command. Maps to 422 `rule`; the message is the rule message, safe to show. */
 export class AdminRuleError extends Error {}
 

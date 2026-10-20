@@ -43,7 +43,8 @@ function ids() {
 let uuidCounter = 0;
 const uuid = () => `0f8fad5b-d9cb-4${String(++uuidCounter).padStart(3, '0')}-a165-70867728950e`;
 
-function demo(script: DemoStep[], options: { mode?: 'autoplay' | 'interactive'; durationMs?: number } = {}) {
+function demo(script: DemoStep[], options: { mode?: 'autoplay' | 'interactive'; durationMs?: number; finalHoldMs?: number;
+  keepRetired?: number } = {}) {
   const clock = new FakeClock();
   const runtime = new DemoAdminRuntime({ clock, newEventId: ids(), bootId: 'boot', buildId: 'build', script, ...options });
   const changes: AdminRuntimeChange[] = [];
@@ -99,7 +100,9 @@ test('a stored result is returned before preconditions; other content under the 
   assert.equal((await runtime.audit(before.eventId, 0, 500)).length, audit, 'no second audit row');
   await assert.rejects(runtime.applyAdminCommand({ ...close, precondition: { signup: { status: 'open', rosterSize: 3 } } }, LOCAL_ADMIN),
     (error: unknown) => error instanceof AdminConflictError && /different command/.test(error.message));
-  await assert.rejects(runtime.applyAdminCommand({ ...close, eventId: 'not-this-event' }, LOCAL_ADMIN), AdminNotFoundError);
+  // The stored result is looked up first: the same ID under another event is a reuse, a fresh ID there is unknown.
+  await assert.rejects(runtime.applyAdminCommand({ ...close, eventId: 'not-this-event' }, LOCAL_ADMIN), AdminConflictError);
+  await assert.rejects(runtime.applyAdminCommand({ ...close, commandId: uuid(), eventId: 'not-this-event' }, LOCAL_ADMIN), AdminNotFoundError);
   // A fresh ID with the stale precondition is a 409 (state changed); a matching one meets the domain rule (422).
   await assert.rejects(runtime.applyAdminCommand(request(before.eventId, { type: 'signupClose' }, { signup: { status: 'open', rosterSize: 4 } }), LOCAL_ADMIN),
     (error: unknown) => error instanceof AdminConflictError && /changed/.test(error.message));
@@ -183,7 +186,7 @@ async function until(runtime: DemoAdminRuntime, clock: FakeClock, label: string,
 }
 
 test('interactive demo: players keep acting, the script pauses at each admin decision and resumes when it lands', async () => {
-  const { runtime, clock } = demo(demoScript(), { mode: 'interactive', durationMs: 300_000 });
+  const { runtime, clock } = demo(demoScript(), { mode: 'interactive', durationMs: 300_000, finalHoldMs: 120_000 });
   assert.equal(runtime.playMode, 'interactive');
   const decide = async (decision: string, matchId: MatchId | null, command: (snapshot: EventSnapshotDto) => AdminCommandRequestDto) => {
     await until(runtime, clock, decision, () => runtime.pausedAt?.decision === decision);
@@ -234,7 +237,7 @@ test('interactive demo: a decision taken early is not waited for, and resumeScri
   assert.deepEqual(early.signup!.roster, [ava, ben, eli]);
   await runtime.applyAdminCommand(request(early.eventId, { type: 'signupRemove', memberId: eli }, { signup: signupOf(early) }), LOCAL_ADMIN);
   await until(runtime, clock, 'close decision', () => runtime.pausedAt !== null);
-  assert.deepEqual(runtime.pausedAt, { step: 6, decision: 'signupClose', matchId: null }, 'the moot removal was skipped');
+  assert.deepEqual(runtime.pausedAt, { step: 6, decision: 'signupClose', matchId: null, waitingFor: 'admin', releasesInMs: null }, 'the moot removal was skipped');
   assert.deepEqual((await runtime.snapshot()).signup!.roster, [ava, ben, cy, dee]);
   assert.equal(runtime.resumeScript(), true);
   assert.equal(runtime.resumeScript(), false);
@@ -264,7 +267,7 @@ test('interactive demo: only a command for the awaited decision resumes; others 
   const other = await runtime.applyAdminCommand(request(waiting.eventId, { type: 'resolve', matchId: 'M2', winner: 'C', reason: 'Early.' },
     { match: matchOf(waiting, 'M2') }), LOCAL_ADMIN);
   assert.equal(other.applied, true);
-  assert.deepEqual(runtime.pausedAt, { step: 16, decision: 'judgeResume', matchId: 'M1' }, 'M2 does not answer the M1 decision');
+  assert.deepEqual(runtime.pausedAt, { step: 16, decision: 'judgeResume', matchId: 'M1', waitingFor: 'admin', releasesInMs: null }, 'M2 does not answer the M1 decision');
   await runtime.applyAdminCommand(request(waiting.eventId, { type: 'judgeResume', matchId: 'M1', reason: 'Checked.' },
     { match: matchOf(waiting, 'M1') }), LOCAL_ADMIN);
   assert.equal(runtime.pausedAt, null);
@@ -273,6 +276,148 @@ test('interactive demo: only a command for the awaited decision resumes; others 
   assert.equal(after.matches[0]!.proposal?.winner, 'A', 'the players continue after the decision');
   assert.equal((await runtime.audit(after.eventId, 0, 500)).filter(entry => entry.command.reason === 'Scripted.').length, 0,
     'the scripted admin step is never applied in interactive mode');
+  await runtime.close();
+});
+
+/** Applies a console command built from the latest snapshot. */
+async function admin(runtime: DemoAdminRuntime, build: (snapshot: EventSnapshotDto) => AdminCommandRequestDto) {
+  const result = await runtime.applyAdminCommand(build(await runtime.snapshot()), LOCAL_ADMIN);
+  assert.equal(result.applied, true, result.result);
+  return result;
+}
+const close = (s: EventSnapshotDto) => request(s.eventId, { type: 'signupClose' }, { signup: signupOf(s) });
+const removeMember = (memberId: string) => (s: EventSnapshotDto) =>
+  request(s.eventId, { type: 'signupRemove', memberId }, { signup: signupOf(s) });
+const publishNow = (s: EventSnapshotDto) => request(s.eventId, { type: 'publish' }, { eventVersion: s.version });
+
+test('interactive event pauses: removing a player instead of closing keeps the close pending until a player refills the seat', async () => {
+  const { runtime, clock } = demo(demoScript(), { mode: 'interactive' });
+  await until(runtime, clock, 'remove decision', () => runtime.pausedAt?.decision === 'signupRemove');
+  await admin(runtime, removeMember(eli));
+  await until(runtime, clock, 'close decision', () => runtime.pausedAt?.decision === 'signupClose');
+  assert.deepEqual((await runtime.snapshot()).signup!.roster, [ava, ben, cy, dee]);
+  // The admin removes Dee instead of closing: the close is impossible now, but recoverable.
+  await admin(runtime, removeMember(dee));
+  assert.deepEqual(runtime.pausedAt, { step: 6, decision: 'signupClose', matchId: null, waitingFor: 'players', releasesInMs: null });
+  clock.advance(2_000);
+  const refilled = await runtime.snapshot();
+  assert.deepEqual(refilled.signup!.roster, [ava, ben, cy, eli], 'the member removed longest ago rejoins');
+  assert.equal(refilled.signup!.status, 'open');
+  assert.deepEqual(runtime.pausedAt, { step: 6, decision: 'signupClose', matchId: null, waitingFor: 'admin', releasesInMs: null });
+  clock.advance(60_000);
+  assert.equal((await runtime.snapshot()).version, refilled.version, 'nothing else moves while the admin decides');
+  await admin(runtime, close);
+  assert.equal(runtime.pausedAt, null, 'the close was the awaited decision');
+  await until(runtime, clock, 'publish decision', () => runtime.pausedAt?.decision === 'publish');
+  assert.deepEqual((await runtime.snapshot()).checkins, ['A', 'B', 'C', 'D'], 'the scripted check-ins followed');
+  await runtime.close();
+});
+
+test('interactive event pauses: removing someone else at the remove step makes room and the scenario moves on', async () => {
+  const { runtime, clock } = demo(demoScript(), { mode: 'interactive' });
+  await until(runtime, clock, 'remove decision', () => runtime.pausedAt?.decision === 'signupRemove');
+  await admin(runtime, removeMember(ben));
+  assert.equal(runtime.pausedAt, null);
+  await until(runtime, clock, 'close decision', () => runtime.pausedAt?.decision === 'signupClose');
+  assert.deepEqual((await runtime.snapshot()).signup!.roster, [ava, eli, cy, dee], 'Dee joined in the freed seat');
+  assert.equal(runtime.pausedAt!.waitingFor, 'admin');
+  await runtime.close();
+});
+
+test('interactive event pauses: a reopen at the publish step asks for the close again, then the players check in again', async () => {
+  const { runtime, clock } = demo(demoScript(), { mode: 'interactive' });
+  await until(runtime, clock, 'remove decision', () => runtime.pausedAt?.decision === 'signupRemove');
+  await admin(runtime, removeMember(eli));
+  await until(runtime, clock, 'close decision', () => runtime.pausedAt?.decision === 'signupClose');
+  await admin(runtime, close);
+  await until(runtime, clock, 'publish decision', () => runtime.pausedAt?.decision === 'publish');
+  await admin(runtime, s => request(s.eventId, { type: 'signupReopen' }, { signup: signupOf(s) }));
+  assert.deepEqual(runtime.pausedAt, { step: 12, decision: 'signupClose', matchId: null, waitingFor: 'admin', releasesInMs: null },
+    'what is needed now, not the scripted publish');
+  await admin(runtime, close);
+  assert.deepEqual(runtime.pausedAt, { step: 12, decision: 'publish', matchId: null, waitingFor: 'players', releasesInMs: null });
+  clock.advance(4 * 2_000);
+  assert.deepEqual((await runtime.snapshot()).checkins, ['A', 'B', 'C', 'D']);
+  assert.equal(runtime.pausedAt!.waitingFor, 'admin');
+  await admin(runtime, publishNow);
+  assert.equal(runtime.pausedAt, null);
+  await until(runtime, clock, 'M1 running', () => runtime.step > 14);
+  await runtime.close();
+});
+
+test('interactive: running clocks still expire while paused, and the expired match becomes the next decision', async () => {
+  const { runtime, clock } = demo(demoScript(), { mode: 'interactive', durationMs: 30_000 });
+  await until(runtime, clock, 'remove decision', () => runtime.pausedAt?.decision === 'signupRemove');
+  await admin(runtime, removeMember(eli));
+  await until(runtime, clock, 'close decision', () => runtime.pausedAt?.decision === 'signupClose');
+  await admin(runtime, close);
+  await until(runtime, clock, 'publish decision', () => runtime.pausedAt?.decision === 'publish');
+  await admin(runtime, publishNow);
+  await until(runtime, clock, 'judge-resume decision', () => runtime.pausedAt?.decision === 'judgeResume');
+  const waiting = await runtime.snapshot();
+  assert.equal(waiting.matches[1]!.phase, 'running', 'M2 still has time when the pause begins');
+  clock.advance(30_000);
+  const expired = await runtime.snapshot();
+  assert.equal(expired.matches[1]!.phase, 'expired', 'M2 reached its deadline during the pause');
+  assert.deepEqual(expired.matches[1]!.judge?.reasons, ['expired']);
+  assert.equal(expired.matches[1]!.clock.remainingMs, 0);
+  const timer = (await runtime.audit(expired.eventId, 0, 500)).at(-1)!;
+  assert.deepEqual([timer.via, timer.command], ['system', { type: 'clockCheck', matchId: 'M2' }]);
+  assert.equal(runtime.pausedAt!.decision, 'judgeResume', 'the current decision stays first');
+  await admin(runtime, s => request(s.eventId, { type: 'judgeResume', matchId: 'M1', reason: 'Checked.' }, { match: matchOf(s, 'M1') }));
+  assert.deepEqual(runtime.pausedAt, { step: 20, decision: 'resolve', matchId: 'M2', waitingFor: 'admin', releasesInMs: null });
+  await admin(runtime, s => request(s.eventId, { type: 'resolve', matchId: 'M2', winner: 'C', reason: 'Time.' }, { match: matchOf(s, 'M2') }));
+  assert.equal(runtime.pausedAt, null);
+  await runtime.close();
+});
+
+test('interactive: the end-of-event hold releases on a correction or on its own after finalHoldMs', async () => {
+  const scripted = (command: Command): DemoStep => ({ wait: 10, who: 'admin', command });
+  const steps: DemoStep[] = [join(ava), join(ben), join(cy), join(dee), scripted({ type: 'signupClose', adminId: DEMO_MEMBERS[0]!.id }),
+    ...(['A', 'B', 'C', 'D'] as const).map(who => seat(who, { type: 'checkin' })), scripted({ type: 'publish' }),
+    seat('A', { type: 'ready', matchId: 'M1' }), seat('B', { type: 'ready', matchId: 'M1' }),
+    seat('A', { type: 'propose', matchId: 'M1', winner: 'A', expectedRevision: 0 }),
+    seat('B', { type: 'confirm', matchId: 'M1', revision: 1 }), { wait: 1_000, restart: true }];
+  const { runtime, clock } = demo(steps, { mode: 'interactive', finalHoldMs: 5_000 });
+  for (const decision of ['signupClose', 'publish']) {
+    await until(runtime, clock, decision, () => runtime.pausedAt?.decision === decision);
+    await admin(runtime, decision === 'publish' ? publishNow : close);
+  }
+  await until(runtime, clock, 'final hold', () => runtime.pausedAt?.decision === 'correct');
+  const hold = runtime.pausedAt!.releasesInMs!;
+  assert.ok(hold > 4_000 && hold <= 5_000, String(hold));
+  assert.deepEqual(runtime.pausedAt, { step: 14, decision: 'correct', matchId: null, waitingFor: 'admin', releasesInMs: hold });
+  clock.advance(2_000);
+  assert.equal(runtime.pausedAt!.releasesInMs, hold - 2_000);
+  clock.advance(hold - 2_000);
+  assert.equal(runtime.pausedAt, null, 'released without a correction');
+  assert.equal(runtime.cycles, 0);
+  clock.advance(1_000);
+  assert.equal(runtime.cycles, 1, 'then the restart step runs');
+
+  const second = demo(steps, { mode: 'interactive' });
+  for (const decision of ['signupClose', 'publish']) {
+    await until(second.runtime, second.clock, decision, () => second.runtime.pausedAt?.decision === decision);
+    await admin(second.runtime, decision === 'publish' ? publishNow : close);
+  }
+  await until(second.runtime, second.clock, 'final hold', () => second.runtime.pausedAt?.decision === 'correct');
+  assert.ok(second.runtime.pausedAt!.releasesInMs! > 59_000 && second.runtime.pausedAt!.releasesInMs! <= 60_000, 'the default hold');
+  await admin(second.runtime, s => request(s.eventId, { type: 'correct', matchId: 'M1', winner: 'B', reason: 'Sheet.' }, { match: matchOf(s, 'M1') }));
+  assert.equal(second.runtime.pausedAt, null, 'a correction releases the hold');
+  await runtime.close();
+  await second.runtime.close();
+});
+
+test('a stored result is still returned after its event dropped out of the retired history', async () => {
+  const { runtime, clock } = demo([join(ava), { wait: 1_000, restart: true }], { keepRetired: 1 });
+  clock.advance(100);
+  const first = await runtime.snapshot();
+  const remove = request(first.eventId, { type: 'signupRemove', memberId: ava }, { signup: signupOf(first) });
+  const stored = await runtime.applyAdminCommand(remove, LOCAL_ADMIN);
+  clock.advance(5_000);
+  await assert.rejects(runtime.snapshot(first.eventId), AdminNotFoundError, 'no longer listed');
+  assert.deepEqual(await runtime.applyAdminCommand(remove, LOCAL_ADMIN), stored);
+  await assert.rejects(runtime.applyAdminCommand({ ...remove, commandId: uuid() }, LOCAL_ADMIN), AdminNotFoundError);
   await runtime.close();
 });
 

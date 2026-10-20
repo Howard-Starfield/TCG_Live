@@ -123,6 +123,24 @@ test('every malformed request is a 400 bad_request', () => {
   for (const [body, pattern, label] of cases) rejects(body, pattern, label);
 });
 
+test('a reason of only whitespace and format characters is missing; whitespace alone is trimmed', () => {
+  const withReason = (text: string) => ({ ...valid().resolve, command: { type: 'resolve', matchId: 'M1', winner: 'A', reason: text } });
+  for (const [text, label] of [['​', 'zero-width space'], ['​‌‍⁠', 'zero-width run'],
+    [' ‎‏ ‪‬ ', 'bidi marks among spaces'], ['﻿', 'byte order mark'], ['­', 'soft hyphen'],
+    ['　 \t', 'unicode spaces']] as const)
+    rejects(withReason(text), /^A reason is required\.$/, label);
+  const kept = parseCommandRequest(withReason(' ​ok​ '));
+  assert.equal(kept.command.type === 'resolve' && kept.command.reason, '​ok​', 'format characters are kept, not trimmed');
+  assert.equal((parseCommandRequest(withReason(' é ')).command as { reason: string }).reason, 'é');
+});
+
+test('UUID event IDs are lowercased; other valid IDs are kept as given', () => {
+  assert.equal(parseCommandRequest({ ...valid().publish, eventId: EVENT.toUpperCase().replace(/1/g, 'A') }).eventId,
+    EVENT.replace(/1/g, 'a'));
+  assert.equal(parsePanelRefreshRequest({ eventId: '0A1B2C3D-0000-4000-8000-00000000000F' }).eventId, '0a1b2c3d-0000-4000-8000-00000000000f');
+  assert.equal(parsePanelRefreshRequest({ eventId: 'Demo-Event' }).eventId, 'Demo-Event');
+});
+
 test('panel refresh requests take exactly an event ID', () => {
   assert.deepEqual(parsePanelRefreshRequest({ eventId: EVENT }), { eventId: EVENT });
   for (const body of [undefined, {}, { eventId: 5 }, { eventId: EVENT, force: true }, { eventId: '../x' }, []])
