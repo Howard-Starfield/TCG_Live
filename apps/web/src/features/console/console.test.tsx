@@ -81,6 +81,9 @@ describe('activity stream', () => {
     const merged = groupActivity([auditTimeline[10]!, { ...auditTimeline[10]!, sequence: 99, command: { type: 'pause', matchId: 'M1' } }], liveDispute);
     expect(merged).toHaveLength(1);
     expect(merged[0]?.lines.map(line => line.text)).toEqual(['Is ready for M1', 'Paused M1']);
+    // Same actor through another channel (a console action after a Discord one): its own group and label.
+    const viaWeb = groupActivity([auditTimeline[10]!, { ...auditTimeline[10]!, sequence: 99, via: 'web' }], liveDispute);
+    expect(viaWeb.map(group => group.first.via)).toEqual([auditTimeline[10]!.via, 'web']);
     expect(lineText(formatAuditEntry(auditTimeline[4]!, liveDispute))).toBe('Closed signup and assigned seats');
   });
 

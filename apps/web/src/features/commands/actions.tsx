@@ -59,8 +59,12 @@ export function EventActions({ snapshot, readOnly = false }: { snapshot: EventSn
   );
 }
 
-/** Keeps clicks and keys on row actions from activating the table row (portalled menus bubble here too). */
+/**
+ * Keeps clicks, Enter and Space on row actions from activating the table row (portalled menus bubble
+ * here too). Other keys bubble on, so a surrounding sheet still traps Tab and closes on Escape.
+ */
 function stopRow(event: MouseEvent | KeyboardEvent) {
+  if ('key' in event && event.key !== 'Enter' && event.key !== ' ') return;
   event.stopPropagation();
 }
 

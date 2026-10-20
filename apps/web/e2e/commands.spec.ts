@@ -243,7 +243,7 @@ test.describe('interactive demo: the whole script answered from the console', ()
     expect((await activeSnapshot(demo.origin, bearer)).eventId).not.toBe(before.eventId);
 
     // The retired event keeps the correction in its history; the console offers no stepper actions or
-    // composer there. (Its list tabs are covered by "known issues" below: bug 3.)
+    // composer there. (Its list tabs are covered by "regressions: retired history" below.)
     await history.getByRole('button').click();
     await expect(crumb(page)).toHaveText('History');
     await expect(mainConsole(page)).toContainText('Corrected M2 to Seat C');
@@ -373,17 +373,14 @@ test.describe('interactive demo: recovery and clocks while paused', () => {
   });
 });
 
-test.describe('known issues: activity attribution', () => {
+test.describe('regressions: activity attribution', () => {
   let demo: DemoProcess;
   // Autoplay, held right after the scripted (Discord) admin closed signup.
   test.beforeAll(async () => { demo = await startDemo({ scenario: { steps: 7 } }); });
   test.afterAll(async () => { await demo?.kill(); });
 
-  // Bug 5: the activity stream groups consecutive entries by actor only (apps/web/src/features/console/
-  // ActivityStream.tsx groupActivity, actorKey) and labels the group with its first entry's `via`. A console
-  // action that follows a Discord action by the same admin within five minutes is shown "via Discord". The
-  // audit tab shows the right `via` per row.
-  test.fixme('a console action right after a Discord action by the same admin is labelled "via console"', async ({ page }) => {
+  // Wave 3 QA bug 5 (fixed): activity groups used to merge by actor only and showed the first entry's channel.
+  test('a console action right after a Discord action by the same admin is labelled "via console"', async ({ page }) => {
     await expect.poll(async () => (await demo.state()).step, { timeout: 20_000 }).toBe(7);
     await openConsole(page, { origin: demo.origin, token: demo.token });
     const log = page.getByTestId('activity-log');
@@ -396,18 +393,15 @@ test.describe('known issues: activity attribution', () => {
   });
 });
 
-test.describe('known issues', () => {
+test.describe('regressions: retired history', () => {
   let demo: DemoProcess;
   // Steps 40 ms apart, M1's clock runs out after 3 s, the event completes, and it retires 4 s later while watched.
   test.beforeAll(async () => { demo = await startDemo({ scenario: { steps: 28, durationMs: 3_000, retireOnce: true, retireGapMs: 4_000 } }); });
   test.afterAll(async () => { await demo?.kill(); });
 
-  // Bug 3: a retired snapshot is mapped with panelRevision 0 (apps/server/src/admin/runtime/mappers.ts:257), so at
-  // the same version the web's isSnapshotNewer() (apps/web/src/data/cache.ts:41) prefers the cached, still "active"
-  // snapshot of an event that had any panel revision. The shell then sees summary.status 'retired' against
-  // snapshot.status 'active' forever (features/shell/model.tsx:129) and refetches the snapshot in a tight loop, and
-  // the list tabs of that history event keep their action controls (they read snapshot.status).
-  test.fixme('a just-retired event, once selected, is read a bounded number of times and offers no row actions', async ({ page }) => {
+  // Wave 3 QA bug 3 (fixed): at the same version a retired snapshot (panel revision 0) lost to the cached active copy,
+  // so the shell refetched it in a tight loop and the history list tabs kept their actions.
+  test('a just-retired event, once selected, is read a bounded number of times and offers no row actions', async ({ page }) => {
     const reads: string[] = [];
     page.on('request', request => { if (/\/api\/v1\/events\/[^/]+\/snapshot$/.test(request.url())) reads.push(request.url()); });
     await openConsole(page, { origin: demo.origin, token: demo.token, preferences: { panes: { live: false, list: true }, listTab: 'matches' } });

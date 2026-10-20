@@ -37,10 +37,15 @@ export function createAdminQueryClient(): QueryClient {
   });
 }
 
-/** True when `candidate` is at least as new as `current` (version, then panel revision). */
+/**
+ * True when `candidate` is at least as new as `current` (version, then panel revision). Retirement is
+ * final and does not bump the version, and retired snapshots carry panel revision 0, so at the same
+ * version the retired copy always wins over the active one.
+ */
 export function isSnapshotNewer(candidate: EventSnapshotDto, current: EventSnapshotDto | undefined): boolean {
   if (!current) return true;
   if (candidate.version !== current.version) return candidate.version > current.version;
+  if (candidate.status !== current.status) return candidate.status === 'retired';
   return candidate.panelRevision >= current.panelRevision;
 }
 

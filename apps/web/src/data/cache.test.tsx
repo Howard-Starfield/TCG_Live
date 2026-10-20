@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { createAdminData, type AdminData } from './admin-data';
 import { applyStreamAudit, type AuditLog } from './audit-log';
-import { adminKeys, applyStreamEvent, createAdminQueryClient, INACTIVE_EVENT_GC_MS } from './cache';
+import { adminKeys, applyStreamEvent, createAdminQueryClient, INACTIVE_EVENT_GC_MS, isSnapshotNewer } from './cache';
 import { ServerClock } from './clock';
 import { useActiveSnapshot, useAudit, useEvents, useEventSnapshot, useRuntimeStatus, useStreamConnection } from './hooks';
 import { AdminDataProvider } from './provider';
@@ -208,6 +208,25 @@ describe('caches of events that are no longer active (Wave 2 review)', () => {
     await act(async () => { bodies[0]!.push(frame(hello({ activeEventId: liveDispute.eventId })) + frame(first.event, first.id)); });
     await waitFor(() => expect(result.current.data?.status).toBe('active'));
     server.always(`GET /events/${liveDispute.eventId}/snapshot`, () => json(200, retiredCopy));
+    const next = change({ ...liveDispute, eventId: 'event-2', version: 1 }, []);
+    await act(async () => { bodies[0]!.push(frame(next.event, next.id)); });
+    await waitFor(() => expect(result.current.data?.status).toBe('retired'));
+  });
+
+  it('takes a retired copy at the same version over the cached active one (Wave 3 QA)', async () => {
+    // Retirement does not bump the version, and retired snapshots carry panel revision 0.
+    const active = { ...liveDispute, panelRevision: 3 };
+    const retiredCopy = { ...active, status: 'retired' as const, retiredAtMs: FIXTURE_NOW_MS, panelRevision: 0 };
+    expect(isSnapshotNewer(retiredCopy, active)).toBe(true);
+    expect(isSnapshotNewer(active, retiredCopy)).toBe(false);
+    expect(isSnapshotNewer({ ...active, panelRevision: 2 }, active)).toBe(false);
+    const { bodies, wrapper, server } = harness();
+    const { result } = renderHook(() => useEventSnapshot(active.eventId), { wrapper });
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const first = change(active, []);
+    await act(async () => { bodies[0]!.push(frame(hello({ activeEventId: active.eventId })) + frame(first.event, first.id)); });
+    await waitFor(() => expect(result.current.data?.status).toBe('active'));
+    server.always(`GET /events/${active.eventId}/snapshot`, () => json(200, retiredCopy));
     const next = change({ ...liveDispute, eventId: 'event-2', version: 1 }, []);
     await act(async () => { bodies[0]!.push(frame(next.event, next.id)); });
     await waitFor(() => expect(result.current.data?.status).toBe('retired'));

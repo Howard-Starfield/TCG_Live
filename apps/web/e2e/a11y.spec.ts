@@ -224,18 +224,14 @@ test.describe('below 1100 px', () => {
     await expect(page.getByTestId('preview-sheet').getByTestId('live-preview')).toHaveAttribute('data-view', 'match');
   });
 
-  test.describe('known issues', () => {
+  test.describe('regressions', () => {
     let demo: DemoProcess;
     // Signup open with four members: the Players tab has a remove button in every row.
     test.beforeAll(async () => { demo = await startDemo({ scenario: { steps: 4 } }); });
     test.afterAll(async () => { await demo?.kill(); });
 
-    // Bug 4: the row-action wrappers in apps/web/src/features/commands/actions.tsx (`stopRow`, on the Players
-    // remove buttons and the Matches "Actions for" menus) stop the propagation of every keydown. The sheet's
-    // focus trap and Escape handler (features/shell/PreviewDock.tsx onKeyDown) never see Tab or Escape pressed
-    // there: Tab from the last remove button leaves the modal sheet for the page behind it, and Escape does
-    // not close the sheet.
-    test.fixme('Tab and Escape on a row action stay with the sheet', async ({ page }) => {
+    // Wave 3 QA bug 4 (fixed): row-action wrappers used to stop every keydown, so the sheet never saw Tab or Escape.
+    test('Tab and Escape on a row action stay with the sheet', async ({ page }) => {
       await openConsole(page, { origin: demo.origin, token: demo.token, preferences: { panes: { live: false, list: true }, listTab: 'players' } });
       await listPreviewToggle(page).click();
       await expect(sheet(page)).toBeVisible();

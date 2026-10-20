@@ -40,7 +40,7 @@ export function lineText(formatted: FormattedAuditEntry): string {
   return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
-/** Groups consecutive entries by actor (ascending input, ascending groups). */
+/** Groups consecutive entries by actor and channel (ascending input, ascending groups). */
 export function groupActivity(entries: AuditEntryDto[], names: EventSnapshotDto | undefined): ActivityGroup[] {
   const groups: ActivityGroup[] = [];
   for (const entry of entries) {
@@ -48,7 +48,8 @@ export function groupActivity(entries: AuditEntryDto[], names: EventSnapshotDto 
     const line = { entry, formatted, text: lineText(formatted) };
     const last = groups[groups.length - 1];
     const lastEntry = last?.lines[last.lines.length - 1]?.entry;
-    if (last && lastEntry && actorKey(last.actor) === actorKey(entry.actor) && entry.occurredAtMs - lastEntry.occurredAtMs <= GROUP_WINDOW_MS) {
+    if (last && lastEntry && actorKey(last.actor) === actorKey(entry.actor) && last.first.via === entry.via
+      && entry.occurredAtMs - lastEntry.occurredAtMs <= GROUP_WINDOW_MS) {
       last.lines.push(line);
     } else {
       groups.push({ key: `g${entry.sequence}`, actor: entry.actor, first: entry, formatted, lines: [line] });
