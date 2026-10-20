@@ -119,7 +119,7 @@ Result reporting uses **I won**, followed by the opponent's green **Agree** or r
 
 Pause before a planned restart. A new process can continue setup, paused, expired, or finished state, but it blocks a session containing a persisted running clock. Use explicit replacement for an interrupted practice session; running-clock recovery is deferred. A brief Gateway reconnect within the same process keeps the clock counting. Ctrl+C stops the runtime.
 
-Project plans under `docs/` record product direction. [The B0 plan](docs/BOILERPLATE_PLAN.md) and [validation record](docs/B0_VALIDATION.md) document the health-server foundation. [The rehearsal plan](docs/FOUR_PLAYER_REHEARSAL_PLAN.md) defines the local fixture, and [its validation record](docs/REHEARSAL_VALIDATION.md) explains how to reuse the native PostgreSQL target on this workstation. [The private Discord plan](docs/PRIVATE_DISCORD_PLAN.md) and [review decisions](docs/PRIVATE_DISCORD_REVIEW.md) define this adapter's scope. Use the [future test checklist](docs/FUTURE_TEST_CHECKLIST.md) for the next Discord regression pass and signup work. Multi-round tournaments, global ratings, admin UI, and recovery remain later work.
+Project plans under `docs/` record product direction. [The B0 plan](docs/BOILERPLATE_PLAN.md) and [validation record](docs/B0_VALIDATION.md) document the health-server foundation. [The rehearsal plan](docs/FOUR_PLAYER_REHEARSAL_PLAN.md) defines the local fixture, and [its validation record](docs/REHEARSAL_VALIDATION.md) explains how to reuse the native PostgreSQL target on this workstation. [The private Discord plan](docs/PRIVATE_DISCORD_PLAN.md) and [review decisions](docs/PRIVATE_DISCORD_REVIEW.md) define this adapter's scope. Use the [future test checklist](docs/FUTURE_TEST_CHECKLIST.md) for the next Discord regression pass and signup work. Multi-round tournaments, global ratings, and recovery remain later work; the local admin console is described [below](#local-admin-console).
 
 ## Private signup and roster
 
@@ -150,3 +150,33 @@ Admin Refresh retries failed room-policy updates. Permission failure does not ro
 Panels, resume reminders, organizer notices and private responses use small original trainer-orb PNG/GIF thumbnails. Each state has a distinct badge; the existing text, mentions, deadline and buttons still describe the actual match. Successful button clicks remain silent, and private errors retain their eight-second deletion. Animation is decorative and works with clients that display only a still frame.
 
 Artwork is packaged in `apps/server/assets/discord/`; the bot needs Attach Files and Embed Links in its configured channels. Ordinary edits retain the current image, while state changes replace it and sticky reposts upload one visual for the new message. No image-hosting service or runtime image generator is required. Source SVGs and the optional development-only generator are included. See [the artwork overview](apps/server/assets/discord/visual-contact-sheet.png), [the reviewed visual plan](docs/DISCORD_VISUAL_PLAN.md), and [verification](docs/DISCORD_VISUAL_VALIDATION.md).
+
+## Local admin console
+
+A browser console for the organizer: the signup, check-in and match stages, the live match diagram, players, matches, the audit log, Discord card status, and (opt-in) admin actions. It is served by the bot process itself on `127.0.0.1` at the health server's `PORT`, so nothing else needs to run. It is localhost-only; other sign-ins are later work.
+
+Try it without Discord or PostgreSQL first:
+
+```powershell
+npm.cmd run admin:demo
+```
+
+The demo builds the web app, plays a scripted four-player event with the real domain rules, and prints a one-time `Admin console: http://127.0.0.1:<port>/#login=...` link. Open that link; the token is exchanged for a session and removed from the address bar. The demo always allows admin actions. Set `TCG_ADMIN_DEMO_MODE=interactive` to make the script stop wherever an organizer decision is needed (remove, close signup, publish, judge-resume, resolve after an expiry, and an optional correction before the event restarts).
+
+The main window is the console: the stage stepper, the *Needs you* decision cards, the activity stream and, when actions are enabled, the command box. The *Live preview* and *List preview* toggles at the top (Alt+1 and Alt+2) open the live match diagram and the Players, Matches, Audit and Discord tabs beside it, or in a sheet on narrow windows. Retired events stay readable under History.
+
+With the Discord runtime, the console is off until enabled:
+
+```powershell
+$env:TCG_ADMIN_CONSOLE = '1'      # serve the console (read-only)
+$env:TCG_ADMIN_COMMANDS = '1'     # optional: let the console act as the configured admin
+npm.cmd run discord:signup-run    # or discord:run
+```
+
+The bot prints the console link at startup. Sessions last at most 12 hours and end after 2 idle hours; *Rotate console link* in the account menu prints a fresh link and invalidates the old one. Failed sign-ins are limited to 10 a minute.
+
+Admin actions (publish, signup close/reopen/remove, judge-resume, resolve, correct, panel refresh) are off unless `TCG_ADMIN_COMMANDS=1`. With it off, the console only reads and shows no action controls. With it on, a console action is the same command as the matching `/tcg-test` subcommand: it goes through the same transaction, gates, card refresh and match-room sync, needs a reason where the slash command does, and is audited as `via console` (`principal_kind = 'web'`). Each action carries the state the organizer saw; if the event changed meanwhile, the console shows the fresh state and asks again rather than applying it. Retrying an action that already succeeded returns the original result.
+
+Configuration is strict and fails closed. `TCG_ADMIN_CONSOLE` and `TCG_ADMIN_COMMANDS` accept only `0` or `1`. The demo-only variables `TCG_ADMIN_LOGIN_TOKEN`, `TCG_ADMIN_DEV_ORIGIN` and `TCG_ADMIN_DEMO_MODE` stop the Discord runtime at startup when set, even with the console off, so a leftover demo value cannot reach a live session. Ctrl+C ends open console streams and exits cleanly.
+
+`TCG_ADMIN_CONSOLE` stays off by default until a live Discord check with the console enabled is recorded. See [the console plan](docs/ADMIN_DASHBOARD_PLAN.md) and [its validation record](docs/ADMIN_DASHBOARD_VALIDATION.md), which separates what is proven offline from the pending live checks.
