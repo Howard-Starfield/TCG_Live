@@ -174,12 +174,10 @@ test.describe('Event view fits its pane (script step 19)', () => {
       await expect.poll(() => hiddenNodes(page)).toEqual([]);
     });
 
-    // BUG (minor, visual): in a short pane (both panes open at 1440x900, or the 1000 px sheet) the canvas's
-    // automatic first fit leaves stage nodes outside the pane or under the view switcher and legend
-    // (signup, checkin and round at 1440; signup and checkin in the sheet). Pressing Fit view fixes it,
-    // so the automatic fit runs with the wrong size or zoom bounds (apps/web/src/features/flow/index.tsx
-    // and viewport.ts, from the Wave 2 review fixes).
-    test.fixme(`${name}: the first automatic fit shows every node`, async ({ page }) => {
+    // Regression: the first automatic fit once clipped stage nodes in short panes (outside the pane or
+    // under the view switcher and legend) until Fit view was pressed. The canvas now picks a compact
+    // layout there and fits it whole, clear of the overlays.
+    test(`${name}: the first automatic fit shows every node`, async ({ page }) => {
       await openShortPane(page, width, height);
       await expect.poll(() => hiddenNodes(page), { timeout: 5_000 }).toEqual([]);
     });

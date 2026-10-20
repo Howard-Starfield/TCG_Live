@@ -156,7 +156,7 @@ function finishGraph(layoutKey: string, orientation: FlowOrientation, nodes: Flo
 }
 
 function keyFor(base: string, orientation: FlowOrientation): string {
-  return orientation === 'vertical' ? `${base}:vertical` : base;
+  return orientation === 'horizontal' ? base : `${base}:${orientation}`;
 }
 
 type EventNodeId = 'signup' | 'checkin' | 'round' | 'M1' | 'M2' | 'standings';
@@ -171,11 +171,25 @@ const EVENT_VERTICAL: Record<EventNodeId, Point> = {
   signup: { x: 40, y: 0 }, checkin: { x: 180, y: 0 }, round: { x: 320, y: 0 },
   M1: { x: 0, y: 170 }, M2: { x: 220, y: 170 }, standings: { x: 180, y: 320 }
 };
+/** Left to right, tightened for short wide panes (the sheet): no edge labels, so the gaps close up. */
+const EVENT_STRIP: Record<EventNodeId, Point> = {
+  signup: { x: 22, y: 68 }, checkin: { x: 126, y: 68 }, round: { x: 230, y: 68 },
+  M1: { x: 330, y: 0 }, M2: { x: 330, y: 104 }, standings: { x: 570, y: 68 }
+};
+/** Top to bottom, tightened for short panes: the rows close up once the branch labels are gone. */
+const EVENT_COMPACT: Record<EventNodeId, Point> = {
+  signup: { x: 40, y: 0 }, checkin: { x: 180, y: 0 }, round: { x: 320, y: 0 },
+  M1: { x: 0, y: 116 }, M2: { x: 220, y: 116 }, standings: { x: 180, y: 228 }
+};
 
 /** Event view: Signup → Check-in → Round 1 → M1 / M2 → Standings. */
 export function buildEventGraph(snapshot: EventSnapshotDto, orientation: FlowOrientation = 'horizontal'): FlowGraph {
-  const vertical = orientation === 'vertical';
-  const place = vertical ? EVENT_VERTICAL : EVENT_HORIZONTAL;
+  const vertical = orientation === 'vertical' || orientation === 'compact';
+  const compact = orientation === 'compact';
+  const strip = orientation === 'strip';
+  const place = strip ? EVENT_STRIP : compact ? EVENT_COMPACT : vertical ? EVENT_VERTICAL : EVENT_HORIZONTAL;
+  /** The tight forms drop branch labels; the strip drops the stage-to-stage labels as well. */
+  const branchLabels = !compact && !strip;
   const branchOut: Side = vertical ? 'bottom' : 'right';
   const branchIn: Side = vertical ? 'top' : 'left';
   const index = STAGE_INDEX[snapshot.stage];
@@ -208,11 +222,11 @@ export function buildEventGraph(snapshot: EventSnapshotDto, orientation: FlowOri
   const edges: FlowEdge[] = [
     edge('signup', 'right', 'checkin', 'left', {
       state: index === 0 ? 'pending' : index === 1 ? 'active' : 'done',
-      label: signup ? `${signup.roster.length} joined` : null
+      label: signup && !strip ? `${signup.roster.length} joined` : null
     }),
     edge('checkin', 'right', 'round', 'left', {
       state: index < 2 ? 'pending' : 'done',
-      label: index === 0 ? null : `${snapshot.checkins.length} / 4`
+      label: index === 0 || strip ? null : `${snapshot.checkins.length} / 4`
     })
   ];
 
@@ -230,10 +244,10 @@ export function buildEventGraph(snapshot: EventSnapshotDto, orientation: FlowOri
       data, ...sized('match')
     });
     // Stacked matches nudge their labels apart; side by side the labels sit on the curves.
-    const labelOffset = vertical ? null : { x: 0, y: position === 0 ? -10 : 10 };
+    const labelOffset = vertical || !branchLabels ? null : { x: 0, y: position === 0 ? -10 : 10 };
     edges.push(edge('round', branchOut, match.id, branchIn, {
       state: snapshot.published ? edgeInto(state) : 'pending',
-      label: `${match.seats[0]} · ${match.seats[1]}`,
+      label: branchLabels ? `${match.seats[0]} · ${match.seats[1]}` : null,
       ...(labelOffset ? { labelOffset } : {})
     }));
     let out: FlowEdgeData;
@@ -242,6 +256,7 @@ export function buildEventGraph(snapshot: EventSnapshotDto, orientation: FlowOri
     else if (match.judge) out = { state: 'blocked', label: 'held' };
     else if (match.clock.state === 'interrupted') out = { state: 'blocked', label: 'interrupted' };
     else out = { state: 'pending', label: match.phase === 'setup' ? 'setup' : match.phase === 'paused' ? 'paused' : 'in play' };
+    if (!branchLabels) out = { ...out, label: null };
     edges.push(edge(match.id, branchOut, 'standings', branchIn, { ...out, ...(labelOffset ? { labelOffset } : {}) }));
   });
 
@@ -305,7 +320,8 @@ const STEP_ORDER: StepId[] = ['ready', 'running', 'paused', 'proposal', 'confirm
 /** Match view: Ready → Running ⇄ Paused → Proposal → Confirm / Dispute → Final, with the Judge branch. */
 export function buildMatchGraph(snapshot: EventSnapshotDto, matchId: MatchId,
   orientation: FlowOrientation = 'horizontal'): FlowGraph {
-  const vertical = orientation === 'vertical';
+  // The lifecycle has no tight forms: compact uses the top-to-bottom layout, strip the left-to-right one.
+  const vertical = orientation === 'vertical' || orientation === 'compact';
   const match = snapshot.matches.find(item => item.id === matchId) ?? snapshot.matches[0];
   if (!match) return finishGraph(keyFor(`match:${matchId}`, orientation), orientation, [], []);
   const place = vertical ? STEP_VERTICAL : STEP_HORIZONTAL;
