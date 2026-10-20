@@ -25,6 +25,40 @@ export function useElementWidth<T extends HTMLElement>(): [(node: T | null) => v
   return [setNode, width];
 }
 
+/**
+ * Wraps a `.lists-table` DataTable and fades the edge that hides more columns, so a table that scrolls
+ * sideways says so. The fade sits over the table's own scroller and never takes pointer events.
+ */
+export function ScrollCue({ children, className }: { children: ReactNode; className?: string }) {
+  const [node, setNode] = useState<HTMLDivElement | null>(null);
+  const [edges, setEdges] = useState({ start: false, end: false });
+  useEffect(() => {
+    const scroller = node?.querySelector<HTMLElement>('.lists-table');
+    if (!scroller) return;
+    const measure = () => {
+      const max = scroller.scrollWidth - scroller.clientWidth;
+      const next = { start: scroller.scrollLeft > 1, end: max > 1 && scroller.scrollLeft < max - 1 };
+      setEdges(prev => (prev.start === next.start && prev.end === next.end ? prev : next));
+    };
+    measure();
+    scroller.addEventListener('scroll', measure, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(scroller);
+    const table = scroller.querySelector('table');
+    if (table) observer?.observe(table);
+    return () => {
+      scroller.removeEventListener('scroll', measure);
+      observer?.disconnect();
+    };
+  }, [node]);
+  return (
+    <div ref={setNode} className={cx('lists-scroll-cue relative flex min-h-0 flex-1 flex-col', className)}
+      data-more-start={edges.start || undefined} data-more-end={edges.end || undefined}>
+      {children}
+    </div>
+  );
+}
+
 export type CopyState = 'idle' | 'copied' | 'failed';
 
 /** Clipboard copy with a short-lived result state. */

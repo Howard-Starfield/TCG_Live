@@ -7,7 +7,7 @@ import { useMemo } from 'react';
 import { DataTable, EmptyState, type Column } from '../../ui';
 import { memberName } from '../../data';
 import { hasSeats, playerRows, type PlayerRow } from './model';
-import { MemberName, None, SeatTag, StatusChip, ToneBadge, useElementWidth } from './shared';
+import { MemberName, None, ScrollCue, SeatTag, StatusChip, ToneBadge, useElementWidth } from './shared';
 
 const SIGNUP_LABEL = { roster: 'In roster', assigned: 'Assigned', seated: 'Seated' } as const;
 const STATUS_ORDER = { danger: 0, warning: 1, accent: 2, success: 3, neutral: 4 } as const;
@@ -86,10 +86,12 @@ export function PlayersTab({ snapshot }: { snapshot: EventSnapshotDto }) {
   return (
     <div ref={measure} className="flex min-h-0 flex-1 flex-col gap-2" data-width={width ?? undefined}>
       <p className="truncate px-0.5 text-xs text-fg-muted">{summary(snapshot)}</p>
-      <DataTable<PlayerRow> label={seated ? 'Players by seat' : 'Signup roster in join order'} dense
-        className="lists-table flex-1" columns={columns} rows={rows} getRowId={row => row.key}
-        empty={<EmptyState compact icon={<Users />} title="No one has joined yet"
-          description="Members appear here as they join the signup in Discord." />} />
+      <ScrollCue>
+        <DataTable<PlayerRow> label={seated ? 'Players by seat' : 'Signup roster in join order'} dense
+          className="lists-table flex-1" columns={columns} rows={rows} getRowId={row => row.key}
+          empty={<EmptyState compact icon={<Users />} title="No one has joined yet"
+            description="Members appear here as they join the signup in Discord." />} />
+      </ScrollCue>
     </div>
   );
 }
