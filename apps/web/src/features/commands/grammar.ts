@@ -71,8 +71,11 @@ export function mentionFor(snapshot: Pick<EventSnapshotDto, 'members'>, memberId
   const name = snapshot.members[memberId]?.displayName?.trim();
   if (!name) return `@${memberId}`;
   const slug = slugOf(name);
-  const clash = /^[a-d]$/i.test(slug) || Object.values(snapshot.members)
-    .some(member => member.id !== memberId && member.displayName && slugOf(member.displayName) === slug);
+  // Clashes are judged the way resolveMention matches (case-insensitively); a seat letter or an
+  // all-digit name would read as a seat or an ID.
+  const key = slug.toLowerCase();
+  const clash = /^[a-d]$/.test(key) || /^\d+$/.test(key) || Object.values(snapshot.members)
+    .some(member => member.id !== memberId && member.displayName && slugOf(member.displayName).toLowerCase() === key);
   return clash ? `@${memberId}` : `@${slug}`;
 }
 
@@ -151,6 +154,11 @@ function scan(text: string, limit = text.length): Scan {
       if (key === 'reason') {
         result.reason = (named![2]! + text.slice(token.end, limit)).trim();
         break;
+      }
+      // A second value for the same option is a mistake, never a silent override.
+      if (result.values[key] !== undefined) {
+        result.error = `The ${ARG_LABEL[key]} is given twice ("${result.values[key]}" and "${named![2]}"). Usage: ${usage(spec)}`;
+        return result;
       }
       result.values[key] = named![2]!;
       continue;

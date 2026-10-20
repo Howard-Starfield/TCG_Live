@@ -1,5 +1,5 @@
-// Reason and confirmation dialogs (L10). They read the event live: after a 409 the cache holds the
-// latest snapshot, the details re-render, and the admin confirms again (which sends a new commandId).
+// Reason and confirmation dialogs (L10). What the admin decides on is captured when a dialog opens;
+// the live cache (stream changes, a 409 snapshot) only raises a "changed since you opened this" notice.
 import { ADMIN_REASON_MAX_LENGTH, type AdminCommandDto, type EventSnapshotDto, type JudgeReason, type MatchDto,
   type Seat } from '@tcg-live/core';
 import { AlertTriangle, CircleAlert } from 'lucide-react';
@@ -8,7 +8,8 @@ import { memberName } from '../../data';
 import { Badge, Button, Dialog, Field, Textarea, cx, useEscapeLayer } from '../../ui';
 import { seatWithName } from '../shell/labels';
 import type { CommandsApi, MatchActionRequest, RemoveRequest } from './CommandsProvider';
-import { availableMatchActions, canRemoveMember, checkReason, conflictSummary, matchLine, type CommandType } from './model';
+import { availableMatchActions, canRemoveMember, checkReason, conflictSummary, matchChangedSince, matchLine,
+  signupChangedSince, type CommandType } from './model';
 
 const COPY = {
   resolve: {
@@ -118,6 +119,26 @@ function ReasonField({ value, onChange, error, disabled, onSubmit, areaRef }: {
   );
 }
 
+/** Escape closes the dialog, except while a request is in flight: then it is swallowed, so it never
+ * reaches a lower layer either (the layer stays registered for the whole time the dialog is open). */
+function useDialogEscape(open: boolean, pending: boolean, onClose: () => void) {
+  useEscapeLayer(open, () => { if (!pending) onClose(); });
+}
+
+/** The state moved under an open dialog: the fresh facts, and what to do about them. */
+function ChangedNotice({ what, children }: { what: string; children?: ReactNode }) {
+  return (
+    <div role="alert" className="flex flex-col gap-1.5 rounded-lg bg-warning-soft px-3 py-2 text-xs text-fg" data-testid="changed-notice">
+      <span className="flex items-start gap-2 [&>svg]:mt-px [&>svg]:size-3.5 [&>svg]:shrink-0">
+        <AlertTriangle aria-hidden className="text-warning" />
+        <span>{what} changed since you opened this. Now:</span>
+      </span>
+      {children}
+      <span className="text-fg-muted">Choose <b className="font-medium text-fg">Review the change</b> to decide on the current state.</span>
+    </div>
+  );
+}
+
 export interface MatchActionDialogProps {
   open: boolean;
   api: CommandsApi;
@@ -127,10 +148,17 @@ export interface MatchActionDialogProps {
   onClose(): void;
 }
 
-/** Resolve, correct or judge-resume: required reason, winner for resolve and correct, explicit confirm for corrections. */
+/**
+ * Resolve, correct or judge-resume: required reason, winner for resolve and correct, explicit confirm for
+ * corrections. The facts shown and the precondition sent are captured when the dialog opens (`seen`);
+ * when the live match moves on a precondition field, the dialog says so and the admin must re-capture
+ * ("Review the change") before confirming.
+ */
 export function MatchActionDialog({ open, api, snapshot, request, onClose }: MatchActionDialogProps) {
   const { action, matchId } = request;
-  const match = snapshot.matches.find(item => item.id === matchId);
+  const [seen, setSeen] = useState(snapshot);
+  const match = seen.matches.find(item => item.id === matchId);
+  const liveMatch = snapshot.matches.find(item => item.id === matchId);
   const [winner, setWinner] = useState<Seat | null>(request.winner ?? null);
   const [reason, setReason] = useState(request.reason ?? '');
   const [touched, setTouched] = useState(false);
@@ -141,20 +169,29 @@ export function MatchActionDialog({ open, api, snapshot, request, onClose }: Mat
   const reasonRef = useRef<HTMLTextAreaElement | null>(null);
   const acknowledgeId = useId();
 
-  useEscapeLayer(open && !pending, onClose);
+  useDialogEscape(open, pending, onClose);
 
   const copy = COPY[action];
   const danger = action === 'correct';
   const needsWinner = action !== 'judgeResume';
-  const available = !!match && availableMatchActions(api.session, snapshot, match).includes(action);
-  // A correction can never pick the recorded winner (it may have changed under a 409).
+  const changed = matchChangedSince(seen, snapshot, matchId);
+  const available = !!liveMatch && availableMatchActions(api.session, snapshot, liveMatch).includes(action);
+  // A correction can never pick the recorded winner.
   const chosen = winner && !(danger && match?.finalWinner === winner) ? winner : null;
   const check = checkReason(reason);
   const winnerError = touched && needsWinner && !chosen ? 'Pick the winning seat.' : null;
   const reasonError = touched && !check.ok ? check.error : null;
   const acknowledgeError = touched && danger && !acknowledged ? 'Confirm that you mean to change a final result.' : null;
 
+  /** Adopts the live state as what the admin decides on; a correction must be acknowledged again. */
+  const review = () => {
+    setSeen(snapshot);
+    setAcknowledged(false);
+    setNotice(null);
+  };
+
   const submit = async () => {
+    if (changed) return;
     setTouched(true);
     if (!match || !available || pending || !check.ok || (needsWinner && !chosen) || (danger && !acknowledged)) return;
     const command: AdminCommandDto = action === 'judgeResume'
@@ -162,48 +199,57 @@ export function MatchActionDialog({ open, api, snapshot, request, onClose }: Mat
       : { type: action, matchId, winner: chosen!, reason: check.reason };
     setPending(true);
     setNotice(null);
-    const outcome = await api.run(snapshot, command, { inline: true });
+    // The precondition comes from `seen`: the state the admin read in this dialog.
+    const outcome = await api.run(seen, command, { inline: true });
     setPending(false);
     if (outcome.status === 'applied' || outcome.status === 'noop') {
       request.onDone?.();
       onClose();
     } else if (outcome.status === 'conflict') {
-      const what = conflictSummary(snapshot, outcome.snapshot, matchId);
-      setNotice({ tone: 'warning', text: `${matchId} changed while you were deciding.${what ? ` ${what}` : ''} The details above are current now; check them and confirm again.` });
+      const what = conflictSummary(seen, outcome.snapshot, matchId);
+      setNotice({ tone: 'warning', text: `${matchId} changed while you were deciding.${what ? ` ${what}` : ''} Review the change, then confirm again.` });
       setAcknowledged(false);
     } else if (outcome.status === 'failed') {
       setNotice({ tone: 'danger', text: outcome.message });
     }
   };
 
+  const reviewing = changed && available;
   const initialFocus = needsWinner && !chosen ? firstSeatRef : reasonRef;
   return (
-    <Dialog open={open} onClose={onClose} dismissible={!pending} tone={danger ? 'danger' : 'default'} role={danger ? 'alertdialog' : 'dialog'}
-      title={copy.title(matchId)} description={copy.description} initialFocusRef={initialFocus}
+    <Dialog open={open} onClose={() => { if (!pending) onClose(); }} dismissible={!pending} tone={danger ? 'danger' : 'default'}
+      role={danger ? 'alertdialog' : 'dialog'} title={copy.title(matchId)} description={copy.description} initialFocusRef={initialFocus}
       footer={(
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>
-          <Button variant={danger ? 'danger' : 'primary'} onClick={() => { void submit(); }} loading={pending} disabled={!available}>
-            {copy.confirm}
-          </Button>
+          {reviewing ? (
+            <Button variant="secondary" onClick={review}>Review the change</Button>
+          ) : (
+            <Button variant={danger ? 'danger' : 'primary'} onClick={() => { void submit(); }} loading={pending} disabled={!available}>
+              {copy.confirm}
+            </Button>
+          )}
         </>
       )}>
-      <form className="flex flex-col gap-3" noValidate onSubmit={event => { event.preventDefault(); void submit(); }}
-        data-testid="match-action-form" data-action={action}>
+      <form className="flex flex-col gap-3" noValidate onSubmit={event => { event.preventDefault(); if (reviewing) review(); else void submit(); }}
+        data-testid="match-action-form" data-action={action} data-changed={changed || undefined}>
         {match ? (
           <>
-            <p className="m-0 text-[13px] text-fg">{matchLine(snapshot, match)}</p>
-            <MatchFacts snapshot={snapshot} match={match} />
+            <p className="m-0 text-[13px] text-fg">{matchLine(seen, match)}</p>
+            <MatchFacts snapshot={seen} match={match} />
           </>
         ) : <p className="m-0 text-fg-muted">{matchId} is not part of this event any more.</p>}
-        {!available && match && <NoticeBox notice={{ tone: 'warning', text: `This action is no longer available: ${matchId} is ${match.phase} now.` }} />}
         {notice && <NoticeBox notice={notice} />}
+        {changed && liveMatch && (
+          <ChangedNotice what={matchId}><MatchFacts snapshot={snapshot} match={liveMatch} /></ChangedNotice>
+        )}
+        {!available && liveMatch && <NoticeBox notice={{ tone: 'warning', text: `This action is no longer available: ${matchId} is ${liveMatch.phase} now.` }} />}
         {needsWinner && match && (
-          <WinnerPicker snapshot={snapshot} match={match} action={action} winner={chosen} onChange={setWinner}
+          <WinnerPicker snapshot={seen} match={match} action={action} winner={chosen} onChange={setWinner}
             error={winnerError} firstRef={firstSeatRef} />
         )}
         <ReasonField value={reason} onChange={setReason} error={reasonError} disabled={pending} areaRef={reasonRef}
-          onSubmit={() => { void submit(); }} />
+          onSubmit={() => { if (reviewing) review(); else void submit(); }} />
         {danger && (
           <div className="flex flex-col gap-1">
             <label htmlFor={acknowledgeId} className="flex cursor-pointer items-start gap-2 rounded-lg bg-danger-soft px-3 py-2 text-xs text-fg">
@@ -228,45 +274,55 @@ export interface RemoveMemberDialogProps {
   onClose(): void;
 }
 
-/** Confirms removing a member from the open signup. Focus starts on Cancel. */
+/** Confirms removing a member from the open signup. Focus starts on Cancel. Same capture rule as above. */
 export function RemoveMemberDialog({ open, api, snapshot, request, onClose }: RemoveMemberDialogProps) {
+  const [seen, setSeen] = useState(snapshot);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
-  useEscapeLayer(open && !pending, onClose);
-  const name = memberName(snapshot, request.memberId);
+  useDialogEscape(open, pending, onClose);
+  const name = memberName(seen, request.memberId);
   const available = canRemoveMember(api.session, snapshot, request.memberId);
-  const roster = snapshot.signup?.roster.length ?? 0;
+  const changed = signupChangedSince(seen, snapshot);
+  const reviewing = changed && available;
+  const joined = (event: EventSnapshotDto) => `${event.signup?.roster.length ?? 0} of ${event.signup?.capacity ?? 4} joined`;
 
   const confirm = async () => {
-    if (!available || pending) return;
+    if (!available || pending || changed) return;
     setPending(true);
     setNotice(null);
-    const outcome = await api.run(snapshot, { type: 'signupRemove', memberId: request.memberId }, { inline: true });
+    const outcome = await api.run(seen, { type: 'signupRemove', memberId: request.memberId }, { inline: true });
     setPending(false);
     if (outcome.status === 'applied' || outcome.status === 'noop') {
       request.onDone?.();
       onClose();
     } else if (outcome.status === 'conflict') {
-      setNotice({ tone: 'warning', text: 'The signup changed while you were deciding. The roster above is current now; confirm again if you still mean it.' });
+      setNotice({ tone: 'warning', text: 'The signup changed while you were deciding. Review the change, then confirm again if you still mean it.' });
     } else if (outcome.status === 'failed') {
       setNotice({ tone: 'danger', text: outcome.message });
     }
   };
 
   return (
-    <Dialog open={open} onClose={onClose} dismissible={!pending} tone="danger" role="alertdialog" width="sm"
+    <Dialog open={open} onClose={() => { if (!pending) onClose(); }} dismissible={!pending} tone="danger" role="alertdialog" width="sm"
       title={`Remove ${name} from the signup?`}
-      description={`${name} leaves the roster (${roster} of ${snapshot.signup?.capacity ?? 4} joined now). They can join again from the signup card while signup is open.`}
+      description={`${name} leaves the roster (${joined(seen)} now). They can join again from the signup card while signup is open.`}
       footer={(
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>
-          <Button variant="danger" onClick={() => { void confirm(); }} loading={pending} disabled={!available}>Remove</Button>
+          {reviewing
+            ? <Button variant="secondary" onClick={() => { setSeen(snapshot); setNotice(null); }}>Review the change</Button>
+            : <Button variant="danger" onClick={() => { void confirm(); }} loading={pending} disabled={!available}>Remove</Button>}
         </>
       )}>
-      {(!available || notice) && (
+      {(!available || notice || changed) && (
         <div className="flex flex-col gap-2">
-          {!available && <NoticeBox notice={{ tone: 'warning', text: `${name} can no longer be removed: signup is ${snapshot.signup?.status === 'open' ? 'open, but they are not in the roster' : 'closed'}.` }} />}
           {notice && <NoticeBox notice={notice} />}
+          {changed && (
+            <ChangedNotice what="The signup">
+              <span>Signup {snapshot.signup?.status ?? 'closed'}, {joined(snapshot)}: {(snapshot.signup?.roster ?? []).map(id => memberName(snapshot, id)).join(', ') || 'nobody'}.</span>
+            </ChangedNotice>
+          )}
+          {!available && <NoticeBox notice={{ tone: 'warning', text: `${name} can no longer be removed: signup is ${snapshot.signup?.status === 'open' ? 'open, but they are not in the roster' : 'closed'}.` }} />}
         </div>
       )}
     </Dialog>

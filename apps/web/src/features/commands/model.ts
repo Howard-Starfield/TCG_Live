@@ -64,17 +64,41 @@ export function preconditionFor(snapshot: EventSnapshotDto, command: AdminComman
       return { eventVersion: snapshot.version };
     case 'signupClose':
     case 'signupReopen':
-    case 'signupRemove':
-      return snapshot.signup ? { signup: { status: snapshot.signup.status, rosterSize: snapshot.signup.roster.length } } : {};
+    case 'signupRemove': {
+      const signup = signupPrecondition(snapshot);
+      return signup ? { signup } : {};
+    }
     case 'judgeResume':
     case 'resolve':
     case 'correct': {
-      const match = snapshot.matches.find(item => item.id === command.matchId);
-      if (!match) return {};
-      return { match: { matchId: match.id, phase: match.phase, proposalRevision: match.proposal?.revision ?? null,
-        finalWinner: match.finalWinner, pauseGeneration: match.pauseGeneration } };
+      const match = matchPrecondition(snapshot, command.matchId);
+      return match ? { match } : {};
     }
   }
+}
+
+export function matchPrecondition(snapshot: EventSnapshotDto, matchId: MatchId): CommandPreconditionDto['match'] | null {
+  const match = snapshot.matches.find(item => item.id === matchId);
+  if (!match) return null;
+  return { matchId: match.id, phase: match.phase, proposalRevision: match.proposal?.revision ?? null,
+    finalWinner: match.finalWinner, pauseGeneration: match.pauseGeneration };
+}
+
+export function signupPrecondition(snapshot: EventSnapshotDto): CommandPreconditionDto['signup'] | null {
+  return snapshot.signup ? { status: snapshot.signup.status, rosterSize: snapshot.signup.roster.length } : null;
+}
+
+/** The match moved on a field the precondition carries (what a dialog opened on is no longer true). */
+export function matchChangedSince(seen: EventSnapshotDto, live: EventSnapshotDto, matchId: MatchId): boolean {
+  return seen.eventId !== live.eventId
+    || JSON.stringify(matchPrecondition(seen, matchId)) !== JSON.stringify(matchPrecondition(live, matchId));
+}
+
+/** The signup moved: its precondition fields, or who is in the roster. */
+export function signupChangedSince(seen: EventSnapshotDto, live: EventSnapshotDto): boolean {
+  return seen.eventId !== live.eventId
+    || JSON.stringify(signupPrecondition(seen)) !== JSON.stringify(signupPrecondition(live))
+    || (seen.signup?.roster ?? []).join() !== (live.signup?.roster ?? []).join();
 }
 
 /** A fresh UUID v4 per user intent. Loopback origins are secure contexts, so randomUUID exists there. */
@@ -116,7 +140,9 @@ export type ReasonCheck = { ok: true; reason: string } | { ok: false; error: str
 /** Same rule as the server: 1 to ADMIN_REASON_MAX_LENGTH characters after trimming. */
 export function checkReason(raw: string): ReasonCheck {
   const reason = raw.trim();
-  if (reason.length === 0) return { ok: false, error: 'Enter a reason. It is stored in the audit log.', length: 0 };
+  // Same rule as the server: whitespace and invisible format characters (zero-width space, BOM) alone
+  // are no reason. Only whitespace is trimmed from the value and the count.
+  if (!/[^\s\p{Cf}]/u.test(reason)) return { ok: false, error: 'Enter a reason. It is stored in the audit log.', length: 0 };
   if (reason.length > ADMIN_REASON_MAX_LENGTH) {
     return { ok: false, error: `Keep the reason to ${ADMIN_REASON_MAX_LENGTH} characters (it has ${reason.length}).`, length: reason.length };
   }
@@ -206,7 +232,8 @@ export function errorMessage(error: ApiError): string {
     case 'not_found': return 'The server does not know this event or action. It may have been replaced; check the sidebar.';
     case 'method_not_allowed': return 'This server does not accept console actions.';
     case 'bad_request': return 'The server rejected the request as malformed. Nothing was changed.';
-    case 'unavailable': return 'The console server is unavailable (it may be shutting down). Nothing was changed; try again shortly.';
+    // A 503 can follow a commit whose reply was lost (shutdown), so it is hedged like a network error.
+    case 'unavailable': return 'The console server is unavailable (it may be shutting down). If the action went through, it appears in the activity stream; otherwise try again shortly.';
     case 'too_many_requests': return 'Too many requests. Wait a moment and try again.';
     case 'unauthenticated': return 'The console session ended. Sign in again.';
     case 'network': return 'The console server could not be reached. If the action went through, it appears in the activity stream.';

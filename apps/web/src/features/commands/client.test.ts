@@ -107,7 +107,9 @@ describe('error messages', () => {
       expect(text.length).toBeGreaterThan(10);
     }
     expect(errorMessage(error('conflict'))).toMatch(/latest state/);
-    expect(errorMessage(error('unavailable'))).toMatch(/Nothing was changed/);
+    // A 503 may follow a commit whose reply was lost: hedged like a network error, never "nothing changed".
+    expect(errorMessage(error('unavailable'))).toMatch(/If the action went through, it appears in the activity stream/);
+    expect(errorMessage(error('unavailable'))).not.toMatch(/Nothing was changed/);
     expect(errorMessage(error('forbidden'))).toMatch(/not allowed/);
   });
 });
