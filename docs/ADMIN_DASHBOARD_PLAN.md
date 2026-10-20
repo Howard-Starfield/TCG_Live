@@ -1,6 +1,6 @@
 # Local admin console
 
-18–19 October 2026. Status: **approved 19 October 2026 with the default answers to decisions 1–3. Wave 0 in progress on `feat/admin-dashboard`.**
+18–19 October 2026. Status: **approved 19 October 2026 with the default answers to decisions 1–3. Waves 0–4 complete on `feat/admin-dashboard`; not merged to `main`. `TCG_ADMIN_CONSOLE` stays off by default until a live Discord check is recorded.**
 
 ## Direction confirmed by the user (18 October 2026)
 
@@ -731,7 +731,7 @@ A fresh read-only reviewer examined the plan against the code. Its verdict was *
 | 7 | Shared Wave 1 files without an owner. | Accepted. Wave 0 adds `admin/config.ts`, the full mount interface, the core clock helper, per-lane CSS entries, Vitest shims, exact test globs, the `test:db` entry, `.temp/` in `.gitignore`, absolute reference paths, and the contract-change procedure. |
 | 8 | Toolchain verified only for the npm check. | Accepted. Type packages and `@testing-library/dom` added, peer ranges verified, npm pinned exactly, single-Vite check, smoke tests, sequential worktree installs. |
 | 9 | Design-system provenance. | **User decision 2.** Default: original code reproducing the look. |
-| 10 | The Wave 3 path could drift from Discord's, retried successes could get 409, and the controller would be bypassed. | Accepted. One transaction body, prior-result lookup before preconditions, preconditions under the lock, everything through the controller. The admin-identity question is **user decision 4**, moved to the Wave 3 checkpoint. |
+| 10 | The Wave 3 path could drift from Discord's, retried successes could get 409, and the controller would be bypassed. | Accepted. One transaction body, prior-result lookup before preconditions, preconditions under the lock, everything through the controller. The admin-identity question is **user decision 4**, resolved at the Wave 2 checkpoint (see Decisions). |
 | 11 | E2E runs colliding on one port or attaching to a running bot. | Accepted. Per-run ports, `reuseExistingServer: false`, prebuilt `dist`, E2E only in QA lanes. |
 | 12 | Smaller fixes: health-route variants, `index.html` caching, the fixed token in Discord mode, one snapshot read per change, galleries in production builds, an inert Wave 2 composer, narrow layouts, fixture drift, and the Database page needing a separate process. | Accepted, all incorporated. |
 
@@ -758,7 +758,7 @@ Fixed on `feat/admin-dashboard`:
 - The stream frame encoder now lives in core (`formatStreamFrame`). The server writes with it and the web client tests read its output, so the wire format cannot drift between lanes.
 
 Accepted and carried forward:
-- **Wave 4 docs (README and `.env.example`).** `TCG_ADMIN_CONSOLE` and `TCG_ADMIN_COMMANDS` accept only 0 or 1. Discord mode refuses `TCG_ADMIN_LOGIN_TOKEN` and `TCG_ADMIN_DEV_ORIGIN` even when the console is off, so a leftover demo value stops the bot at startup. This fails closed, deliberately.
+- **Wave 4 docs (README and `.env.example`).** `TCG_ADMIN_CONSOLE` and `TCG_ADMIN_COMMANDS` accept only 0 or 1. Discord mode refuses `TCG_ADMIN_LOGIN_TOKEN`, `TCG_ADMIN_DEV_ORIGIN` and `TCG_ADMIN_DEMO_MODE` even when the console is off, so a leftover demo value stops the bot at startup. This fails closed, deliberately.
 - **Threat model.** Failed logins are limited globally (10 a minute). A local process can therefore keep the console locked; browser pages cannot, because the Origin check comes first.
 - **Wave 3.** If a command can retire the active event with no replacement, the stream must tell clients that `activeEventId` is now null. Today that cannot happen: Discord mode needs the bot's lease, and the demo replaces events atomically.
 

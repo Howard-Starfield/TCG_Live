@@ -161,19 +161,20 @@ Try it without Discord or PostgreSQL first:
 npm.cmd run admin:demo
 ```
 
-The demo builds the web app, plays a scripted four-player event with the real domain rules, and prints a one-time `Admin console: http://127.0.0.1:<port>/#login=...` link. Open that link; the token is exchanged for a session and removed from the address bar. The demo always allows admin actions. Set `TCG_ADMIN_DEMO_MODE=interactive` to make the script stop wherever an organizer decision is needed (remove, close signup, publish, judge-resume, resolve after an expiry, and an optional correction before the event restarts).
+The demo builds the web app, plays a scripted four-player event with the real domain rules, and prints an `Admin console: http://127.0.0.1:<port>/#login=...` link. The link stays valid until it is rotated or the process restarts, so keep it private. Open it; the token is exchanged for a session and removed from the address bar. The demo always allows admin actions. Run `$env:TCG_ADMIN_DEMO_MODE = 'interactive'` first to make the script stop wherever an organizer decision is needed (remove, close signup, publish, judge-resume, resolve the disputed match, resolve after an expiry, and an optional correction in a 60-second hold before the event restarts). Run `Remove-Item Env:TCG_ADMIN_DEMO_MODE` before starting the Discord runtime in the same shell.
 
 The main window is the console: the stage stepper, the *Needs you* decision cards, the activity stream and, when actions are enabled, the command box. The *Live preview* and *List preview* toggles at the top (Alt+1 and Alt+2) open the live match diagram and the Players, Matches, Audit and Discord tabs beside it, or in a sheet on narrow windows. Retired events stay readable under History.
 
 With the Discord runtime, the console is off until enabled:
 
 ```powershell
+npm.cmd run build:web             # the console's web assets (admin:demo builds them itself)
 $env:TCG_ADMIN_CONSOLE = '1'      # serve the console (read-only)
 $env:TCG_ADMIN_COMMANDS = '1'     # optional: let the console act as the configured admin
 npm.cmd run discord:signup-run    # or discord:run
 ```
 
-The bot prints the console link at startup. Sessions last at most 12 hours and end after 2 idle hours; *Rotate console link* in the account menu prints a fresh link and invalidates the old one. Failed sign-ins are limited to 10 a minute.
+The bot prints the console link at startup. Sessions last at most 12 hours and end after 2 idle hours; *Rotate console link* in the account menu prints a fresh link and invalidates the old one. Failed sign-ins are limited to 10 a minute across all clients; rotating the link does not end existing sessions.
 
 Admin actions (publish, signup close/reopen/remove, judge-resume, resolve, correct, panel refresh) are off unless `TCG_ADMIN_COMMANDS=1`. With it off, the console only reads and shows no action controls. With it on, a console action is the same command as the matching `/tcg-test` subcommand: it goes through the same transaction, gates, card refresh and match-room sync, needs a reason where the slash command does, and is audited as `via console` (`principal_kind = 'web'`). Each action carries the state the organizer saw; if the event changed meanwhile, the console shows the fresh state and asks again rather than applying it. Retrying an action that already succeeded returns the original result.
 

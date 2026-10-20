@@ -26,7 +26,7 @@ Wave 2 sections are kept as they were, with stale rows marked.
 - **Screenshots** go to `%TEMP%\l8-shots\` (outside the repository). Set `TCG_E2E_SHOTS_DIR` to change this.
 
 **Results.** Two consecutive full runs of `npm run test:e2e` on the final tree gave the same result: 74 passed,
-3 skipped, 0 failed. The 3 skipped are the deliberate `test.fixme` specs for the bugs listed below. Before the
+3 skipped, 0 failed. The 3 skipped were the deliberate `test.fixme` specs for the Wave 2 bugs listed below, all fixed since. Before the
 merge, the suite had also passed twice on the earlier base.
 
 Status words used below:
@@ -70,7 +70,7 @@ Status words used below:
 | --- | --- | --- |
 | Zero, one or two panes; both stack with a resizable divider | `shell.spec.ts` › clicking the toggles…; › persistence… | Passing |
 | Open panes, dock width, split ratio, list tab and canvas view persist in localStorage | `shell.spec.ts` › pane state, dock width, split ratio, list tab and canvas view survive a reload; › closed panes stay closed | Passing |
-| Dock width by keyboard and pointer drag | `shell.spec.ts` › persistence… | Passing. Fixme for one spot where the handle cannot be grabbed (bug 2) |
+| Dock width by keyboard and pointer drag | `shell.spec.ts` › persistence… | Passing (bug 2 fixed; regression spec) |
 | Below 1100 px the dock becomes an overlay sheet: modal, focus trap, Escape and backdrop close it | `a11y.spec.ts` › below 1100 px (3 specs) | Passing |
 | Live preview: Event view and Match view | `canvas.spec.ts` | Passing |
 | List preview: Players, Matches, Audit and Discord tabs | `lists.spec.ts` | Passing |
@@ -99,7 +99,7 @@ Status words used below:
 | Clocks tick on the client; a paused clock is frozen | `canvas.spec.ts`, `live.spec.ts` | Passing |
 | Interrupted clock shown frozen with an *interrupted* label, never a live ring | `layout.test.ts`, `LivePreview.test.tsx`, `mappers.test.ts`, `shell.test.tsx` | Unit only: the demo has a single runner, so it never produces an interrupted clock |
 | Tall dock: top-to-bottom layout | Screenshots (live only, 1280 and 1440) | Reviewed by eye; reads well |
-| The Event view fits its pane | `canvas.spec.ts` › Event view fits its pane | Live pane alone and after *Fit view*: passing. First automatic fit in a short pane: **fixme (bug 1)** |
+| The Event view fits its pane | `canvas.spec.ts` › Event view fits its pane | Live pane alone and after *Fit view*: passing. First automatic fit in a short pane: passing (bug 1 fixed; regression specs) |
 | At most five graph updates per second | `throttle.test.ts` | Unit only |
 
 ## Wave 2 lane requirements
@@ -107,7 +107,7 @@ Status words used below:
 | Lane | Requirement | Evidence | Status |
 | --- | --- | --- | --- |
 | L6 | Sidebar, top bar, breadcrumb, toggle tabs, rotate-link item | See the shell table | Passing |
-| L6 | Preview dock: split, persistence, shortcuts, sheet below 1100 px, spring transitions | See the dock table | Passing (two fixmes, bugs 1 and 2) |
+| L6 | Preview dock: split, persistence, shortcuts, sheet below 1100 px, spring transitions | See the dock table | Passing (bugs 1 and 2 fixed; regression specs) |
 | L6 | Main controls: stepper, needs-you cards with reasons, activity stream | See the main window table | Passing |
 | L6 | Login screen | `login.spec.ts` (9 specs) | Passing |
 | L6 | Connection banner | `shutdown.spec.ts`: after the server stops, the open tab shows the reconnecting or offline banner | Passing |
@@ -208,8 +208,8 @@ Status words used below:
   - web 31 files, 347 passing.
 - **Full Playwright suite, two consecutive runs:** 112 tests each time, with 109 passed, 3 skipped and 0 failed
   (3.6 minutes each). The 3 skipped were the `test.fixme` specs for bugs 3 to 5 below. After the orchestrator
-  fixed those bugs (dd09c7f), the full suite passed 112 of 112 with no skips, and the three specs are now
-  regression guards. Spec counts: `a11y` 9,
+  fixed those bugs (dd09c7f), two further consecutive full runs passed 112 of 112 with no skips (3.8 minutes
+  each), and the three specs are now regression guards. `npm run test:all` then gave web 348 passing. Spec counts: `a11y` 9,
   `canvas` 11, `commands` 13, `commands-api` 10, `composer` 6, `conflicts` 3, `lists` 5, `live` 1, `login` 9,
   `rotate` 2, `screenshots` 18, `security` 8, `shell` 13, `shutdown` 3, `smoke` 1.
 
@@ -319,7 +319,7 @@ listed under "Wave 3: admin actions".
 | # | Severity | Where | What happens | Repro | Spec |
 | --- | --- | --- | --- | --- | --- |
 | 1 (fixed) | Minor (visual) | Live canvas automatic fit: `apps/web/src/features/flow/index.tsx` and `viewport.ts` (Wave 2 review fixes) | In a short pane the first automatic fit leaves stage nodes outside the pane or under the view switcher and legend: Signup, Check-in and Round 1 at 1440×900 with both panes; Signup and Check-in in the 1000 px sheet. Pressing *Fit view* fixes it. | Demo at step 19 (or any state); viewport 1440×900; open both panes; look at the Event view. Or 1000×800, open the sheet. | `canvas.spec.ts` › Event view fits its pane › …the first automatic fit shows every node (2 fixmes) |
-| 2 (fixed) | Minor | `.ui-split-handle` (`z-10`, `apps/web/src/ui/SplitPane.tsx:164`) against `.shell-dock-handle` (z-index 5, `apps/web/src/features/shell/shell.css:248-259`) | With both panes open, the live/list divider covers the dock resize handle where they cross, so a drag that starts there resizes the split instead of the dock. | 1440×900, both panes open; drag the dock's left edge at the height of the live/list divider. | `shell.spec.ts` › known issues › the dock resize handle can be grabbed… (fixme) |
+| 2 (fixed) | Minor | `.ui-split-handle` (`z-10`, `apps/web/src/ui/SplitPane.tsx:164`) against `.shell-dock-handle` (z-index 5, `apps/web/src/features/shell/shell.css:248-259`) | With both panes open, the live/list divider covers the dock resize handle where they cross, so a drag that starts there resizes the split instead of the dock. | 1440×900, both panes open; drag the dock's left edge at the height of the live/list divider. | `shell.spec.ts` › regressions › the dock resize handle can be grabbed… |
 
 Another bug was found and then fixed upstream. Before the review fixes, a tab that watched an event retire kept
 its cached snapshot as `active`, because the cache has `staleTime: Infinity` and the stream only pushes the new
