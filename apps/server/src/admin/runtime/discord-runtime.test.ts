@@ -70,8 +70,12 @@ function fakeController() {
   const status: ControllerStatus = { updatePending: false, panelRevision: 4 };
   return {
     controller: {
+      config: { adminId: IDS.admin },
       subscribe(next: (change: ControllerChange) => void) { subscriptions++; listener = next; return () => { listener = undefined; }; },
-      status: () => ({ ...status })
+      status: () => ({ ...status }),
+      // Wave 3 command surface; these read-model tests never issue commands.
+      applyAdmin: () => Promise.reject(new Error('not used')),
+      refreshExplicit: () => Promise.reject(new Error('not used'))
     },
     status, emit(change: ControllerChange) { listener?.(change); },
     get subscribed() { return !!listener; }, get subscriptions() { return subscriptions; }
