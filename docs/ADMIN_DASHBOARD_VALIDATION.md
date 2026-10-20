@@ -1,8 +1,11 @@
 # Admin console validation (draft)
 
 Draft by lane L8 (QA), 19 October 2026, for the read-only console (Wave 2). Tested on `admin/qa` after merging
-`feat/admin-dashboard` at e919199 (it includes the Wave 2 review fixes). Wave 3 (admin actions) is not covered
-here; L11 extends this document.
+`feat/admin-dashboard` at e919199 (it includes the Wave 2 review fixes).
+
+Extended by lane L11 (QA), 19 October 2026, for the admin actions (Wave 3). Tested on `admin/qa` after merging
+`feat/admin-dashboard` at 84464b4 (Wave 3 with both review-fix rounds). See "Wave 3: admin actions" below; the
+Wave 2 sections are kept as they were, with stale rows marked.
 
 ## How the evidence was produced
 
@@ -59,7 +62,7 @@ Status words used below:
 | Activity stream, chat-style, newest at the bottom, live without a reload | `live.spec.ts` | Passing |
 | Scroll pinning and *Jump to latest* ("New activity · Jump to latest" when scrolled up) | `live.spec.ts` (mouse-wheel scroll up, a new entry arrives, jump back) | Passing |
 | Applied changes only | `live.spec.ts` and `lists.spec.ts` show the hint; the server stores only applied changes | Passing (presence of the wording only) |
-| No command composer and no action controls before Wave 3 | `shell.spec.ts` › sidebar footer…; no composer… | Passing |
+| No command composer and no action controls before Wave 3 | Superseded in Wave 3: the demo console now shows them (`shell.spec.ts` › sidebar footer… the demo console can act); a commands-off console shows none (`shell.spec.ts` › a read-only console…) | Passing |
 
 ### Preview dock
 
@@ -79,7 +82,7 @@ Status words used below:
 | Light and dark themes | `screenshots.spec.ts` (18 screenshots) and `shell.spec.ts` (theme persists) | Passing. Reviewed by eye; see the visual notes below |
 | Tabular numbers for clocks and counts | `canvas.spec.ts` › Event view… (`font-variant-numeric` on the match clock) | Passing (clock checked; counts by eye) |
 | `prefers-reduced-motion`: static ring, no dash flow, no traveling dot | `a11y.spec.ts` › reduced motion | Passing |
-| IME composition guard in the composer | `apps/web/src/ui/CommandComposer.test.tsx` | Unit only (the composer ships in Wave 3) |
+| IME composition guard in the composer | `apps/web/src/ui/CommandComposer.test.tsx`, `features/commands/commands.test.tsx` | Unit only (Playwright cannot drive a real IME) |
 | Scroll-pin cooldown | `apps/web/src/ui/hooks/hooks.test.tsx` | Unit only. The plan says a 150 ms cooldown; the code now uses a 250 ms user-intent window, so only wheel, touch, key or pointer input unpins. The plan wording needs updating |
 | Spring motion presets, warm surfaces, hairlines, clay accent | Screenshots | Reviewed by eye |
 
@@ -172,14 +175,151 @@ Status words used below:
     then the sheet. Focus goes back to the toggle.
   - A backdrop click and the close button also dismiss the sheet.
 
-## Bugs found (open)
+## Wave 3: admin actions
+
+### How this was tested
+
+- **The interactive demo.** `e2e/support/scenario-demo.mjs` now also starts the demo in interactive mode
+  (`scenario: { mode: 'interactive' }`). The script's players act on their own, and the script pauses at each
+  admin decision until the console's command lands. Specs read the pause state over an IPC channel
+  (`demo.state()`: `pausedAt`, `step`, `playMode`, `cycles`), and can also call `resumeScript()` or close the
+  runtime while HTTP stays up (for the 503). Other options: `finalHoldMs`, `endWaitMs`, `commands: 'off'` and
+  `capabilities: [...]`.
+- **No server code was changed.** The read-only fixture and the "capability missing" fixture use options that
+  `runAdminDemo()` already takes: its `createHandler` hook builds the real HTTP layer with
+  `commandsEnabled: false`, or with the layer's own capability test seam. The read-only fixture is the console
+  that Discord mode serves without `TCG_ADMIN_COMMANDS=1`: the session reports `commandsEnabled: false` and holds
+  only `dashboard.read`.
+- `support/demo.ts` drops any inherited `TCG_ADMIN_DEMO_MODE`, and every scenario passes its mode explicitly.
+  A caller shell with `TCG_ADMIN_DEMO_MODE=interactive` therefore cannot turn the held or stock specs
+  interactive. `playwright.config.ts` is outside the QA lane; see the note under "Test infrastructure".
+- **HTTP contract specs** use raw `node:http` (`support/commands.ts` `postCommand` and `postRefresh`). They
+  sign in with `apiLogin` and read state back through the API.
+- **Each UI action spec checks three things.** The stream's `change` updates the UI in the same document (a
+  `window` marker survives, so nothing reloaded). The activity stream shows an "admin … via console" group, and
+  the audit API shows `via: 'web'`, `principalId: 'local-admin'` and `commandId: web:<uuid>`. The interactive
+  scenario then moves on to its next pause.
+
+**Results on the final tree (84464b4 plus this lane's specs):**
+- `npm run typecheck:all` and `npm run build:all`: clean.
+- `npm run test:all`:
+  - core 4/4;
+  - server 204 tests, 200 passing and 4 skipped (the PostgreSQL tests);
+  - web 31 files, 347 passing.
+- **Full Playwright suite, two consecutive runs:** 112 tests each time, with 109 passed, 3 skipped and 0 failed
+  (3.6 minutes each). The 3 skipped are the `test.fixme` specs for bugs 3 to 5 below. Spec counts: `a11y` 9,
+  `canvas` 11, `commands` 13, `commands-api` 10, `composer` 6, `conflicts` 3, `lists` 5, `live` 1, `login` 9,
+  `rotate` 2, `screenshots` 18, `security` 8, `shell` 13, `shutdown` 3, `smoke` 1.
+
+### Commands through the UI (`commands.spec.ts`, `composer.spec.ts`, `conflicts.spec.ts`)
+
+| Requirement | Evidence | Status |
+| --- | --- | --- |
+| Signup remove: the Players row action, a confirm dialog (Escape cancels and returns focus), the roster updated live, and the script resumes (Dee joins, then it waits for the close) | `commands.spec.ts` › …whole script… › signup remove | Passing |
+| Panel refresh from the stepper: a toast, `panelRevision` +1 shown in the Discord tab, no audit entry, and the pause is not answered | › panel refresh | Passing |
+| Signup close from the stepper: seats assigned, the stage moves to Check-in, the players check in, and the script waits for publication | › signup close | Passing |
+| Publish from the composer, keyboard only (`/pub`, Enter accepts the suggestion, Enter runs it) | › publish | Passing |
+| Judge-resume from the needs-you card: the reason is required, the counter shows, Ctrl+Enter confirms, and the clock runs again | › judge-resume | Passing |
+| Resolve from the Matches row menu: the winner is required, and 501 characters are refused with the counter at 501 / 500 | › resolve: the Matches row menu… | Passing |
+| Resolve from a complete composer line (`/resolve M1 @A <reason>`) runs at once, after M1's clock ran out (an expiry decision) | › resolve: a complete composer line… | Passing |
+| Correct: a danger menu item and a danger alertdialog; the recorded winner cannot be chosen; the acknowledgement is required; afterwards the event retires and a fresh one starts and pauses | › correct… | Passing |
+| History shows no stepper actions and no composer | › correct… (end) | Passing; the list tabs are bug 3 |
+| Signup reopen, and close again from the composer with the `/tcg-test` prefix; removal from the composer by mention (`/signup-remove @Eli_Moss`) always confirms | › signup close and reopen | Passing |
+| Removing instead of closing: the script waits for the players (`waitingFor: 'players'`), Eli rejoins about 2 s later, then the close is the admin's again | › recovery and clocks… › removing instead of closing | Passing |
+| A clock runs out while the script waits on another match: the timer entry reads "via timer" (audit `system`), and after the judge-resume the expired match is the next decision, then M1's | › recovery and clocks… › a running clock expires… | Passing |
+| Composer suggestions: only commands runnable now; arrows wrap and set `aria-activedescendant`; Escape hides and typing reopens; matches, then winners by seat or name; usage hint | `composer.spec.ts` › suggestions | Passing |
+| Composer parse errors shown inline in `role="alert"`, with `aria-invalid`, nothing sent (9 cases: wrong seat, unknown command, no slash, unavailable command, unknown match, unknown member, member in the other match, extra option, a bare `/tcg-test`) | › parse errors… | Passing |
+| An incomplete resolve opens a prefilled dialog (winner checked, focus in the reason); Escape keeps the line; finishing the dialog clears the composer | › an incomplete resolve… | Passing |
+| Named options and a member mention (`match:M2 winner:@Dee_Ross reason:…`) run directly | › named options… | Passing |
+| A correction from the composer, keyboard only, always confirms in the danger dialog (Tab to the acknowledgement, Space, Tab to the button, Enter) | › keyboard only… | Passing |
+| `/tcg-test refresh` | › /tcg-test prefix… | Passing |
+| Two tabs: a resolution in one appears under the other tab's open dialog ("M2 changed since you opened this. Now:", "no longer available", the confirm disabled), and that tab sends nothing | `conflicts.spec.ts` › two tabs… | Passing |
+| No stream (the stream route aborted for that tab), with an API command racing the dialog: exactly one POST, answered 409; the dialog explains the change; the Matches row shows the 409 snapshot's winner without a reload or a stream | › no stream… | Passing |
+| A player step under an open dialog: "Review the change", Ctrl+Enter only reviews, then the resolve sends the fresh precondition (`proposalRevision: 2`) | › interactive: a player step… | Passing |
+| No composer and no controls when `commandsEnabled` is false (signup state and live-round state; the needs-you card keeps only "Open in live preview"); the demo console does show them | `shell.spec.ts` › a read-only console… (2 specs); › sidebar footer… the demo console can act | Passing |
+| The composer's focus ring sits on its frame (`:focus-within`) | `a11y.spec.ts` › Tab reaches the top bar… (the helper now accepts a 3 px ring on a focused frame) | Passing |
+| Escape layer in dialogs, focus return to the opener | `commands.spec.ts` › signup remove; `composer.spec.ts` › an incomplete resolve… | Passing |
+
+Not end to end:
+- "Saved; Discord display pending" toasts, and room-warning toasts in the danger tone. The demo's cards always
+  update and it has no match rooms, so the demo cannot produce them. They are unit only
+  (`features/commands/model.test.ts`, `commands.test.tsx`, `discord-commands.test.ts`).
+- The final hold's release after `finalHoldMs` without a correction (unit only, `demo-commands.test.ts`).
+  End to end, the hold releases on a correction (› correct…).
+- Automatic retries with the same commandId after a network error or a 503. Unit only (`client.test.ts`);
+  end to end, the server side of a retry is covered below.
+
+### Server contract over HTTP (`commands-api.spec.ts`)
+
+Each error body is exactly `{ error: { code, message } }`, plus `snapshot` for 409, with `application/json` and
+`Cache-Control: no-store`.
+
+| Requirement | Evidence | Status |
+| --- | --- | --- |
+| Session: all six capabilities and `commandsEnabled: true` in the demo; 401 without a bearer; 403 `bad_origin` for a foreign Origin; GET gets 405 with `Allow: POST` | › the session holds every capability… | Passing |
+| 400 `bad_request` for 24 malformed bodies: empty, not JSON, an array, unknown keys, a missing precondition, a bad or v1 UUID, a bad event ID, a player command type, extra fields, a bad member ID, M3, seat E; reasons that are empty, blank, zero-width only, 501 characters after trimming, or not a string; publish without `eventVersion`; a negative version; the wrong match precondition; close without the signup; a bad signup status; unknown precondition keys. Also 2 bad refresh bodies. A 500-character reason after trimming passes validation. Nothing changes and the pause holds. | › 400: strict validation… | Passing |
+| 404 `not_found` for an unknown event (commands and refresh) | › 404… | Passing |
+| 422 `rule` with the rule text: publish while signup is open, a winner outside the match, judge-resume before publication; no audit row | › 404 …; 422… | Passing |
+| 409 `conflict` with the latest snapshot for a stale precondition; a stale `eventVersion` beats the rule error that publish would otherwise get | › 409 + the latest snapshot… | Passing |
+| 200 with `{ applied, result, version, cards, roomWarning }`. An identical retry after the state moved on returns the same body, as does a retry with an upper-case command ID and event ID. There is one audit row (`via: 'web'`, `local-admin`, `web:<uuid>`). | › 200, then an identical retry… | Passing |
+| A reused command ID with other content (another member, another precondition, another event ID) gets 409 "already used" with the snapshot | › 200, then an identical retry… | Passing |
+| A no-op is a 200 with `applied: false` (`No change: not_joined.`); panel refresh is a 200 `{ cards: 'refreshed', roomWarning: null }` that moves only `panelRevision` | › a no-op… | Passing |
+| 503 `unavailable` once the runtime is closed while HTTP is up (commands and refresh) | › 503… | Passing |
+| 409 "This event is no longer active." with the *active* event's snapshot (commands and refresh); a stored success for that retired event is still returned to its retry | › an event that is no longer active | Passing |
+| Commands off: the session holds only `dashboard.read` and `commandsEnabled: false`; 403 with "Admin commands are disabled for this console (TCG_ADMIN_COMMANDS)." before validation (a valid and a nonsense body); refresh 403; nothing changes | › decision 4: commands off | Passing. Refresh answers "This session may not do that." instead (see the notes) |
+| A capability missing (`dashboard.read` and `match.judge` only): `correct` and `publish` get 403 "This session may not do that."; refresh gets 403; validation still comes first (400); a granted `resolve` applies | › a capability missing | Passing |
+
+### Bugs found in Wave 3 (open)
 
 | # | Severity | Where | What happens | Repro | Spec |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Minor (visual) | Live canvas automatic fit: `apps/web/src/features/flow/index.tsx` and `viewport.ts` (Wave 2 review fixes) | In a short pane the first automatic fit leaves stage nodes outside the pane or under the view switcher and legend: Signup, Check-in and Round 1 at 1440×900 with both panes; Signup and Check-in in the 1000 px sheet. Pressing *Fit view* fixes it. | Demo at step 19 (or any state); viewport 1440×900; open both panes; look at the Event view. Or 1000×800, open the sheet. | `canvas.spec.ts` › Event view fits its pane › …the first automatic fit shows every node (2 fixmes) |
-| 2 | Minor | `.ui-split-handle` (`z-10`, `apps/web/src/ui/SplitPane.tsx:164`) against `.shell-dock-handle` (z-index 5, `apps/web/src/features/shell/shell.css:248-259`) | With both panes open, the live/list divider covers the dock resize handle where they cross, so a drag that starts there resizes the split instead of the dock. | 1440×900, both panes open; drag the dock's left edge at the height of the live/list divider. | `shell.spec.ts` › known issues › the dock resize handle can be grabbed… (fixme) |
+| 3 | Major | `apps/server/src/admin/runtime/mappers.ts:257` (a retired snapshot gets `panelRevision: 0`) with `apps/web/src/data/cache.ts:41` `isSnapshotNewer` and `features/shell/model.tsx:129` | A retired event's snapshot comes back with `panelRevision` 0 at the same version. The web keeps its cached copy, which still says `active`, whenever the event ever had a panel revision. Every demo event has one (the check-in card repost). In Discord mode, any card edit gives one. The shell then sees summary `retired` against snapshot `active` forever and refetches the snapshot in a tight loop: 451 GETs in 2 s on the final tree, and each would be a PostgreSQL query in Discord mode. The history event's list tabs also keep their row actions ("Actions for M1/M2", remove buttons), because they read `snapshot.status`. A click there sends a command that gets 409. | Held scenario `{ steps: 28, durationMs: 3000, retireOnce: true, retireGapMs: 4000 }`. Open the console with the List preview on Matches, and wait for the event to retire while watched. Select it under History. Count the `/snapshot` requests, and look at the Matches rows. | `commands.spec.ts` › known issues › a just-retired event… (fixme) |
+| 4 | Moderate (keyboard/a11y) | `apps/web/src/features/commands/actions.tsx:63` `stopRow` on the wrappers of the Players remove buttons and the Matches "Actions for" menus | Every keydown is stopped from propagating, not only the row-activation keys. Below 1100 px, in the modal preview sheet, Tab from the last remove button leaves the sheet: focus goes to `<body>`, then to the sidebar behind the modal. Escape on a row action does not close the sheet. The Wave 2 trap spec failed on the shared demo because of this. | 1000×800, signup open with members (held scenario `{ steps: 4 }`). Open the sheet with the List preview on Players. Focus the last "Remove … from the signup", press Tab, then Escape. | `a11y.spec.ts` › below 1100 px › known issues › Tab and Escape on a row action… (fixme). The general trap spec now runs on the commands-off fixture. |
+| 5 | Minor | `apps/web/src/features/console/ActivityStream.tsx` `groupActivity`/`actorKey` | Entries are grouped by actor only, and the header shows the first entry's `via`. A console action within 5 minutes of a Discord action by the same admin is shown "via Discord". The Audit tab is right per row. In Discord mode with `TCG_ADMIN_COMMANDS=1` this mislabels real web actions. | Autoplay held scenario `{ steps: 7 }` (the scripted admin closed signup via Discord). Click "Reopen signup". The new line joins the "Admin · via Discord" group. | `commands.spec.ts` › known issues: activity attribution (fixme) |
 
-A third bug was found and then fixed upstream. Before the review fixes, a tab that watched an event retire kept
+Notes, not filed as bugs:
+- **Two 403 texts.** With commands off, `/panels/refresh` answers 403 "This session may not do that." and not
+  the `TCG_ADMIN_COMMANDS` text: the router's capability gate runs before the route. The web shows the same
+  message for every 403, so this is cosmetic.
+- **Enter on an exact mention.** In the composer, Enter on a word that already equals the only suggestion
+  accepts it (adding a space) rather than running the line. A trailing space, or a second Enter, runs it. This
+  is ordinary combobox behaviour.
+- **Fixed upstream before the final run:** a removal at the close pause used to skip the close and stall the
+  event (now the "removing instead of closing" spec). The final hold had no bound (now `finalHoldMs`). Clocks
+  did not run out while the script was paused (now the clock spec).
+
+### Pending live checks (not provable offline)
+
+- **A real Discord session with `TCG_ADMIN_CONSOLE=1` and `TCG_ADMIN_COMMANDS=1`.** For each command, check
+  that the console action:
+  - goes through the controller's tracking, accepting and lease gates;
+  - edits the real cards;
+  - arms the expiry timer after a judge-resume;
+  - syncs the match room;
+  - shows "saved; Discord display pending" when Discord is slow, and a room warning when a room cannot be
+    updated;
+  - leaves the same audit as the slash command, with `principal_kind = 'web'`.
+
+  Also check that a slash command and a console action on the same match race into a 409, not a double apply.
+  Finally, with `TCG_ADMIN_COMMANDS` unset, check that the live console shows no controls. This lane proved
+  that only on the demo's commands-off fixture.
+- **A real PostgreSQL run of the opt-in database tests.** `npm run test:db` with `DATABASE_URL` set covers
+  `commands.db.test.ts`: the prior result returned under `FOR UPDATE`, preconditions checked after the lock,
+  and the unique `(event_id, command_id)`. It also covers the Wave 2 `queries.db.test.ts`. Those are the 4
+  skipped server tests.
+
+## Bugs found in Wave 2
+
+Both Wave 2 bugs were fixed upstream; their specs now pass as regression guards (`canvas.spec.ts` › …the first
+automatic fit shows every node; `shell.spec.ts` › regressions › the dock resize handle…). The Wave 3 bugs are
+listed under "Wave 3: admin actions".
+
+| # | Severity | Where | What happens | Repro | Spec |
+| --- | --- | --- | --- | --- | --- |
+| 1 (fixed) | Minor (visual) | Live canvas automatic fit: `apps/web/src/features/flow/index.tsx` and `viewport.ts` (Wave 2 review fixes) | In a short pane the first automatic fit leaves stage nodes outside the pane or under the view switcher and legend: Signup, Check-in and Round 1 at 1440×900 with both panes; Signup and Check-in in the 1000 px sheet. Pressing *Fit view* fixes it. | Demo at step 19 (or any state); viewport 1440×900; open both panes; look at the Event view. Or 1000×800, open the sheet. | `canvas.spec.ts` › Event view fits its pane › …the first automatic fit shows every node (2 fixmes) |
+| 2 (fixed) | Minor | `.ui-split-handle` (`z-10`, `apps/web/src/ui/SplitPane.tsx:164`) against `.shell-dock-handle` (z-index 5, `apps/web/src/features/shell/shell.css:248-259`) | With both panes open, the live/list divider covers the dock resize handle where they cross, so a drag that starts there resizes the split instead of the dock. | 1440×900, both panes open; drag the dock's left edge at the height of the live/list divider. | `shell.spec.ts` › known issues › the dock resize handle can be grabbed… (fixme) |
+
+Another bug was found and then fixed upstream. Before the review fixes, a tab that watched an event retire kept
 its cached snapshot as `active`, because the cache has `staleTime: Infinity` and the stream only pushes the new
 event. Selecting the event under History then showed "Standings" instead of "History". The spec that showed it
 now passes as a regression guard.
@@ -267,7 +407,13 @@ Provisioning PostgreSQL is not part of the plan.
 
 ## Test infrastructure notes
 
-- `playwright.config.ts` is unchanged.
+- `playwright.config.ts` is unchanged. Its `webServer` (the shared stock demo) inherits the caller's
+  environment. A shell with `TCG_ADMIN_DEMO_MODE=interactive` would make the shared demo interactive, and the
+  specs that expect it to advance on its own (`live.spec.ts`) would time out. Unset it before running E2E, or add
+  `TCG_ADMIN_DEMO_MODE: 'autoplay'` to `webServer.env`. The file is outside the QA lane.
+- Wave 3 helpers: `e2e/support/commands.ts` (raw command requests, preconditions, pause waits, console
+  locators) and the scenario options in `e2e/support/demo.ts`. A held autoplay scenario keeps playing for about
+  `steps × 40 ms` after the console link is printed, so specs that need it settled wait with `waitForHold()`.
 - On Windows, a Node `fetch` keep-alive socket to a demo that a spec has killed makes the Playwright worker hit
   a libuv assertion at exit (`!(handle->flags & UV_HANDLE_CLOSING)`, `src\win\async.c:94`). It is harmless to
   results but noisy. The specs therefore use `e2e/support/http.ts` (`node:http` without keep-alive) for all

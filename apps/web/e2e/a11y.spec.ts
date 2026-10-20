@@ -21,8 +21,18 @@ async function focused(page: Page): Promise<Focused> {
       (style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0) ||
       (style.boxShadow !== 'none' && style.boxShadow !== '') ||
       (style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent' && style.content !== 'normal');
+    // A field may draw its ring on its frame instead (`:focus-within`, e.g. the command composer): accept a
+    // 3 px focus ring on a close ancestor that only appears while the field is focused.
+    const frameRing = (() => {
+      if (!element.matches('input, textarea')) return false;
+      let node = element.parentElement;
+      for (let depth = 0; node && depth < 3; depth++, node = node.parentElement) {
+        if (node.matches(':focus-within') && /0px 0px 0px 3px/.test(getComputedStyle(node).boxShadow)) return true;
+      }
+      return false;
+    })();
     const indicator = visible(getComputedStyle(element)) || visible(getComputedStyle(element, '::after')) ||
-      visible(getComputedStyle(element, '::before'));
+      visible(getComputedStyle(element, '::before')) || frameRing;
     return { label, inside, focusVisible: element.matches(':focus-visible'), indicator };
   });
 }
@@ -144,8 +154,14 @@ test.describe('below 1100 px', () => {
 
   const sheet = (page: Page) => page.getByRole('dialog', { name: 'Previews' });
 
+  // Wave 3: on a console that can act, the row actions in the list tabs swallow Tab and Escape (bug 4 below),
+  // so the general trap is proven on the read-only console (commands off, as in Discord mode by default).
+  let readOnly: DemoProcess;
+  test.beforeAll(async () => { readOnly = await startDemo({ scenario: { steps: 4, commands: 'off' } }); });
+  test.afterAll(async () => { await readOnly?.kill(); });
+
   test('the dock becomes a modal sheet that traps focus and closes on Escape', async ({ page }) => {
-    await openConsole(page, { preferences: { panes: { live: true, list: true } } });
+    await openConsole(page, { origin: readOnly.origin, token: readOnly.token, preferences: { panes: { live: true, list: true } } });
     // Panes are remembered as open, but nothing covers the console until asked.
     await expect(page.getByTestId('preview-dock')).toHaveCount(0);
     await expect(sheet(page)).toHaveCount(0);
@@ -206,5 +222,31 @@ test.describe('below 1100 px', () => {
     await sheet(page).getByRole('tab', { name: /^Matches/ }).click();
     await sheet(page).getByRole('table', { name: /^Matches/ }).locator('tbody tr').first().click();
     await expect(page.getByTestId('preview-sheet').getByTestId('live-preview')).toHaveAttribute('data-view', 'match');
+  });
+
+  test.describe('known issues', () => {
+    let demo: DemoProcess;
+    // Signup open with four members: the Players tab has a remove button in every row.
+    test.beforeAll(async () => { demo = await startDemo({ scenario: { steps: 4 } }); });
+    test.afterAll(async () => { await demo?.kill(); });
+
+    // Bug 4: the row-action wrappers in apps/web/src/features/commands/actions.tsx (`stopRow`, on the Players
+    // remove buttons and the Matches "Actions for" menus) stop the propagation of every keydown. The sheet's
+    // focus trap and Escape handler (features/shell/PreviewDock.tsx onKeyDown) never see Tab or Escape pressed
+    // there: Tab from the last remove button leaves the modal sheet for the page behind it, and Escape does
+    // not close the sheet.
+    test.fixme('Tab and Escape on a row action stay with the sheet', async ({ page }) => {
+      await openConsole(page, { origin: demo.origin, token: demo.token, preferences: { panes: { live: false, list: true }, listTab: 'players' } });
+      await listPreviewToggle(page).click();
+      await expect(sheet(page)).toBeVisible();
+      const removes = sheet(page).getByRole('button', { name: /^Remove .* from the signup$/ });
+      await expect(removes).toHaveCount(4);
+      await removes.last().focus();
+      await page.keyboard.press('Tab');
+      expect((await focused(page)).inside).toMatch(/dialog/);
+      await removes.last().focus();
+      await page.keyboard.press('Escape');
+      await expect(sheet(page)).toHaveCount(0);
+    });
   });
 });
