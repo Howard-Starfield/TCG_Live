@@ -21,6 +21,9 @@ Resolved 19 October 2026 (the user approved the defaults):
 - 2: original code reproducing the look; open-claude-ui is a visual reference only.
 - 3: local commits on `feat/admin-dashboard` and `admin/<lane>` branches; nothing pushed; `main` untouched.
 
+Resolved 19 October 2026 at the Wave 2 checkpoint:
+- 4: yes, opt-in. A signed-in local console session counts as the configured admin only when `TCG_ADMIN_COMMANDS=1` (the demo always allows commands). Console actions are audited as `principal_kind = 'web'`, need a reason where the Discord command does, and check the same preconditions. With the flag off, Discord mode stays read-only: the session reports `commandsEnabled: false`, holds only `dashboard.read`, and the UI shows no action controls.
+
 As originally posed, before Wave 0:
 1. **npm toolchain.** Default: run installs with `npx -y npm@11.21.1`, which satisfies the repository pin without any global change. Alternatives: install npm 11 globally, or deliberately raise the pin.
 2. **Design-system provenance.** open-claude-ui's own header and README say its tokens were extracted by de-obfuscating Claude Desktop's production bundles. A third party's MIT licence cannot license that material.
