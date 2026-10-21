@@ -1,6 +1,6 @@
-import type { Command, EventState, MatchId, Player } from '../rehearsal/domain.js';
+import type { Command, EventState, MatchId, Outcome, Player } from '../rehearsal/domain.js';
 import { RuleError } from '../rehearsal/domain.js';
-import { applyDiscordCommand } from '../rehearsal/store.js';
+import { applyDiscordCommand, applyWebCommand, type WebCommandContext } from '../rehearsal/store.js';
 import { parseButtonId, renderCard, type CardPayload } from './cards.js';
 import { channelForSlot, type PrivateDiscordConfig } from './config.js';
 import { bindCard, claimResumeReminder, completeStickyCard, getSessionState, messageId, replaceStickyCard, suspendStickyCard,
@@ -34,6 +34,51 @@ export interface CardTransport {
   classify(error: unknown): 'missing' | 'forbidden' | 'retry';
 }
 
+/** Admin console notifications. Delivered from a microtask and never awaited. */
+export type ControllerChange =
+  | { type: 'event'; eventId: string }     // committed command or timer application
+  | { type: 'panels'; eventId: string }    // card bind, sticky repost or suspension (panelRevision moved)
+  | { type: 'status' };                    // updatePending changed
+export type ControllerListener = (change: ControllerChange) => void;
+export interface ControllerStatus { updatePending: boolean; panelRevision: number }
+
+/** The reply after a committed command; the admin console returns the same text as its `result`. */
+export function savedReply(type: string, cardPending: boolean, roomWarning: string): string {
+  return `Saved: ${type}.${cardPending ? ' Card update pending.' : ''}` + (roomWarning ? ` Room setup pending: ${roomWarning}` : '');
+}
+
+/** The reply when the domain made no change (for example `not_joined`). */
+export function noChangeReply(result: string): string {
+  return `No change: ${result}.`;
+}
+
+/** The controller is stopping, or the lease is lost: it takes no new admin console work. */
+export class ControllerUnavailableError extends Error {}
+
+/** An admin console command: the store's web context plus the mapped domain command. */
+export interface WebAdminRequest extends Omit<WebCommandContext, 'config'> { command: Command }
+
+export interface AdminApplyResult {
+  /** The store's outcome; a replayed command ID returns the stored outcome unchanged. */
+  outcome: Outcome;
+  /** 'pending' when the card refresh after a committed change did not complete ("saved; display pending"). */
+  cards: 'updated' | 'pending';
+  roomWarning: string | null;
+  /** The reply the Discord path sends. */
+  reply: string;
+  /** A failure after the commit; the retry is already scheduled. */
+  degraded: boolean;
+}
+
+export interface ExplicitRefreshResult {
+  cards: 'refreshed' | 'pending';
+  /** A rule refusal from the card refresh, such as missing channel permissions; null otherwise. */
+  cardError: string | null;
+  roomWarning: string | null;
+  /** The reply `/tcg-test refresh` sends. */
+  reply: string;
+}
+
 type RefreshMode = 'known' | 'explicit';
 const SLOTS: CardSlot[] = ['checkin', 'M1', 'M2'];
 const SNOWFLAKE = /^[1-9]\d{14,21}$/;
@@ -56,6 +101,9 @@ export class PrivateDiscordController {
   private pending = new Set<Promise<unknown>>();
   private scheduledVersion = -1;
   private sticky = new Map<string, StickyChannel>();
+  private listeners = new Set<ControllerListener>();
+  private panelRevision = 0;
+  private lastPending = false;
 
   constructor(
     readonly config: PrivateDiscordConfig,
@@ -71,8 +119,47 @@ export class PrivateDiscordController {
     private readonly canPost: () => boolean = () => true,
     private readonly stickyDelayMs = 4_000,
     private readonly claimReminder = claimResumeReminder,
-    private readonly syncRooms?: (explicit: boolean) => Promise<void>
+    private readonly syncRooms?: (explicit: boolean) => Promise<void>,
+    private readonly applyWeb = applyWebCommand
   ) {}
+
+  /** Subscribers run in isolated microtasks; a throwing subscriber cannot affect replies, cards or shutdown. */
+  subscribe(listener: ControllerListener): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  /** Read-only view for the admin console. */
+  status(): ControllerStatus {
+    return { updatePending: this.pendingNow(), panelRevision: this.panelRevision };
+  }
+
+  private pendingNow(): boolean {
+    // A requested refresh (dirty ticket) has not yet completed without failure.
+    return this.dirty > 0 && this.refreshed !== this.dirty;
+  }
+
+  private notify(change: ControllerChange): void {
+    for (const listener of [...this.listeners]) {
+      try {
+        queueMicrotask(() => {
+          try { listener(change); } catch { /* Subscribers never affect Discord handling. */ }
+        });
+      } catch { /* Never reached; notification must not throw into the caller. */ }
+    }
+  }
+
+  private panelChanged(eventId: string): void {
+    this.panelRevision++;
+    this.notify({ type: 'panels', eventId });
+  }
+
+  private pendingChanged(): void {
+    const pending = this.pendingNow();
+    if (pending === this.lastPending) return;
+    this.lastPending = pending;
+    this.notify({ type: 'status' });
+  }
 
   private track<T>(task: Promise<T>): Promise<T> {
     this.pending.add(task);
@@ -92,6 +179,7 @@ export class PrivateDiscordController {
 
   private requestRefresh(mode: RefreshMode = 'known'): Promise<void> {
     this.dirty++;
+    this.pendingChanged();
     const task = this.refreshTask.then(() => this.refresh(mode));
     this.refreshTask = task.catch(() => {});
     return this.track(task);
@@ -116,18 +204,22 @@ export class PrivateDiscordController {
         // Send is attempted once. An ambiguous response never triggers an automatic resend.
         const sent = await this.sendOnce(payload, slot);
         await this.bind(this.config, session.event_id, slot, sent);
+        this.panelChanged(session.event_id);
         if (slot === 'checkin') await this.transport.pin(sent, slot);
         continue;
       }
       try {
         await this.transport.edit(id, payload, slot);
-        if (mode === 'explicit' && session.identity_map.stickySuspended?.includes(slot))
+        if (mode === 'explicit' && session.identity_map.stickySuspended?.includes(slot)) {
           await this.bind(this.config, session.event_id, slot, id);
+          this.panelChanged(session.event_id);
+        }
         if (mode === 'explicit' && slot === 'checkin') await this.transport.pin(id, slot);
       } catch (error) {
         if (mode === 'explicit' && this.transport.classify(error) === 'missing') {
           const sent = await this.sendOnce(payload, slot);
           await this.bind(this.config, session.event_id, slot, sent);
+          this.panelChanged(session.event_id);
           if (slot === 'checkin') await this.transport.pin(sent, slot);
         } else {
           failed = true;
@@ -138,6 +230,7 @@ export class PrivateDiscordController {
       }
     }
     if (!failed && ticket === this.dirty) this.refreshed = ticket;
+    this.pendingChanged();
     if (retryable || (!failed && this.refreshed !== this.dirty)) this.scheduleRetry();
     if (failed) throw new RuleError('Card update pending.');
   }
@@ -216,6 +309,7 @@ export class PrivateDiscordController {
       // Persist a reservation before POST: a crash or ambiguous response leaves
       // this slot suspended until a deliberate admin refresh.
       if (!await this.stickyStore.suspend(this.config, session.event_id, slot, oldId)) continue;
+      this.panelChanged(session.event_id);
       if (!this.accepting || !this.canPost()) return;
       let newId: string;
       try { newId = await this.transport.send(payload, slot); }
@@ -239,6 +333,7 @@ export class PrivateDiscordController {
         }
         continue;
       }
+      this.panelChanged(session.event_id);
       // Queue a fresh render behind this replacement. A command may have
       // committed while the network POST was in flight.
       void this.requestRefresh().catch(() => {});
@@ -249,7 +344,10 @@ export class PrivateDiscordController {
       }
       try { await this.transport.remove?.(oldId, slot); }
       catch (error) { if (this.transport.classify(error) !== 'missing') cleaned = false; }
-      if (cleaned) await this.stickyStore.complete(this.config, session.event_id, slot, newId);
+      if (cleaned) {
+        await this.stickyStore.complete(this.config, session.event_id, slot, newId);
+        this.panelChanged(session.event_id);
+      }
     }
   }
 
@@ -286,6 +384,7 @@ export class PrivateDiscordController {
     if (!this.accepting) return;
     const result = await this.apply({ config: this.config, eventId, principalId: 'system:timer',
       timer: { matchId, pauseGeneration, deadlineMs } }, { type: 'clockCheck', matchId }, this.runnerId, this.clock);
+    if (result.applied) this.notify({ type: 'event', eventId });
     const latest = await this.read(this.config);
     this.schedule(latest.state);
     if (result.applied) await this.requestRefresh();
@@ -305,37 +404,66 @@ export class PrivateDiscordController {
     })());
   }
 
-  private async handleAcknowledged(interaction: PrivateInteraction): Promise<void> {
-    let committed: { result: string; applied: boolean } | undefined;
+  /**
+   * Admin console command (principal_kind 'web'). Goes through the same accepting and lease gates,
+   * tracking, store transaction body, room sync, timer scheduling and card refresh as a slash command.
+   * Rejects with ControllerUnavailableError while not accepting; store refusals reject as RuleErrors.
+   */
+  applyAdmin(request: WebAdminRequest): Promise<AdminApplyResult> {
+    if (!this.accepting || !this.canPost()) return Promise.reject(new ControllerUnavailableError('Private Discord runtime is not accepting commands.'));
+    const { command, ...context } = request;
+    return this.track(this.commit(request.eventId, command,
+      () => this.applyWeb({ config: this.config, ...context }, command, this.runnerId, this.clock)));
+  }
+
+  /**
+   * The explicit card and room repair behind `/tcg-test refresh` and the console's panel refresh.
+   * `cardError` carries a rule refusal from the card refresh (for example missing permissions); the
+   * slash command reports it as pending, as it always has.
+   */
+  refreshExplicit(): Promise<ExplicitRefreshResult> {
+    if (!this.accepting || !this.canPost()) return Promise.reject(new ControllerUnavailableError('Private Discord runtime is not accepting commands.'));
+    return this.track(this.explicitRefresh());
+  }
+
+  private async explicitRefresh(): Promise<ExplicitRefreshResult> {
+    const { state } = await this.read(this.config);
+    if (state.matches.some(match => match.phase === 'running' && match.runnerId !== this.runnerId))
+      throw new RuleError('Private Discord session has an interrupted running clock; stop and prepare --replace.');
+    let cardWarning = false;
+    let cardError: string | null = null;
+    try { await this.requestRefresh('explicit'); }
+    catch (error) {
+      cardWarning = true;
+      if (error instanceof RuleError) cardError = error.message;
+    }
+    let roomWarning = '';
+    try { await this.syncRooms?.(true); }
+    catch (error) { roomWarning = error instanceof RuleError ? error.message : 'Public match room setup failed.'; }
+    return {
+      cards: cardWarning ? 'pending' : 'refreshed', cardError, roomWarning: roomWarning || null,
+      reply: (cardWarning ? 'Practice card refresh pending.' : 'Practice cards refreshed.') +
+        (roomWarning ? ` Room setup pending: ${roomWarning}` : '')
+    };
+  }
+
+  /**
+   * Applies one command and runs everything that follows a commit: the change notice, room sync after
+   * signup and publication, the resume reminder, timer scheduling from the latest state (a judge-resume
+   * arms its expiry timer) and the card refresh. Errors before the commit reject. After a committed
+   * change nothing rejects: a later failure schedules a retry and reports "saved; display pending".
+   */
+  private async commit(eventId: string, command: Command, apply: () => Promise<Outcome>): Promise<AdminApplyResult> {
+    const outcome = await apply();
     try {
-      if (interaction.kind === 'command' && interaction.subcommand === 'refresh') {
-        this.requireAdmin(interaction.userId);
-        const { state } = await this.read(this.config);
-        if (state.matches.some(match => match.phase === 'running' && match.runnerId !== this.runnerId))
-          throw new RuleError('Private Discord session has an interrupted running clock; stop and prepare --replace.');
-        let cardWarning = false;
-        try { await this.requestRefresh('explicit'); }
-        catch { cardWarning = true; }
-        let roomWarning = '';
-        try { await this.syncRooms?.(true); }
-        catch (error) { roomWarning = error instanceof RuleError ? error.message : 'Public match room setup failed.'; }
-        await interaction.reply((cardWarning ? 'Practice card refresh pending.' : 'Practice cards refreshed.') +
-          (roomWarning ? ` Room setup pending: ${roomWarning}` : ''));
-        return;
-      }
-      const { session, state } = await this.read(this.config);
-      const { command, slot } = this.commandFor(interaction, session, state);
-      const outcome = await this.apply({ config: this.config, eventId: session.event_id,
-        principalId: interaction.userId, interactionId: interaction.id,
-        ...(slot ? { message: { slot, id: interaction.messageId!, channelId: interaction.channelId! } } : {}) }, command, this.runnerId, this.clock);
-      committed = outcome;
+      if (outcome.applied) this.notify({ type: 'event', eventId });
       let roomWarning = '';
       if (outcome.applied && ['signupClose', 'signupReopen', 'publish'].includes(command.type)) {
         try { await this.syncRooms?.(false); }
         catch (error) { roomWarning = error instanceof RuleError ? error.message : 'Public match room setup failed.'; }
       }
       if (outcome.applied && command.type === 'resumeConsent' && this.transport.resumeReminder) {
-        const waiting = await this.claimReminder(this.config, session.event_id,
+        const waiting = await this.claimReminder(this.config, eventId,
           command.matchId, command.pauseGeneration);
         if (waiting?.length && this.accepting && this.canPost()) {
           const reminderId = await this.transport.resumeReminder(command.matchId, waiting);
@@ -350,19 +478,45 @@ export class PrivateDiscordController {
       }
       const latest = await this.read(this.config);
       this.schedule(latest.state);
-      if (outcome.applied) {
-        let cardPending = false;
-        try {
-          await this.requestRefresh();
-        } catch { cardPending = true; }
-        await interaction.reply(`Saved: ${command.type}.${cardPending ? ' Card update pending.' : ''}` +
-          (roomWarning ? ` Room setup pending: ${roomWarning}` : ''));
-      } else await interaction.reply(`No change: ${outcome.result}.`);
+      if (!outcome.applied) return { outcome, cards: 'updated', roomWarning: null, reply: noChangeReply(outcome.result), degraded: false };
+      let cardPending = false;
+      try {
+        await this.requestRefresh();
+      } catch { cardPending = true; }
+      return { outcome, cards: cardPending ? 'pending' : 'updated', roomWarning: roomWarning || null, degraded: false,
+        reply: savedReply(command.type, cardPending, roomWarning) };
     } catch (error) {
-      if (committed?.applied) this.scheduleRetry();
+      if (!outcome.applied) throw error;
+      this.scheduleRetry();
+      return { outcome, cards: 'pending', roomWarning: null, degraded: true,
+        reply: `Saved: ${outcome.result}. Card update pending.` };
+    }
+  }
+
+  private async handleAcknowledged(interaction: PrivateInteraction): Promise<void> {
+    let committed: AdminApplyResult | undefined;
+    try {
+      if (interaction.kind === 'command' && interaction.subcommand === 'refresh') {
+        this.requireAdmin(interaction.userId);
+        await interaction.reply((await this.explicitRefresh()).reply);
+        return;
+      }
+      const { session, state } = await this.read(this.config);
+      const { command, slot } = this.commandFor(interaction, session, state);
+      committed = await this.commit(session.event_id, command, () => this.apply({ config: this.config, eventId: session.event_id,
+        principalId: interaction.userId, interactionId: interaction.id,
+        ...(slot ? { message: { slot, id: interaction.messageId!, channelId: interaction.channelId! } } : {}) }, command, this.runnerId, this.clock));
+      if (committed.degraded) {
+        // A post-commit failure already scheduled the retry; one reply attempt, as before.
+        try { await interaction.reply(committed.reply); } catch { /* Initial acknowledgment already succeeded. */ }
+        return;
+      }
+      await interaction.reply(committed.reply);
+    } catch (error) {
+      if (committed?.outcome.applied) this.scheduleRetry();
       else if (interaction.kind === 'button' && error instanceof RuleError)
         void this.requestRefresh().catch(() => {});
-      const message = committed?.applied ? `Saved: ${committed.result}. Card update pending.`
+      const message = committed?.outcome.applied ? `Saved: ${committed.outcome.result}. Card update pending.`
         : error instanceof RuleError ? error.message : 'Private Discord action failed.';
       try { await interaction.reply(message); } catch { /* Initial acknowledgment already succeeded. */ }
     }

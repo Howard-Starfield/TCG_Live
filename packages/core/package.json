@@ -1,0 +1,25 @@
+{
+  "name": "@tcg-live/core",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./fixtures": {
+      "types": "./dist/fixtures.d.ts",
+      "default": "./dist/fixtures.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json",
+    "test": "tsc -b tsconfig.json && node --test dist/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "typescript": "6.0.2"
+  }
+}

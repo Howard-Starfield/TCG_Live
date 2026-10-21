@@ -1,0 +1,61 @@
+/* Owned by its lane (see docs/ADMIN_DASHBOARD_PLAN.md). Component variables build on styles/tokens.css. */
+/* L7 web-lists: the few List preview styles utilities cannot express. */
+
+/* Definition-list rows: no hairline under the last row. */
+.lists-dl > :nth-last-child(-n + 2) {
+  border-bottom-width: 0;
+}
+
+/* Tables scroll both ways inside narrow panes; keep the scrollbar thin and warm. */
+.lists-table,
+.lists-panels,
+.lists-tabbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+/* The tab strip scrolls sideways in very narrow panes instead of wrapping. */
+.lists-tabbar,
+.lists-tabs {
+  scrollbar-width: none;
+}
+
+/* Compact selects in the audit filter bar. */
+.lists-select select {
+  height: 1.75rem;
+  font-size: 0.75rem;
+}
+
+/* Hide the native search clear button; Escape and the Clear button do the job. */
+.lists-preview input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Scroll cue: fade the table edge that hides more columns (see ScrollCue). */
+.lists-scroll-cue::before,
+.lists-scroll-cue::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  z-index: 2;
+  width: 32px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms var(--ease-standard);
+}
+.lists-scroll-cue::before {
+  left: 1px;
+  border-radius: 8px 0 0 8px;
+  background: linear-gradient(to left, transparent, var(--color-raised) 85%);
+}
+.lists-scroll-cue::after {
+  right: 1px;
+  border-radius: 0 8px 8px 0;
+  background: linear-gradient(to right, transparent, var(--color-raised) 85%);
+}
+.lists-scroll-cue[data-more-start]::before,
+.lists-scroll-cue[data-more-end]::after {
+  opacity: 1;
+}

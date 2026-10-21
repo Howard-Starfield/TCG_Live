@@ -377,6 +377,8 @@ Both admin-selectable finish modes are now confirmed: STANDINGS and PLAYOFFS. St
 
 ## 11. Change history
 
+- **2026-10-19 (local admin console, decision 4):** Built the localhost admin console on `feat/admin-dashboard` per [the console plan](ADMIN_DASHBOARD_PLAN.md). The user decided that a signed-in local console session counts as the configured admin only when `TCG_ADMIN_COMMANDS=1` (opt-in; the demo always allows it). Console actions share the Discord command transaction and controller, are audited as `principal_kind = 'web'`, require reasons where the slash commands do, and check the state the organizer saw. `TCG_ADMIN_CONSOLE` and `TCG_ADMIN_COMMANDS` default to off, and the console's default stays off until a live Discord check with it enabled is recorded. Decision 5 (what "roles" means for multi-user sign-in) remains open. Not merged to `main`.
+
 - **2026-10-10 (cross-reviewed planning debate):** Added a separate three-reviewer debate report covering fairness counterexamples, transactional controls, rating replay, delivery, restart/restore, backups, and proposed acceptance tests. Linked it from both guides. All new recommendations remain proposals; no numerical algorithm or implementation was approved.
 
 - **2026-10-10 (planning risk review):** Added explicitly proposed safeguards and unresolved questions for numerical standings, qualification, concurrency/consent, audit/replay, a database-backed notification outbox, backup coverage, fresh-environment recovery, and stale Discord reconciliation. No numerical tiebreak order or new implementation policy was approved by this review.
