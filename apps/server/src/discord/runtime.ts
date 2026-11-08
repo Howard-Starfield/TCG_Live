@@ -17,7 +17,7 @@ import { PrivateDiscordController, type CardTransport, type PrivateInteraction }
 import { acquireAdvisoryLease, getSessionState, prepareSession, prepareSignupSession, type AdvisoryLease } from './session.js';
 import { privateDiscordClient, privateDiscordRest } from './sdk.js';
 import { MatchRoomReconciler, type Room, type RoomOverwrite, type RoomTransport } from './match-rooms.js';
-import { filenameFromThumbnail, noticeEmbed, visualFile, visualThumbnail } from './visuals.js';
+import { filenameFromThumbnail, noticeEmbed, retainedVisual, visualFile, visualThumbnail } from './visuals.js';
 
 function safeError(error: unknown): string {
   return error instanceof RuleError ? error.message : 'Private Discord operation failed.';
@@ -84,21 +84,7 @@ export function discordTransport(channel: TextChannel, matches?: Record<MatchId,
       const message = await target.messages.fetch(id);
       const file = cardFile(card);
       if (!file) { await message.edit(payload(card)); return; }
-      const attachments = message.attachments;
-      const visibleAttachment = attachments?.size === 1 && [...attachments.values()][0]?.name === file.name;
-      let embeddedAttachment = false;
-      if (attachments?.size === 0 && botId && message.author?.id === botId) {
-        try {
-          const thumbnail = new URL(message.embeds?.[0]?.thumbnail?.url ?? '');
-          const channelId = target.id;
-          const path = thumbnail.pathname.match(/^\/attachments\/([1-9]\d{14,21})\/([1-9]\d{14,21})\/([^/]+)$/);
-          embeddedAttachment = thumbnail.protocol === 'https:' && !thumbnail.port && !thumbnail.username &&
-            !thumbnail.password && !thumbnail.hash &&
-            ['cdn.discordapp.com', 'media.discordapp.net'].includes(thumbnail.hostname) &&
-            path?.[1] === channelId && path[3] === file.name;
-        } catch { /* An unexpected thumbnail is replaced with the known local asset. */ }
-      }
-      const retained = visibleAttachment || embeddedAttachment;
+      const retained = retainedVisual(message, target.id, botId ?? '', file.name);
       await message.edit(retained ? payload(card) : { ...payload(card), attachments: [], files: [file] });
     },
     async resumeReminder(slot, waitingIds) {
@@ -274,7 +260,9 @@ function readAdminSettings(): AdminConfig {
   catch (error) { throw new RuleError(error instanceof Error ? error.message : 'Invalid admin console configuration.'); }
 }
 
-export async function runPrivateDiscord(config: PrivateDiscordConfig = readPrivateDiscordConfig(process.env, true)): Promise<void> {
+export async function runPrivateDiscord(config: PrivateDiscordConfig = readPrivateDiscordConfig(process.env, true),
+  onReady?: (loginUrl: string | null) => void, manageSignals = true,
+  initializeFresh = false): Promise<{ stop(): Promise<void> }> {
   const healthConfig = readConfig();
   const adminConfig = readAdminSettings();
   const runnerId = randomUUID();
@@ -314,9 +302,11 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     })();
     return shutdownTask;
   }
-  process.once('SIGINT', () => { void shutdown(); });
-  process.once('SIGTERM', () => { void shutdown(); });
-  process.once('SIGBREAK', () => { void shutdown(); });
+  if (manageSignals) {
+    process.once('SIGINT', () => { void shutdown(); });
+    process.once('SIGTERM', () => { void shutdown(); });
+    process.once('SIGBREAK', () => { void shutdown(); });
+  }
   const ensureActive = () => {
     if (stopping || lease?.isLost()) throw new RuleError('Private Discord startup was interrupted.');
   };
@@ -376,6 +366,15 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       undefined, undefined, explicit => roomSync?.trigger(explicit) ?? Promise.resolve());
     admin?.attachController(controller);
     await controller.start();
+    if (initializeFresh) {
+      try { await registerPrivateCommand(config); }
+      catch { process.stderr.write('Initial guild command registration is pending; use the existing registration command to retry.\n'); }
+      try {
+        const initial = await controller.refreshExplicit();
+        if (initial.cards === 'pending' || initial.roomWarning)
+          process.stderr.write('Initial practice panels or room setup are pending; review the dashboard and use Refresh.\n');
+      } catch { process.stderr.write('Initial practice panels are pending; review the dashboard and use Refresh.\n'); }
+    }
     ensureActive();
     client.on('interactionCreate', interaction => { if (!stopping && !lease?.isLost()) {
       const adapted = adapt(interaction);
@@ -400,6 +399,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     client.on('shardResume', reconnect);
     client.on('shardReady', reconnect);
     process.stdout.write(`Private Discord runtime ready; health on 127.0.0.1:${health.port}.\n`);
+    onReady?.(admin?.handler.loginUrl() ?? null);
+    return { stop: shutdown };
   } catch (error) {
     await shutdown();
     // A cancellation can arrive while an awaited acquisition is still in flight.

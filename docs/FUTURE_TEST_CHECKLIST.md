@@ -1,5 +1,9 @@
 # TCG future test checklist
 
+Queued 7 November: [game-specific artwork and dashboard uploads](GAME_VISUALS_QUEUE.md). The three user-supplied default GIFs are packaged in game folders; upload controls and runtime game-specific selection remain future work.
+
+Also queued: [persistent dashboard sessions and a deduplicated one-click Windows launcher](DASHBOARD_STARTUP_QUEUE.md), with automatic default-browser login and no manual token entry.
+
 Updated 13 October 2026. The user reported that the latest two-account flow works. The implementation baseline passed 47 offline tests and both native database tests; detailed evidence is in [the validation record](PRIVATE_DISCORD_VALIDATION.md).
 
 The signup slice subsequently passed 53 offline tests and both native database cases. Real signup panels and runtime startup were verified; signup human clicks and the complete four-human flow remain pending. See [signup validation](SIGNUP_ROSTER_VALIDATION.md).

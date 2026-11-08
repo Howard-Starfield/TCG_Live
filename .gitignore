@@ -5,6 +5,7 @@ dist/
 !.env.example
 data/postgres/
 data/discord-room-overwrites/
+data/discord-setup.json
 backups/
 *.log
 *.dump

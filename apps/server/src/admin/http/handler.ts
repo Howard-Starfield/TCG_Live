@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AUDIT_PAGE_LIMIT, type Capability, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
 import { sessionCapabilities } from '../commands.js';
 import type { AdminHandler, AdminHandlerOptions } from '../mount.js';
-import { readEmptyBody, readLoginBody } from './body.js';
+import { readEmptyBody, readJsonBody, readLoginBody } from './body.js';
 import { commandRoutes } from './routes-commands.js';
 import { fail, HttpError, sendJson, sendNoContent, unavailable } from './respond.js';
 import { SessionStore, type Session } from './sessions.js';
@@ -88,7 +88,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       capabilities: [...capabilities],
       ...sessions.expiry(session),
       mode: options.mode,
-      commandsEnabled: options.commandsEnabled
+      commandsEnabled: options.commandsEnabled,
+      ...(options.setup ? { setup: true as const } : {})
     };
   }
 
@@ -139,6 +140,29 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
     { pattern: /^\/api\/v1\/stream$/, methods: {
       GET: { access: 'dashboard.read', run: ({ request, response, session }) => streams.open(request, response, session!) }
     } },
+    ...(options.setup ? [
+      { pattern: /^\/api\/v1\/setup$/, methods: {
+        GET: { access: 'session' as const, run: async ({ response }: Context) => sendJson(response, 200, await options.setup!.status()) }
+      } },
+      { pattern: /^\/api\/v1\/setup\/guilds$/, methods: {
+        GET: { access: 'session' as const, run: async ({ response }: Context) => sendJson(response, 200, await options.setup!.guilds()) }
+      } },
+      { pattern: /^\/api\/v1\/setup\/channels$/, methods: {
+        GET: { access: 'session' as const, run: async ({ response, query }: Context) =>
+          sendJson(response, 200, await options.setup!.channels(single(query, 'guildId') ?? '')) }
+      } },
+      { pattern: /^\/api\/v1\/setup\/check$/, methods: {
+        POST: { access: 'session' as const, run: async ({ request, response }: Context) =>
+          sendJson(response, 200, await options.setup!.check(await readJsonBody(request))) }
+      } },
+      { pattern: /^\/api\/v1\/setup\/finish$/, methods: {
+        POST: { access: 'session' as const, run: async ({ request, response }: Context) => {
+          const result = await options.setup!.finish(await readJsonBody(request));
+          response.once('finish', () => { void options.setup!.handover().catch(() => {}); });
+          sendJson(response, 200, result);
+        } }
+      } }
+    ] satisfies Route[] : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 

@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AdminMode } from './config.js';
 import { createAdminHttp } from './http/handler.js';
 import type { AdminRuntime } from './runtime-types.js';
+import type { SetupService } from '../onboarding/service.js';
 
 export interface AdminHandlerOptions {
   runtime: AdminRuntime;
@@ -17,6 +18,8 @@ export interface AdminHandlerOptions {
   fixedLoginToken?: string | null;
   /** Where rotate-link prints the fresh console link. Defaults to stdout. */
   printLoginUrl?: (url: string) => void;
+  /** Mounted only by the guided first-start entry. */
+  setup?: SetupService;
 }
 
 export interface AdminHandler {

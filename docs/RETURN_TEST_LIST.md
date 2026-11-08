@@ -1,5 +1,7 @@
 # Tests for when you return
 
+**Onboarding update, 7 November:** Manage Permissions is now confirmed in both match rooms. Guided setup discovered the actual channels, resumed the same saved event and preserved all 41 events / 408 audit rows. See [onboarding validation](ONBOARDING_VALIDATION.md). Public activation and the four-human flow still need their separate checks.
+
 **7 November status:** [The latest rehearsal record](REHEARSAL_2026_11_07.md) confirms all unit suites, 112 demo browser tests, four native PostgreSQL tests, a real console login/refresh/guard check, and two real player Join/Withdraw cycles with a human-triggered sticky repost. The live roster ended empty. Public-room permissions and the four-human match flow remain pending; the earlier checklist below remains useful for those steps.
 
 14 October 2026. New feature: public match voice rooms, spectator read access and automatic placement of assigned players. Automated verification and live boundaries are recorded in [the validation record](PUBLIC_MATCH_ROOMS_VALIDATION.md): 65 offline tests and both native database cases passed. Public activation and actual voice movement remain pending the permission below and human checks.
@@ -15,9 +17,14 @@ The bot now has 12 original status images/GIFs, inspired by the SysBot state-thu
 
 See [the visual plan](DISCORD_VISUAL_PLAN.md) and [the artwork overview](../apps/server/assets/discord/visual-contact-sheet.png). Bot uploads need Attach Files as well as Embed Links in each configured channel.
 
-## First: enable the missing permission
+## Permissions and onboarding
 
-The live preflight found that BoBoAssist already has Move Members and Manage Channels, but lacks permission to manage channel overwrites (Discord's Manage Roles permission). Give the bot that permission in both dedicated match voice rooms, then tell Codex it is done so the public-room mode can be enabled and checked. Administrator is unnecessary. Enabling this mode requires a fresh prepared practice session because the public/private mode is frozen with the saved room routing; previous events and audits remain available.
+The 7 November forced role/channel refresh confirms BoBoAssist now has Manage Permissions in both dedicated match voice rooms. The earlier missing-permission report is resolved; Administrator is unnecessary. The current saved event remains private. Public mode requires a fresh prepared practice session because room mode is frozen with saved routing; previous events and audits remain available.
+
+- [ ] On a first guided start, confirm the dashboard opens and lists the bot's server and available text/voice channels. Existing active-event selections should be locked and preserved.
+- [ ] In a separate fresh event, select signup and match rooms, check readiness, and confirm Save and Start creates the panels once. Later healthy startup should open the dashboard directly.
+- [ ] When a required permission is genuinely missing, confirm the selected signup channel shows the affected room and repair guide. Rechecking should update the same message without repeated pings. Do not revoke permissions from an active match just to run this check.
+- [ ] Dashboard artwork upload/preview/reset is queued; the three supplied per-game GIF defaults have been copied, but runtime game selection is not implemented yet.
 
 The existing signup bot can remain usable in private mode meanwhile. Do not expect automatic placement or public room access until the feature is enabled. Turning the setting off later does not restore old room permissions; a one-time local overwrite backup is retained for recovery.
 

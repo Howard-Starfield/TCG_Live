@@ -4,6 +4,7 @@
   "workspaces": ["packages/core", "apps/server", "apps/web"],
   "engines": { "node": ">=24.15.0 <25", "npm": ">=11.9.0 <12" },
   "scripts": {
+    "start": "npm run build:all && node apps/server/dist/onboarding/entry.js",
     "build": "npm run build --workspace @tcg-live/server",
     "typecheck": "npm run typecheck --workspace @tcg-live/server",
     "test": "npm run test --workspace @tcg-live/server",

@@ -33,6 +33,18 @@ npm.cmd run dev
 
 Use a disposable local PostgreSQL database and its own credentials for a connectivity check. The URL must contain an explicit user, password, port, database name, and exactly one loopback host (`localhost`, `127.0.0.1`, or `[::1]`). `postgres:` and `postgresql:` are accepted. Query parameters and fragments are rejected; the application does not accept remote database hosts. The health probe performs only `SELECT 1` and never provisions or migrates a database. Do not point it at another application's database.
 
+## Guided Discord startup
+
+After installing dependencies and preparing the local rehearsal database, use `npm.cmd start`. This command builds the dashboard and server, loads the root `.env`, connects the bot, and opens the authenticated local admin dashboard in your default browser. Use `npm.cmd start -- --no-browser` to keep browser opening disabled; a private login link remains in the terminal. Treat that link like a password.
+
+Set `DISCORD_BOT_TOKEN` (or `TCG_DISCORD_TOKEN`) and `DATABASE_URL` privately in `.env`. Run `db:setup` and `db:discord-setup` explicitly with that database configured before starting a new event. Guided startup does not install PostgreSQL or rewrite credentials. Missing prerequisites appear in setup. The older `dev` and direct Discord commands retain their existing environment behavior.
+
+On first use, onboarding lists the bot's servers and available channels, asks for the separate organizer, signup text channel and two match voice rooms, and checks effective permissions. Give the bot View Channel and refresh if a channel is missing. New events use dedicated non-AFK rooms named with the `TCG Match ` prefix. Public rooms also require Manage Permissions, Manage Channels and Move Members. The signup channel receives an owned setup-status message; missing permissions include a repair guide. Uncertain delivery is shown for manual inspection rather than automatically sending duplicates.
+
+An active saved event locks its existing identity and routing; **Save and Start resumes it**, preserving roster, results and audit history. Without an active event, that button prepares one signup event and initializes its panels. Setup settings contain only non-secret IDs and guide-message bookkeeping in ignored `data/discord-setup.json`. Later healthy starts open the normal dashboard directly. Match commands still require the existing `TCG_ADMIN_COMMANDS=1` opt-in. The handover opens a new authenticated dashboard session; the old setup tab can be closed.
+
+Per-game default GIFs are packaged under [the game assets folders](apps/server/assets/games/README.md). Dashboard artwork uploads, previews and reset controls remain in [the artwork queue](docs/GAME_VISUALS_QUEUE.md).
+
 ## Health routes
 
 | Request | Response |

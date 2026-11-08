@@ -20,8 +20,37 @@ export interface SessionDto {
   principal: PrincipalDto; capabilities: Capability[];
   expiresAtMs: number; idleExpiresAtMs: number;
   mode: 'discord' | 'demo'; commandsEnabled: boolean;
+  /** Guided first-start mode; setup actions are not match-command capabilities. */
+  setup?: true;
 }
 export interface SessionGrantDto { token: string; session: SessionDto }   // bearer token; kept in sessionStorage
+
+export interface SetupSelectionDto {
+  guildId: Snowflake; channelId: Snowflake;
+  /** Null only for a frozen legacy event that uses the signup channel for match chat. */
+  matchChannels: Record<MatchId, Snowflake> | null;
+  adminId: Snowflake; publicMatchRooms: boolean;
+}
+export interface SetupGuildDto { id: Snowflake; name: string; ownerId: Snowflake }
+export interface SetupChannelDto {
+  id: Snowflake; name: string; category: string | null; type: 'text' | 'voice';
+}
+export interface SetupCapabilityDto {
+  slot: 'signup' | MatchId; channelId: Snowflake; channelName: string;
+  missing: string[];
+}
+export interface SetupCheckDto {
+  valid: boolean; frozen: boolean; botName: string | null;
+  capabilities: SetupCapabilityDto[]; issues: string[]; guide: string;
+  notice: 'none' | 'posted' | 'pending' | 'cannot_post';
+}
+export interface SetupStatusDto {
+  prerequisite: string | null; activeEventId: string | null;
+  selection: SetupSelectionDto | null; frozen: boolean;
+  botName: string | null; check: SetupCheckDto | null;
+  openingDashboard: boolean; handoverError?: string | null;
+}
+export interface SetupFinishDto { openingDashboard: true; eventId: string }
 
 export interface RuntimeStatusDto {
   mode: 'discord' | 'demo'; bootId: string; buildId: string;

@@ -7,7 +7,7 @@
     "prebuild": "node -e \"const fs=require('node:fs');const path=require('node:path');const root=path.resolve(process.cwd(),'..','..');const target=path.resolve(process.cwd(),'dist');if(target!==path.join(root,'apps','server','dist'))throw Error('Unsafe build output path');fs.rmSync(target,{recursive:true,force:true})\"",
     "build": "tsc -b tsconfig.json",
     "typecheck": "tsc -b ../../packages/core/tsconfig.json && tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js dist/rehearsal/*.test.js dist/discord/*.test.js \"dist/admin/**/*.test.js\"",
+    "test": "npm run build && node --test dist/test/*.test.js dist/rehearsal/*.test.js dist/discord/*.test.js dist/onboarding/*.test.js \"dist/admin/**/*.test.js\"",
     "test:db": "npm run build && node --test --test-concurrency=1 dist/rehearsal/store.db.test.js dist/discord/session.db.test.js \"dist/admin/**/*.db.test.js\"",
     "db:setup": "npm run build && node dist/rehearsal/cli.js setup",
     "rehearse": "npm run build && node dist/rehearsal/cli.js rehearse",

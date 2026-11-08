@@ -27,6 +27,25 @@ export function filenameFromThumbnail(thumbnail?: { url: string }): string | nul
   return visualFile(filename) ? filename : null;
 }
 
+/** Discord can hide an embed-consumed upload from attachments; validate its owned CDN path. */
+export function retainedVisual(message: {
+  attachments?: { size: number; values(): IterableIterator<{ name: string | null }> };
+  author?: { id: string };
+  embeds?: readonly { thumbnail?: { url: string } | null }[];
+}, channelId: string, botId: string, filename: string): boolean {
+  if (!visualFile(filename)) return false;
+  const attachments = message.attachments;
+  if (attachments?.size === 1 && [...attachments.values()][0]?.name === filename) return true;
+  if (attachments?.size !== 0 || message.author?.id !== botId) return false;
+  try {
+    const thumbnail = new URL(message.embeds?.[0]?.thumbnail?.url ?? '');
+    const path = thumbnail.pathname.match(/^\/attachments\/([1-9]\d{14,21})\/([1-9]\d{14,21})\/([^/]+)$/);
+    return thumbnail.protocol === 'https:' && !thumbnail.port && !thumbnail.username && !thumbnail.password &&
+      !thumbnail.hash && ['cdn.discordapp.com', 'media.discordapp.net'].includes(thumbnail.hostname) &&
+      path?.[1] === channelId && path[3] === filename;
+  } catch { return false; }
+}
+
 export function noticeVisual(message: string): VisualState {
   if (/^Saved:|^Practice cards refreshed\./.test(message) && !/pending/i.test(message)) return 'final';
   if (/pending/i.test(message) || /^No change:/.test(message)) return 'notice';

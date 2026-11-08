@@ -1,5 +1,7 @@
 import { API_PREFIX, type AuditEntryDto, type EventSnapshotDto, type EventSummaryDto,
-  type RuntimeStatusDto, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
+  type RuntimeStatusDto, type SessionDto, type SessionGrantDto, type SetupStatusDto,
+  type SetupGuildDto, type SetupChannelDto, type SetupSelectionDto, type SetupCheckDto,
+  type SetupFinishDto } from '@tcg-live/core';
 import { ApiError, errorFromResponse, isAbortError, networkError } from './errors';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -36,6 +38,11 @@ export interface ApiClient {
   listEvents(signal?: AbortSignal): Promise<EventSummaryDto[]>;
   getSnapshot(eventId: string, signal?: AbortSignal): Promise<EventSnapshotDto>;
   getAudit(eventId: string, query?: AuditPageQuery, signal?: AbortSignal): Promise<AuditEntryDto[]>;
+  getSetupStatus(signal?: AbortSignal): Promise<SetupStatusDto>;
+  listSetupGuilds(signal?: AbortSignal): Promise<SetupGuildDto[]>;
+  listSetupChannels(guildId: string, signal?: AbortSignal): Promise<SetupChannelDto[]>;
+  checkSetup(selection: SetupSelectionDto): Promise<SetupCheckDto>;
+  finishSetup(selection: SetupSelectionDto): Promise<SetupFinishDto>;
   /** Opens `GET /stream`; resolves with the streaming response once headers arrive. */
   openStream(options: { lastEventId?: string | null; signal?: AbortSignal }): Promise<Response>;
 }
@@ -112,6 +119,12 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       const search = encoded ? `?${encoded}` : '';
       return request<AuditEntryDto[]>('GET', `/events/${segment(eventId)}/audit${search}`, withSignal(signal));
     },
+    getSetupStatus: signal => request<SetupStatusDto>('GET', '/setup', withSignal(signal)),
+    listSetupGuilds: signal => request<SetupGuildDto[]>('GET', '/setup/guilds', withSignal(signal)),
+    listSetupChannels: (guildId, signal) => request<SetupChannelDto[]>('GET',
+      `/setup/channels?guildId=${segment(guildId)}`, withSignal(signal)),
+    checkSetup: selection => request<SetupCheckDto>('POST', '/setup/check', { body: selection }),
+    finishSetup: selection => request<SetupFinishDto>('POST', '/setup/finish', { body: selection }),
     async openStream({ lastEventId, signal }) {
       const response = await send('GET', '/stream', {
         ...withSignal(signal),
