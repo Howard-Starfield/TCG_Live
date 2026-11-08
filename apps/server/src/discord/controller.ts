@@ -1,7 +1,7 @@
 import type { Command, EventState, MatchId, Outcome, Player } from '../rehearsal/domain.js';
 import { RuleError } from '../rehearsal/domain.js';
 import { applyDiscordCommand, applyWebCommand, type WebCommandContext } from '../rehearsal/store.js';
-import { parseButtonId, renderCard, type CardPayload } from './cards.js';
+import { parseButtonId, renderCard, type CardPayload, type ParsedButton } from './cards.js';
 import { channelForSlot, type PrivateDiscordConfig } from './config.js';
 import { bindCard, claimResumeReminder, completeStickyCard, getSessionState, messageId, replaceStickyCard, suspendStickyCard,
   resolvePlayers, type CardSlot, type SessionRow } from './session.js';
@@ -198,7 +198,7 @@ export class PrivateDiscordController {
     for (const slot of SLOTS) {
       if (!this.accepting) return;
       const id = messageId(session, slot);
-      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined);
+      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament);
       if (!id) {
         if (mode !== 'explicit') continue;
         // Send is attempted once. An ambiguous response never triggers an automatic resend.
@@ -305,7 +305,7 @@ export class PrivateDiscordController {
       if (channelForSlot(this.config, slot) !== channelId || session.identity_map.stickySuspended?.includes(slot)) continue;
       const oldId = messageId(session, slot);
       if (!oldId || BigInt(observedId) <= BigInt(oldId)) continue;
-      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined);
+      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament);
       // Persist a reservation before POST: a crash or ambiguous response leaves
       // this slot suspended until a deliberate admin refresh.
       if (!await this.stickyStore.suspend(this.config, session.event_id, slot, oldId)) continue;
@@ -448,7 +448,7 @@ export class PrivateDiscordController {
       const id = messageId(session, slot);
       if (!id || session.identity_map.stickySuspended?.includes(slot)) { pending = true; continue; }
       try {
-        await this.transport.edit(id, renderCard(state, slot, this.runnerId, players), slot);
+        await this.transport.edit(id, renderCard(state, slot, this.runnerId, players, session.tournament), slot);
         changed = true;
       } catch { pending = true; }
     }
@@ -532,6 +532,12 @@ export class PrivateDiscordController {
         return;
       }
       const { session, state } = await this.read(this.config);
+      if (interaction.kind === 'button' && this.canonicalButton(interaction, session).action === 'signupRoster') {
+        if (!state.signup) throw new RuleError('Signup roster is unavailable.');
+        const names = state.signup.roster.map((id, index) => `${index + 1}. <@${id}>`).join('\n') || 'No players have joined yet.';
+        await interaction.reply(`Signup roster (${state.signup.roster.length}/4):\n${names}`);
+        return;
+      }
       const { command, slot } = this.commandFor(interaction, session, state);
       committed = await this.commit(session.event_id, command, () => this.apply({ config: this.config, eventId: session.event_id,
         principalId: interaction.userId, interactionId: interaction.id,
@@ -556,6 +562,13 @@ export class PrivateDiscordController {
     if (userId !== this.config.adminId) throw new RuleError('Private test admin action denied.');
   }
 
+  private canonicalButton(interaction: PrivateInteraction, session: SessionRow): ParsedButton {
+    const parsed = parseButtonId(interaction.customId ?? '');
+    if (parsed.eventId !== session.event_id || interaction.channelId !== channelForSlot(this.config, parsed.slot) || !interaction.messageId ||
+        interaction.messageId !== messageId(session, parsed.slot)) throw new RuleError('This control is not on the canonical card.');
+    return parsed;
+  }
+
   private commandFor(interaction: PrivateInteraction, session: SessionRow, state: EventState): { command: Command; slot?: CardSlot } {
     if (interaction.kind === 'command') {
       this.requireAdmin(interaction.userId);
@@ -577,9 +590,7 @@ export class PrivateDiscordController {
       }
       throw new RuleError('Invalid admin command options.');
     }
-    const parsed = parseButtonId(interaction.customId ?? '');
-    if (parsed.eventId !== session.event_id || interaction.channelId !== channelForSlot(this.config, parsed.slot) || !interaction.messageId ||
-        interaction.messageId !== messageId(session, parsed.slot)) throw new RuleError('This control is not on the canonical card.');
+    const parsed = this.canonicalButton(interaction, session);
     const players = resolvePlayers(session, state);
     const player = (Object.entries(players ?? {}) as Array<[Player, string]>).find(([, id]) => id === interaction.userId)?.[0];
     const slot = parsed.slot;

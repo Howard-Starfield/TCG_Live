@@ -1,6 +1,10 @@
 import { RuleError, type EventState, type MatchId, type MatchState, type Player } from '../rehearsal/domain.js';
 import type { CardSlot } from './session.js';
 import { visualBanner, visualThumbnail, type VisualState } from './visuals.js';
+import type { TournamentDetailsDto } from '@tcg-live/core';
+
+const gameLabels = { pokemon: 'Pokémon', 'one-piece': 'One Piece', 'one-punch-man': 'One Punch Man' };
+const literal = (value: string) => value.replace(/([\\`*_~|<>\[\]#])/g, '\\$1');
 
 export interface CardPayload {
   embeds: Array<{ title: string; description: string; color?: number;
@@ -9,7 +13,7 @@ export interface CardPayload {
   allowedMentions: { parse: [] };
 }
 
-export type ButtonAction = 'checkin' | 'signupJoin' | 'signupWithdraw' | 'ready' | 'pause' | 'resume' | 'won' | 'lost' | 'confirm' | 'dispute' | 'judge';
+export type ButtonAction = 'checkin' | 'signupJoin' | 'signupWithdraw' | 'signupRoster' | 'ready' | 'pause' | 'resume' | 'won' | 'lost' | 'confirm' | 'dispute' | 'judge';
 export interface ParsedButton {
   eventId: string;
   slot: CardSlot;
@@ -18,7 +22,7 @@ export interface ParsedButton {
 }
 
 const codes: Record<ButtonAction, string> = {
-  checkin: 'C', signupJoin: 'sj', signupWithdraw: 'sw', ready: 'R', pause: 'P', resume: 'S', won: 'W', lost: 'L',
+  checkin: 'C', signupJoin: 'sj', signupWithdraw: 'sw', signupRoster: 'sr', ready: 'R', pause: 'P', resume: 'S', won: 'W', lost: 'L',
   confirm: 'F', dispute: 'D', judge: 'J'
 };
 const actions = Object.fromEntries(Object.entries(codes).map(([action, code]) => [code, action])) as Record<string, ButtonAction>;
@@ -39,7 +43,7 @@ export function parseButtonId(raw: string): ParsedButton {
   }
   const slot = parts[2] as CardSlot;
   const action = actions[parts[3]]!;
-  if ((slot === 'checkin') !== ['checkin', 'signupJoin', 'signupWithdraw'].includes(action)) throw new RuleError('Invalid private Discord control.');
+  if ((slot === 'checkin') !== ['checkin', 'signupJoin', 'signupWithdraw', 'signupRoster'].includes(action)) throw new RuleError('Invalid private Discord control.');
   const needsRevision = ['resume', 'won', 'lost', 'confirm', 'dispute'].includes(action);
   if ((parts.length === 5) !== needsRevision ||
       (needsRevision && (!/^(0|[1-9]\d*)$/.test(parts[4] ?? '') || !Number.isSafeInteger(Number(parts[4]))))) {
@@ -121,24 +125,27 @@ function matchCard(state: EventState, match: MatchState, runnerId?: string,
 }
 
 export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
-  players?: Record<Player, string>): CardPayload {
+  players?: Record<Player, string>, tournament?: TournamentDetailsDto): CardPayload {
   if (slot !== 'checkin') {
     const match = state.matches.find(item => item.id === slot as MatchId)!;
     return matchCard(state, match, runnerId, players);
   }
   if (state.signup) {
     const signup = state.signup;
-    const roster = signup.roster.map(id => `<@${id}>`).join(', ') || 'none';
     const assigned = signup.status === 'assigned';
-    return { embeds: [{ title: 'Practice signup and check-in',
-      description: `Signup: ${assigned ? 'closed' : 'open'} · ${signup.roster.length}/4 joined\nRoster: ${roster}\n` +
-        (assigned ? `Assigned: ${(['A', 'B', 'C', 'D'] as const).map(player =>
-          `${player} <@${signup.assignment![player]}>`).join(', ')}\nChecked in: ${state.checkins.map(player => `<@${players?.[player] ?? signup.assignment?.[player]}>`).join(', ') || 'none'}\n${state.published ? 'Round published' : 'Check in to publish the round'}` :
+    return { embeds: [{ title: tournament?.name ?? 'Signup tournament',
+      description: `Game: ${tournament?.game ? gameLabels[tournament.game] : 'Not set by organizer'}\n` +
+        'Format: 4-player rehearsal · BO1 · camera play\n' +
+        (tournament?.description ? `${literal(tournament.description)}\n\n` : '') +
+        `Signup: ${assigned ? 'closed' : 'open'} · ${signup.roster.length}/4 joined\n` +
+        (assigned ? `Checked in: ${state.checkins.length}/4\n${state.published ? 'Round published' : 'Check in to publish the round'}` :
           'Join or Withdraw before the admin closes signup.'), color: 0xf59e0b,
       ...(visualBanner() ? { image: visualBanner()! } :
         { thumbnail: visualThumbnail(!assigned ? 'signup' : state.published ? 'notice' : 'checkin') }) }],
-      components: state.published ? [] : assigned ? [row([{ label: 'Check in', action: 'checkin' }], state.id, slot)] :
-        [row([{ label: 'Join', action: 'signupJoin' }, { label: 'Withdraw', action: 'signupWithdraw' }], state.id, slot)],
+      components: state.published ? [row([{ label: 'View roster', action: 'signupRoster' }], state.id, slot)] :
+        assigned ? [row([{ label: 'Check in', action: 'checkin' }, { label: 'View roster', action: 'signupRoster' }], state.id, slot)] :
+        [row([{ label: 'Join', action: 'signupJoin' }, { label: 'Withdraw', action: 'signupWithdraw' },
+          { label: 'View roster', action: 'signupRoster' }], state.id, slot)],
       allowedMentions: { parse: [] } };
   }
   return {

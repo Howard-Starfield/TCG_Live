@@ -61,7 +61,7 @@ export function retainedVisual(message: {
 
 export function noticeVisual(message: string): VisualState {
   if (/^Saved:|^Practice cards refreshed\./.test(message) && !/pending/i.test(message)) return 'final';
-  if (/pending/i.test(message) || /^No change:/.test(message)) return 'notice';
+  if (/pending/i.test(message) || /^No change:|^Signup roster \(/.test(message)) return 'notice';
   return 'error';
 }
 

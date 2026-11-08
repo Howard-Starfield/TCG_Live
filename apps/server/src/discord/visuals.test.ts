@@ -81,7 +81,7 @@ test('signup, check-in and published cards retain all controls with a local thum
   assert.equal(renderCard(state, 'checkin').embeds[0]?.thumbnail?.url, 'attachment://tcg-checkin-v1.gif');
   assert.equal(renderCard({ ...state, published: true }, 'checkin').embeds[0]?.thumbnail?.url,
     'attachment://tcg-notice-v1.gif');
-  assert.deepEqual(renderCard(signup, 'checkin').components[0]?.components.map(button => button.label), ['Join', 'Withdraw']);
+  assert.deepEqual(renderCard(signup, 'checkin').components[0]?.components.map(button => button.label), ['Join', 'Withdraw', 'View roster']);
   assert.equal(renderCard(state, 'checkin').components[0]?.components[0]?.label, 'Check in');
 });
 
@@ -95,6 +95,7 @@ test('visual catalog accepts only known local filenames; notice text stays in em
   assert.equal(noticeEmbed('Saved: publish.').thumbnail.url, 'attachment://tcg-final-v1.gif');
   assert.equal(noticeEmbed('Saved: publish. Room setup pending.').thumbnail.url, 'attachment://tcg-notice-v1.gif');
   assert.equal(noticeEmbed('This control is stale.').thumbnail.url, 'attachment://tcg-error-v1.png');
+  assert.equal(noticeEmbed('Signup roster (0/4):\nNo players have joined yet.').thumbnail.url, 'attachment://tcg-notice-v1.gif');
 });
 
 test('card transport uploads once, retains exact fetched file and replaces any stale attachment', async () => {

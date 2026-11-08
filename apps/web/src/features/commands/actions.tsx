@@ -7,6 +7,7 @@ import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'r
 import { memberName, useSession } from '../../data';
 import { Button, IconButton, Menu, cx, type MenuEntry } from '../../ui';
 import { ArtworkDialog } from '../artwork/ArtworkDialog';
+import { TournamentDetailsDialog } from '../tournaments/TournamentDetailsDialog';
 import { useCommands, type CommandsApi } from './CommandsProvider';
 import { availableEventActions, availableMatchActions, canRefreshPanels, canRemoveMember, isWritable,
   MATCH_ACTION_LABEL, matchActionKey, REFRESH_KEY } from './model';
@@ -38,9 +39,11 @@ export function EventActions({ snapshot, readOnly = false }: { snapshot: EventSn
   const session = useSession();
   const [artworkOpen, setArtworkOpen] = useState(false);
   const artwork = !readOnly && isWritable(snapshot) && session.session?.artwork === true;
+  const details = !readOnly && isWritable(snapshot) && session.session?.tournaments === true;
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const actions = commands ? availableEventActions(commands.session, snapshot).filter((action): action is EventButton => action !== 'signupRemove') : [];
   const refresh = commands ? canRefreshPanels(commands.session) : false;
-  if (actions.length === 0 && !refresh && !artwork) return null;
+  if (actions.length === 0 && !refresh && !artwork && !details) return null;
   return (
     <>
     <div role="group" aria-label="Event actions" className="flex flex-wrap items-center gap-1.5" data-testid="event-actions">
@@ -53,6 +56,8 @@ export function EventActions({ snapshot, readOnly = false }: { snapshot: EventSn
           </Button>
         );
       })}
+      {details && <Button size="sm" variant="secondary" icon={<PencilLine aria-hidden />}
+        onClick={() => setDetailsOpen(true)}>Edit tournament details</Button>}
       {artwork && <Button size="sm" variant="secondary" icon={<PencilLine aria-hidden />}
         onClick={() => setArtworkOpen(true)}>Edit signup banner</Button>}
       {refresh && (
@@ -63,6 +68,7 @@ export function EventActions({ snapshot, readOnly = false }: { snapshot: EventSn
       )}
     </div>
     {artwork && <ArtworkDialog open={artworkOpen} onClose={() => setArtworkOpen(false)} />}
+    {details && <TournamentDetailsDialog open={detailsOpen} eventId={snapshot.eventId} onClose={() => setDetailsOpen(false)} />}
     </>
   );
 }

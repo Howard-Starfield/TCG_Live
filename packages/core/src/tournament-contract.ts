@@ -1,5 +1,21 @@
 import type { ArtworkGame } from './artwork-contract.js';
 
+export interface TournamentDetailsDto {
+  eventId: string;
+  name: string;
+  game: ArtworkGame | null;
+  description: string;
+  configured: boolean;
+  applyStatus?: 'applied' | 'pending';
+  applyMessage?: string;
+}
+
+export interface SaveTournamentDetailsDto {
+  name: string;
+  game: ArtworkGame;
+  description: string;
+}
+
 export interface TournamentDirectoryEntryDto {
   eventId: string;
   name: string;

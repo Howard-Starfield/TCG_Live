@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
+import type { TournamentDetailsDto } from '@tcg-live/core';
 import { createFixture, createSignupFixture, RuleError, type EventState, type MatchId, type Player } from '../rehearsal/domain.js';
 import { rehearsalClient, transaction, verifyState, withClient } from '../rehearsal/store.js';
 import { publicConfig, sameIdentityMap, type PrivateDiscordConfig } from './config.js';
@@ -14,6 +15,7 @@ export type SessionIdentity = SessionMetadata & (
   | { kind?: undefined; players: Record<Player, string> }
 );
 export interface SessionRow {
+  tournament?: TournamentDetailsDto;
   event_id: string;
   application_id: string;
   guild_id: string;
@@ -145,6 +147,15 @@ export async function getSessionState(config: PrivateDiscordConfig): Promise<{ s
     if (!event.rows[0]) throw new RuleError('Private Discord event is missing.');
     verifyState(event.rows[0].state, session.event_id, event.rows[0].version);
     resolvePlayers(session, event.rows[0].state);
+    // Older direct-bot installations may not have enabled the optional directory.
+    const directory = await client.query<{ present: string | null }>("SELECT to_regclass('public.tcg_tournament_directory')::text AS present");
+    if (directory.rows[0]?.present) {
+      const metadata = await client.query<{ name: string; game: TournamentDetailsDto['game']; description: string | null }>(
+        "SELECT name, game, to_jsonb(d)->>'description' AS description FROM public.tcg_tournament_directory d WHERE id = $1", [session.event_id]);
+      const details = metadata.rows[0];
+      if (details) session.tournament = { eventId: session.event_id, name: details.name, game: details.game,
+        description: details.description ?? '', configured: true };
+    }
     return { session, state: event.rows[0].state };
   });
 }

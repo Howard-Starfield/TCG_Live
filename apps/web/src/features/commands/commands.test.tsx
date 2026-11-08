@@ -37,6 +37,31 @@ function respond(route: string, body: unknown, status = 200): HarnessOptions['se
 }
 
 describe('read-only sessions (decision 4)', () => {
+  it('edits live tournament presentation without enabling match commands and reports pending delivery', async () => {
+    const { server } = renderConsole(withSession({ commandsEnabled: false, capabilities: ['dashboard.read'], tournaments: true }, {
+      snapshot: signupOpen, audit: [], setup: server => {
+        server.always('GET /tournaments', () => json(200, { entries: [], defaultGame: 'pokemon' }));
+        server.always(`GET /tournaments/${signupOpen.eventId}/details`, () => json(200,
+          { eventId: signupOpen.eventId, name: 'Signup tournament', game: null, description: '', configured: false }));
+        server.always(`PUT /tournaments/${signupOpen.eventId}/details`, call => json(200,
+          { eventId: signupOpen.eventId, ...call.body as object, configured: true, applyStatus: 'pending' }));
+      }
+    }));
+    await ready();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Edit tournament details' }));
+    const title = await screen.findByRole('textbox', { name: 'Tournament title' });
+    await waitFor(() => expect(title).toBeEnabled());
+    await user.clear(title);
+    await user.type(title, 'Autumn Cup');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Game' }), 'one-piece');
+    await user.type(screen.getByRole('textbox', { name: 'Description' }), 'Bring your camera.');
+    await user.click(screen.getByRole('button', { name: 'Save details' }));
+    expect(await screen.findByText(/Details saved. Discord update pending/)).toBeInTheDocument();
+    expect(server.callsTo(`PUT /tournaments/${signupOpen.eventId}/details`)[0]?.body).toEqual(
+      { name: 'Autumn Cup', game: 'one-piece', description: 'Bring your camera.' });
+    expect(server.callsTo('POST /commands')).toHaveLength(0);
+  });
   it('shows the signup artwork control with artwork access even when match commands are disabled', async () => {
     renderConsole(withSession({ commandsEnabled: false, capabilities: ['dashboard.read'], artwork: true },
       { snapshot: signupOpen, audit: [] }));

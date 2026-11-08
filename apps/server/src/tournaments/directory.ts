@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type pg from 'pg';
-import { ARTWORK_GAMES, type ArtworkGame, type CreateTournamentDraftDto,
+import { ARTWORK_GAMES, type ArtworkGame, type CreateTournamentDraftDto, type TournamentDetailsDto, type SaveTournamentDetailsDto,
   type TournamentDirectoryDto, type TournamentDirectoryEntryDto } from '@tcg-live/core';
 import { RuleError } from '../rehearsal/domain.js';
 import { transaction, withClient } from '../rehearsal/store.js';
@@ -21,6 +21,20 @@ export class DirectoryUnavailableError extends RuleError {}
 export interface TournamentDirectory {
   list(query: string, defaultGame: ArtworkGame): Promise<TournamentDirectoryDto>;
   createDraft(input: unknown): Promise<TournamentDirectoryEntryDto>;
+  getDetails?(eventId: string): Promise<TournamentDetailsDto>;
+  saveDetails?(eventId: string, input: unknown): Promise<TournamentDetailsDto>;
+}
+
+export function parseDetails(eventId: string, input: unknown): SaveTournamentDetailsDto {
+  if (!UUID.test(eventId)) throw new DirectoryInputError('Choose a valid event ID.');
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new DirectoryInputError('Tournament details must be an object.');
+  const value = input as Record<string, unknown>;
+  if (Object.keys(value).some(key => !['name', 'game', 'description'].includes(key))) throw new DirectoryInputError('Tournament details contain unknown fields.');
+  if (typeof value.name !== 'string' || !value.name.trim()) throw new DirectoryInputError('Tournament title is required.');
+  const draft = parseDraft({ draftId: eventId, name: value.name, game: value.game });
+  if (typeof value.description !== 'string' || [...value.description].length > 500 ||
+      /[\p{Cf}\p{Cc}]/u.test(value.description.replace(/\r?\n/g, ''))) throw new DirectoryInputError('Description must be at most 500 readable characters.');
+  return { name: draft.name, game: draft.game, description: value.description.trim() };
 }
 
 /** Search lexemes are alphanumeric before reaching to_tsquery; punctuation cannot become query syntax. */
@@ -81,6 +95,37 @@ function entry(row: DirectoryRow): TournamentDirectoryEntryDto {
 export function pgTournamentDirectory(canWrite: () => boolean = () => false,
   now: () => number = Date.now): TournamentDirectory {
   return {
+    async getDetails(eventId) {
+      if (!UUID.test(eventId)) throw new DirectoryInputError('Choose a valid event ID.');
+      return withClient(async client => {
+        await requireDirectorySchema(client);
+        const result = await client.query<{ name: string | null; game: ArtworkGame | null; description: string | null }>(
+          `SELECT d.name, d.game, to_jsonb(d)->>'description' AS description
+           FROM public.tcg_rehearsal_sessions s LEFT JOIN public.tcg_tournament_directory d ON d.id = s.event_id
+           WHERE s.event_id = $1`, [eventId]);
+        const row = result.rows[0];
+        if (!row) throw new DirectoryConflictError('This tournament session does not exist.');
+        return { eventId, name: row.name ?? 'Signup tournament', game: row.game,
+          description: row.description ?? '', configured: row.name !== null };
+      });
+    },
+    async saveDetails(eventId, input) {
+      const value = parseDetails(eventId, input);
+      if (!canWrite()) throw new DirectoryUnavailableError('The active bot no longer owns tournament changes.');
+      return withClient(client => transaction(client, async () => {
+        await requireDirectorySchema(client);
+        const sessions = await client.query<{ status: string; created_at_ms: string }>(
+          'SELECT status, created_at_ms FROM public.tcg_rehearsal_sessions WHERE event_id = $1 FOR UPDATE', [eventId]);
+        const session = sessions.rows[0];
+        if (!session || session.status !== 'active') throw new DirectoryConflictError('Only the active tournament can be edited.');
+        if (!canWrite()) throw new DirectoryUnavailableError('The active bot no longer owns tournament changes.');
+        await client.query(`INSERT INTO public.tcg_tournament_directory (id, name, game, description, created_at_ms, search_text)
+          VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO UPDATE SET
+          name = EXCLUDED.name, game = EXCLUDED.game, description = EXCLUDED.description, search_text = EXCLUDED.search_text`,
+        [eventId, value.name, value.game, value.description, session.created_at_ms, searchText(value.name, value.game)]);
+        return { eventId, ...value, configured: true };
+      }));
+    },
     async list(query, defaultGame) {
       const tsquery = searchQuery(query);
       const entries = await withClient(async client => {
@@ -164,10 +209,14 @@ export async function setupTournamentDirectory(): Promise<'created' | 'already_r
       "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY c.relname");
     const names = objects.rows.map(row => row.relname).join(',');
     const base = 'tcg_rehearsal_audit,tcg_rehearsal_events,tcg_rehearsal_meta,tcg_rehearsal_sessions';
-    if (names === `${base},tcg_tournament_directory`) return 'already_ready';
+    if (names === `${base},tcg_tournament_directory`) {
+      await client.query(await readFile(new URL('../../../../database/migrations/004_tournament_description.sql', import.meta.url), 'utf8'));
+      return 'already_ready';
+    }
     if (names !== base) throw new DirectoryUnavailableError('Tournament directory setup refused: unexpected public schema.');
     const sql = await readFile(new URL('../../../../database/migrations/003_tournament_directory.sql', import.meta.url), 'utf8');
     await client.query(sql);
+    await client.query(await readFile(new URL('../../../../database/migrations/004_tournament_description.sql', import.meta.url), 'utf8'));
     return 'created';
   }));
 }

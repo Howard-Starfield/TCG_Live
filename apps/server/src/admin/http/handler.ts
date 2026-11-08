@@ -202,7 +202,10 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
     ] satisfies Route[] : []),
     ...(options.artwork ? artworkRoutes(options.artwork, options.applyArtwork) : []),
     ...(options.tournaments ? tournamentRoutes(options.tournaments,
-      () => options.artwork?.describe().activeGame ?? 'one-piece') : []),
+      () => options.artwork?.describe().activeGame ?? 'one-piece', async game => {
+        await options.artwork?.selectGame(game);
+        return await options.applyArtwork?.() ?? { status: 'pending', message: 'Existing Discord panels are not available yet.' };
+      }) : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 

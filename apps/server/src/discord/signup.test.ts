@@ -23,6 +23,40 @@ const session: SessionRow = { event_id: eventId, application_id: config.applicat
 const run = (state: EventState, actor: string, command: Parameters<typeof transition>[2]) =>
   transition(state, actor, command, 1_000, 'runner');
 
+test('signup banner shows saved tournament details and counts while roster names stay private', () => {
+  const state = run(createSignupFixture(eventId), `member:${ids[3]}`, { type: 'signupJoin' }).state;
+  const card = renderCard(state, 'checkin', undefined, undefined, { eventId, name: 'Autumn Cup', game: 'pokemon',
+    description: 'Camera required.\nCheck in after signup closes.', configured: true });
+  assert.equal(card.embeds[0]!.title, 'Autumn Cup');
+  assert.match(card.embeds[0]!.description, /Game: Pokémon/);
+  assert.match(card.embeds[0]!.description, /Camera required/);
+  assert.match(card.embeds[0]!.description, /1\/4 joined/);
+  assert.doesNotMatch(card.embeds[0]!.description, new RegExp(ids[3]!));
+  assert.deepEqual(card.components[0]!.components.map(button => button.label), ['Join', 'Withdraw', 'View roster']);
+  assert.deepEqual(card.allowedMentions, { parse: [] });
+  assert.match(renderCard(state, 'checkin').embeds[0]!.description, /Not set by organizer/);
+});
+
+test('roster view is canonical, available to a spectator and does not mutate signup', async () => {
+  const state = run(createSignupFixture(eventId), `member:${ids[3]}`, { type: 'signupJoin' }).state;
+  const bound = { ...session, checkin_message_id: ids[0]! };
+  let applies = 0;
+  const replies: string[] = [];
+  const controller = new PrivateDiscordController(config, 'runner', {
+    async send() { throw Error('no sends'); }, async edit() { throw Error('no edits'); }, async pin() {}, classify() { return 'retry'; }
+  }, async () => ({ session: bound, state }), async () => { applies++; throw Error('no mutation'); });
+  const interaction: PrivateInteraction = { id: ids[1]!, applicationId: config.applicationId, guildId: config.guildId,
+    channelId: config.channelId, userId: ids[6]!, kind: 'button', messageId: ids[0]!,
+    customId: buttonId(eventId, 'checkin', 'signupRoster'), async acknowledge() {}, async reply(value) { replies.push(value); } };
+  await controller.handle(interaction);
+  assert.match(replies[0]!, new RegExp(`1. <@${ids[3]}>`));
+  assert.equal(applies, 0);
+  await controller.handle({ ...interaction, messageId: ids[2]! });
+  assert.match(replies[1]!, /not on the canonical card/);
+  assert.equal(applies, 0);
+  await controller.stop();
+});
+
 test('signup config excludes preset IDs and accepts player-free setup', () => {
   assert.equal(config.players, undefined);
   assert.throws(() => readPrivateDiscordConfig({ ...env, TCG_DISCORD_PLAYER_A_ID: ids[3] }, false, 'signup'),
@@ -89,7 +123,7 @@ test('signup cards use distinct actions and do not mention players on unassigned
   const signupCard = renderCard(state, 'checkin');
   assert.match(signupCard.embeds[0]!.description, /Signup: open/);
   assert.deepEqual(signupCard.components[0]!.components.map(button => parseButtonId(button.custom_id).action),
-    ['signupJoin', 'signupWithdraw']);
+    ['signupJoin', 'signupWithdraw', 'signupRoster']);
   assert.equal(signupCard.allowedMentions.parse.length, 0);
   assert.match(renderCard(state, 'M1').embeds[0]!.description, /Awaiting signup/);
   assert.doesNotMatch(renderCard(state, 'M1').embeds[0]!.description, /<@/);
@@ -98,7 +132,7 @@ test('signup cards use distinct actions and do not mention players on unassigned
   for (const id of [ids[3]!, ids[4]!, ids[5]!, ids[6]!]) state = run(state, `member:${id}`, { type: 'signupJoin' }).state;
   state = run(state, 'admin:fixture', { type: 'signupClose', adminId: ids[7]! }).state;
   const assigned = renderCard(state, 'checkin', undefined, resolvePlayers(session, state)!);
-  assert.deepEqual(assigned.components[0]!.components.map(button => parseButtonId(button.custom_id).action), ['checkin']);
+  assert.deepEqual(assigned.components[0]!.components.map(button => parseButtonId(button.custom_id).action), ['checkin', 'signupRoster']);
   assert.equal(assigned.allowedMentions.parse.length, 0);
 });
 
