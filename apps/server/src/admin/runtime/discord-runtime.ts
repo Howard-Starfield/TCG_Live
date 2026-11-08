@@ -31,6 +31,7 @@ export interface AdminController {
   applyAdmin(request: WebAdminRequest): Promise<AdminApplyResult>;
   /** Wave 3: the explicit card and room repair behind /tcg-test refresh. */
   refreshExplicit(): Promise<ExplicitRefreshResult>;
+  refreshArtworkExisting?(): Promise<{ status: 'applied' | 'pending'; message?: string }>;
 }
 
 /** The room reconciler surface (MatchRoomReconciler satisfies it). */

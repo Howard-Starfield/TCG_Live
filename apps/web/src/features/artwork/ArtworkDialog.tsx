@@ -79,8 +79,11 @@ export function ArtworkDialog({ open, onClose }: { open: boolean; onClose(): voi
     setBusy(true); setError(null); setMessage(null);
     try {
       const response = await request(method, path, body, contentType);
-      setProfile(await response.json() as ArtworkProfileDto);
-      setMessage('Saved. Refresh the existing Discord panels to apply this change now; future notices use it automatically.');
+      const next = await response.json() as ArtworkProfileDto;
+      setProfile(next);
+      setMessage(next.applyStatus === 'applied' ? 'Saved and updated the existing Discord panels.' :
+        next.applyStatus === 'inactive' ? `Saved for ${labels[game]}. Use this game on Discord to apply it.` :
+          `Saved; Discord panel update pending. ${next.applyMessage ?? ''} Use ${next.activeGame ? 'Update signup banner' : 'Update status artwork'} to retry. Refresh panels can repair missing cards.`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Artwork could not be saved.'); }
     finally { setBusy(false); }
   };
@@ -99,7 +102,7 @@ export function ArtworkDialog({ open, onClose }: { open: boolean; onClose(): voi
   const clearGame = () => void change('PUT', '/active-game', JSON.stringify({ game: null }), 'application/json');
 
   return <Dialog open={open} onClose={onClose} title="Game artwork" width="lg"
-    description="Choose artwork for each game. The active game determines which visuals the bot uses."
+    description="Choose artwork for each game. Changes to the active game update existing Discord panels automatically."
     footer={<Button variant="secondary" onClick={onClose}>Done</Button>}>
     <div className="space-y-5">
       <Field label="Game">
@@ -108,8 +111,11 @@ export function ArtworkDialog({ open, onClose }: { open: boolean; onClose(): voi
         </Select>
       </Field>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" size="sm" disabled={busy || !profile || profile.activeGame === game} onClick={selectGame}>Use {labels[game]}</Button>
-        {profile?.activeGame && <Button variant="ghost" size="sm" disabled={busy} onClick={clearGame}>Use status artwork</Button>}
+        <Button variant="primary" size="sm" disabled={busy || !profile} onClick={selectGame}>
+          {profile?.activeGame === game ? 'Update signup banner' : `Use ${labels[game]} for signup`}
+        </Button>
+        {profile && <Button variant="ghost" size="sm" disabled={busy} onClick={clearGame}>
+          {profile.activeGame ? 'Use status artwork' : 'Update status artwork'}</Button>}
         <span className="text-xs text-fg-muted">Current: {profile?.activeGame ? labels[profile.activeGame] : 'Status artwork'}</span>
       </div>
       {error && <p role="alert" className="rounded-md border border-danger p-2 text-sm text-danger">{error}</p>}

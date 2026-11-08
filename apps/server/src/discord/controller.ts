@@ -426,6 +426,36 @@ export class PrivateDiscordController {
     return this.track(this.explicitRefresh());
   }
 
+  /** Applies a visual selection only to existing canonical cards. Never sends, pins, binds or clears suspension. */
+  refreshArtworkExisting(): Promise<{ status: 'applied' | 'pending'; message?: string }> {
+    if (!this.accepting || !this.canPost()) return Promise.resolve({ status: 'pending', message: 'The Discord controller is unavailable.' });
+    const task = this.refreshTask.then(() => this.editArtworkExisting());
+    this.refreshTask = task.then(() => {}, () => {});
+    return this.track(task);
+  }
+
+  private async editArtworkExisting(): Promise<{ status: 'applied' | 'pending'; message?: string }> {
+    if (!this.accepting || !this.canPost()) return { status: 'pending', message: 'The Discord controller is unavailable.' };
+    let snapshot: Awaited<ReturnType<typeof getSessionState>>;
+    try { snapshot = await this.read(this.config); }
+    catch { return { status: 'pending', message: 'Active Discord panels could not be loaded.' }; }
+    const { session, state } = snapshot;
+    const players = resolvePlayers(session, state) ?? undefined;
+    let pending = false;
+    let changed = false;
+    for (const slot of SLOTS) {
+      if (!this.accepting || !this.canPost()) { pending = true; break; }
+      const id = messageId(session, slot);
+      if (!id || session.identity_map.stickySuspended?.includes(slot)) { pending = true; continue; }
+      try {
+        await this.transport.edit(id, renderCard(state, slot, this.runnerId, players), slot);
+        changed = true;
+      } catch { pending = true; }
+    }
+    if (changed) this.panelChanged(session.event_id);
+    return pending ? { status: 'pending', message: 'One or more existing panels could not be updated.' } : { status: 'applied' };
+  }
+
   private async explicitRefresh(): Promise<ExplicitRefreshResult> {
     const { state } = await this.read(this.config);
     if (state.matches.some(match => match.phase === 'running' && match.runnerId !== this.runnerId))

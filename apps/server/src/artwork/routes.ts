@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { ArtworkProfileDto } from '@tcg-live/core';
 import { artworkGame, artworkSlot, ArtworkInputError, MAX_ARTWORK_BYTES, type ArtworkStore } from './store.js';
 import { readEmptyBody, readJsonBody, strictObject } from '../admin/http/body.js';
 import { HttpError, SECURITY_HEADERS, sendJson } from '../admin/http/respond.js';
@@ -6,6 +7,7 @@ import { HttpError, SECURITY_HEADERS, sendJson } from '../admin/http/respond.js'
 type Context = { request: IncomingMessage; response: ServerResponse; params: string[] };
 type Endpoint = { access: 'session'; run(context: Context): Promise<void> };
 export type ArtworkRoute = { pattern: RegExp; methods: Partial<Record<string, Endpoint>> };
+export type ArtworkApplyResult = { status: 'applied' | 'pending'; message?: string };
 
 function invalid(error: unknown): never {
   if (error instanceof ArtworkInputError) throw new HttpError(400, 'bad_request', error.message);
@@ -47,7 +49,18 @@ function slot(value: string | undefined) {
   try { return artworkSlot(value ?? ''); } catch (error) { return invalid(error); }
 }
 
-export function artworkRoutes(store: ArtworkStore): ArtworkRoute[] {
+export function artworkRoutes(store: ArtworkStore, applyExisting?: () => Promise<ArtworkApplyResult>): ArtworkRoute[] {
+  const apply = async (profile: ArtworkProfileDto, active: boolean): Promise<ArtworkProfileDto> => {
+    if (!active) return { ...profile, applyStatus: 'inactive', applyMessage: 'Saved for this game. Select it to update Discord panels.' };
+    if (!applyExisting) return { ...profile, applyStatus: 'pending', applyMessage: 'Existing Discord panels are not available yet.' };
+    try {
+      const result = await applyExisting();
+      return { ...profile, applyStatus: result.status,
+        ...(result.message ? { applyMessage: result.message } : {}) };
+    } catch {
+      return { ...profile, applyStatus: 'pending', applyMessage: 'Existing Discord panels could not be updated.' };
+    }
+  };
   return [
     { pattern: /^\/api\/v1\/artwork$/, methods: {
       GET: { access: 'session', run: async ({ response }) => sendJson(response, 200, store.describe()) }
@@ -59,7 +72,7 @@ export function artworkRoutes(store: ArtworkStore): ArtworkRoute[] {
           throw new HttpError(400, 'bad_request', 'Choose a supported game or clear the choice.');
         let selected;
         try { selected = body.game === null ? null : artworkGame(body.game); } catch (error) { return invalid(error); }
-        sendJson(response, 200, await store.selectGame(selected));
+        sendJson(response, 200, await apply(await store.selectGame(selected), true));
       } }
     } },
     { pattern: /^\/api\/v1\/artwork\/([^/]+)\/(banner|thumbnail)\/preview$/, methods: {
@@ -76,12 +89,17 @@ export function artworkRoutes(store: ArtworkStore): ArtworkRoute[] {
         const selectedGame = game(params[0]);
         const selectedSlot = slot(params[1]);
         const bytes = await readArtworkBody(request);
-        try { sendJson(response, 200, await store.upload(selectedGame, selectedSlot, bytes, request.headers['content-type'])); }
+        try {
+          const profile = await store.upload(selectedGame, selectedSlot, bytes, request.headers['content-type']);
+          sendJson(response, 200, await apply(profile, profile.activeGame === selectedGame));
+        }
         catch (error) { invalid(error); }
       } },
       DELETE: { access: 'session', run: async ({ request, response, params }) => {
         await readEmptyBody(request);
-        sendJson(response, 200, await store.reset(game(params[0]), slot(params[1])));
+        const selectedGame = game(params[0]);
+        const profile = await store.reset(selectedGame, slot(params[1]));
+        sendJson(response, 200, await apply(profile, profile.activeGame === selectedGame));
       } }
     } }
   ];

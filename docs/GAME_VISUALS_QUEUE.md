@@ -18,3 +18,5 @@ Requested 7 November 2026 during onboarding work. Keep this separate from the cu
 - Verify restart persistence, game isolation, bad/oversized files, preview/reset and real Discord image delivery before claiming the upload feature is complete.
 
 Current source structure is documented in [the game assets README](../apps/server/assets/games/README.md). Upload, preview, per-slot reset and active-game selection are available from the dashboard account menu → Game artwork. Actual custom and packaged GIF delivery, attachment reuse and reset were verified in Discord. See [the validation record](LAUNCHER_ARTWORK_VALIDATION.md). Native PNG/JPEG and animation-disabled client checks remain on the return list.
+
+The live event now has **Edit signup banner**. Selecting a game or changing its active banner/thumbnail automatically updates existing Discord panels, with applied/pending feedback. Inactive game edits stay saved until selected. Retry through **Update signup banner**; reserve **Refresh panels** for missing-card repair.

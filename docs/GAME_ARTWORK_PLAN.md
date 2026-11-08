@@ -20,7 +20,7 @@ The patched `image-size` 2.1.0 Buffer API provides type and dimensions without d
 
 Use the selected game's tournament banner for signup/check-in and its optional compact thumbnail override for match panels and reminders/notices/private errors. Keep state-specific orbs when a compact override is absent. Text, mentions, state colors, clocks, button semantics and eight-second private-error deletion remain unchanged.
 
-Resolve files only through the store's validated references and whitelisted packaged assets. Content-hash attachment names identify versions; retain matching owned Discord CDN uploads during ordinary edits, replace attachments on changed artwork, and handle banner images separately from thumbnails. An explicit existing panel Refresh applies settings to current cards; uploading alone does not trigger new Discord message sends. New notices and normal edits use current settings.
+Resolve files only through the store's validated references and whitelisted packaged assets. Content-hash attachment names identify versions; retain matching owned Discord CDN uploads during ordinary edits, replace attachments on changed artwork, and handle banner images separately from thumbnails. Selecting or clearing the active game and uploading/resetting its artwork automatically edits bound, non-suspended Discord panels through the existing controller queue. Inactive uploads are saved without changing live panels. Report applied or pending delivery after saving; ordinary retries edit existing panels only, while explicit Refresh panels remains the missing-card repair path. New notices, normal edits and sticky replacements use current settings.
 
 ## Verification
 

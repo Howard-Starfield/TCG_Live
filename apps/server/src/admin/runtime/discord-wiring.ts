@@ -42,10 +42,16 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     runnerId: options.runnerId, commandsEnabled: options.adminConfig.commandsEnabled,
     publicMatchRooms: options.publicMatchRooms, ...(options.lease ? { lease: options.lease } : {})
   });
+  let artworkController: AdminController | undefined;
   const handler = (options.createHandler ?? createAdminHandler)({
     runtime, port: options.port, mode: 'discord', commandsEnabled: options.adminConfig.commandsEnabled,
     webDist: options.adminConfig.webDist,
     ...(options.artwork ? { artwork: options.artwork } : {}),
+    ...(options.artwork ? { applyArtwork: () => {
+      if (options.lease?.isLost()) return Promise.resolve({ status: 'pending' as const, message: 'Bot ownership was lost.' });
+      return artworkController?.refreshArtworkExisting?.() ??
+        Promise.resolve({ status: 'pending' as const, message: 'Existing Discord panels are not available yet.' });
+    } } : {}),
     tournaments: options.tournaments ?? pgTournamentDirectory(() => !!options.lease && !options.lease.isLost()),
     ...(options.persistentSessions ? { persistentSessions: true } : {}),
     ...(options.launcher ? { launcher: options.launcher } : {})
@@ -56,7 +62,10 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
   return {
     handler, runtime,
     attachClient: (gateway, members) => { try { runtime.attachGateway(gateway, members); } catch { /* Console only. */ } },
-    attachController: controller => { try { runtime.attachController(controller); } catch { /* Console only. */ } },
+    attachController: controller => {
+      artworkController = controller;
+      try { runtime.attachController(controller); } catch { /* Console only. */ }
+    },
     attachRooms: rooms => { try { runtime.attachRooms(rooms); } catch { /* Console only. */ } },
     announce() {
       if (announced) return;

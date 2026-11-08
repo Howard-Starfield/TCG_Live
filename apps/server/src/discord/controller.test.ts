@@ -87,6 +87,30 @@ test('only explicit admin refresh creates cards; startup edits known cards only'
   await f.controller.stop();
 });
 
+test('artwork update edits only bound non-suspended cards and reports incomplete delivery', async () => {
+  const f = fixture();
+  f.session = { ...f.session, checkin_message_id: ids[0]!, m1_message_id: ids[1]!, m2_message_id: ids[2]! };
+  const original = structuredClone(f.session);
+  assert.deepEqual(await f.controller.refreshArtworkExisting(), { status: 'applied' });
+  assert.deepEqual(f.calls, [`edit:${ids[0]}`, `edit:${ids[1]}`, `edit:${ids[2]}`]);
+  assert.equal(f.actions.length, 0);
+  assert.deepEqual(f.session, original, 'visual edits do not mutate session state');
+  f.calls.length = 0;
+  f.session = { ...f.session, identity_map: { ...f.session.identity_map, stickySuspended: ['M1'] }, m2_message_id: null };
+  assert.deepEqual(await f.controller.refreshArtworkExisting(),
+    { status: 'pending', message: 'One or more existing panels could not be updated.' });
+  assert.deepEqual(f.calls, [`edit:${ids[0]}`]);
+  assert.equal(f.calls.some(call => call === 'send' || call.startsWith('pin:')), false);
+  f.calls.length = 0;
+  f.session = { ...f.session, identity_map: { ...f.session.identity_map, stickySuspended: [] }, m2_message_id: ids[2]! };
+  f.editFailure = 'missing';
+  const beforeFailure = structuredClone(f.session);
+  assert.equal((await f.controller.refreshArtworkExisting()).status, 'pending');
+  assert.equal(f.calls.filter(call => call === 'send').length, 0, 'missing cards are never reposted by artwork updates');
+  assert.deepEqual(f.session, beforeFailure, 'failed edits do not rebind cards');
+  await f.controller.stop();
+});
+
 test('scope, canonical binding, identity and acknowledgment precede mutation', async () => {
   const f = fixture();
   f.session = { ...f.session, checkin_message_id: ids[0]! };

@@ -17,4 +17,7 @@ export interface ArtworkProfileDto {
   games: Record<ArtworkGame, Record<ArtworkSlot, ArtworkSelectionDto>>;
   /** A malformed saved profile was ignored; its original bytes remain on disk until a setting is saved. */
   loadIssue?: string;
+  /** Mutation outcome for currently bound Discord panels; absent on GET. */
+  applyStatus?: 'applied' | 'pending' | 'inactive';
+  applyMessage?: string;
 }

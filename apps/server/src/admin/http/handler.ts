@@ -200,7 +200,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
         } }
       } }
     ] satisfies Route[] : []),
-    ...(options.artwork ? artworkRoutes(options.artwork) : []),
+    ...(options.artwork ? artworkRoutes(options.artwork, options.applyArtwork) : []),
     ...(options.tournaments ? tournamentRoutes(options.tournaments,
       () => options.artwork?.describe().activeGame ?? 'one-piece') : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })

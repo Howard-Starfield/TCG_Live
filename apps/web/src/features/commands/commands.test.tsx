@@ -37,6 +37,14 @@ function respond(route: string, body: unknown, status = 200): HarnessOptions['se
 }
 
 describe('read-only sessions (decision 4)', () => {
+  it('shows the signup artwork control with artwork access even when match commands are disabled', async () => {
+    renderConsole(withSession({ commandsEnabled: false, capabilities: ['dashboard.read'], artwork: true },
+      { snapshot: signupOpen, audit: [] }));
+    await ready();
+    expect(screen.getByRole('button', { name: 'Edit signup banner' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Refresh panels' })).not.toBeInTheDocument();
+  });
+
   it('shows no action controls and no composer when the server does not enable commands', async () => {
     renderConsole(withSession({ commandsEnabled: false, capabilities: ['dashboard.read'] },
       { snapshot: liveDispute, preferences: { panes: { list: true }, listTab: 'matches' } }));

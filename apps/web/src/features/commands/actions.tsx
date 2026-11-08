@@ -3,9 +3,10 @@
 // domain currently allows the action (`adminActions`). Read-only mode therefore shows no controls.
 import type { EventAdminAction, EventSnapshotDto, MatchAdminAction, MatchDto, Snowflake } from '@tcg-live/core';
 import { Gavel, LockKeyhole, LockKeyholeOpen, MoreHorizontal, PencilLine, Play, RefreshCw, Send, UserMinus } from 'lucide-react';
-import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import { memberName } from '../../data';
+import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { memberName, useSession } from '../../data';
 import { Button, IconButton, Menu, cx, type MenuEntry } from '../../ui';
+import { ArtworkDialog } from '../artwork/ArtworkDialog';
 import { useCommands, type CommandsApi } from './CommandsProvider';
 import { availableEventActions, availableMatchActions, canRefreshPanels, canRemoveMember, isWritable,
   MATCH_ACTION_LABEL, matchActionKey, REFRESH_KEY } from './model';
@@ -34,28 +35,35 @@ function useWritable(snapshot: EventSnapshotDto, readOnly: boolean): CommandsApi
 /** Stage stepper actions row: publish, signup close/reopen, and the Discord panel refresh. */
 export function EventActions({ snapshot, readOnly = false }: { snapshot: EventSnapshotDto; readOnly?: boolean }) {
   const commands = useWritable(snapshot, readOnly);
-  if (!commands) return null;
-  const actions = availableEventActions(commands.session, snapshot).filter((action): action is EventButton => action !== 'signupRemove');
-  const refresh = canRefreshPanels(commands.session);
-  if (actions.length === 0 && !refresh) return null;
+  const session = useSession();
+  const [artworkOpen, setArtworkOpen] = useState(false);
+  const artwork = !readOnly && isWritable(snapshot) && session.session?.artwork === true;
+  const actions = commands ? availableEventActions(commands.session, snapshot).filter((action): action is EventButton => action !== 'signupRemove') : [];
+  const refresh = commands ? canRefreshPanels(commands.session) : false;
+  if (actions.length === 0 && !refresh && !artwork) return null;
   return (
+    <>
     <div role="group" aria-label="Event actions" className="flex flex-wrap items-center gap-1.5" data-testid="event-actions">
       {actions.map(action => {
         const meta = EVENT_BUTTON[action];
         return (
-          <Button key={action} size="sm" variant={meta.variant} icon={meta.icon} loading={commands.isPending(action)}
-            onClick={() => { void commands.run(snapshot, { type: action }); }}>
+          <Button key={action} size="sm" variant={meta.variant} icon={meta.icon} loading={commands!.isPending(action)}
+            onClick={() => { void commands!.run(snapshot, { type: action }); }}>
             {meta.label}
           </Button>
         );
       })}
+      {artwork && <Button size="sm" variant="secondary" icon={<PencilLine aria-hidden />}
+        onClick={() => setArtworkOpen(true)}>Edit signup banner</Button>}
       {refresh && (
-        <Button size="sm" variant="ghost" icon={<RefreshCw aria-hidden />} className="ml-auto" loading={commands.isPending(REFRESH_KEY)}
-          title="Create or repair the check-in and match cards in Discord" onClick={() => { void commands.refreshPanels(snapshot); }}>
+        <Button size="sm" variant="ghost" icon={<RefreshCw aria-hidden />} className="ml-auto" loading={commands!.isPending(REFRESH_KEY)}
+          title="Create or repair the check-in and match cards in Discord" onClick={() => { void commands!.refreshPanels(snapshot); }}>
           Refresh panels
         </Button>
       )}
     </div>
+    {artwork && <ArtworkDialog open={artworkOpen} onClose={() => setArtworkOpen(false)} />}
+    </>
   );
 }
 

@@ -4,6 +4,7 @@ import { createAdminHttp } from './http/handler.js';
 import type { AdminRuntime } from './runtime-types.js';
 import type { SetupService } from '../onboarding/service.js';
 import type { ArtworkStore } from '../artwork/store.js';
+import type { ArtworkApplyResult } from '../artwork/routes.js';
 import type { TournamentDirectory } from '../tournaments/directory.js';
 
 export interface AdminHandlerOptions {
@@ -23,6 +24,7 @@ export interface AdminHandlerOptions {
   /** Mounted only by the guided first-start entry. */
   setup?: SetupService;
   artwork?: ArtworkStore;
+  applyArtwork?: () => Promise<ArtworkApplyResult>;
   tournaments?: TournamentDirectory;
   persistentSessions?: boolean;
   /** Ignored local launcher rendezvous; never mounted by direct or demo commands. */
