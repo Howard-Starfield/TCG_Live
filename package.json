@@ -14,6 +14,7 @@
     "rehearse": "npm run rehearse --workspace @tcg-live/server",
     "dev": "npm run build && node apps/server/dist/main.js",
     "db:discord-setup": "npm run db:discord-setup --workspace @tcg-live/server",
+    "db:directory-setup": "npm run db:directory-setup --workspace @tcg-live/server",
     "discord:prepare": "npm run build && node apps/server/dist/discord/runtime.js prepare",
     "discord:register": "npm run discord:register --workspace @tcg-live/server",
     "discord:run": "npm run discord:run --workspace @tcg-live/server",

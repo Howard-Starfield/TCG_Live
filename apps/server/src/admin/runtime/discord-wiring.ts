@@ -6,6 +6,7 @@ import { DiscordAdminRuntime, type AdminController, type AdminGateway, type Admi
   type DiscordAdminRuntimeOptions, type GatewayState } from './discord-runtime.js';
 import type { MemberFetcher } from './identity.js';
 import type { ArtworkStore } from '../../artwork/store.js';
+import { pgTournamentDirectory, type TournamentDirectory } from '../../tournaments/directory.js';
 
 export interface DiscordAdminOptions {
   adminConfig: AdminConfig;
@@ -15,6 +16,7 @@ export interface DiscordAdminOptions {
   persistentSessions?: boolean;
   launcher?: { instanceId: string; secret: string };
   artwork?: ArtworkStore;
+  tournaments?: TournamentDirectory;
   lease?: { isLost(): boolean };
   createRuntime?: (options: DiscordAdminRuntimeOptions) => DiscordAdminRuntime;
   createHandler?: (options: AdminHandlerOptions) => AdminHandler;
@@ -44,6 +46,7 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     runtime, port: options.port, mode: 'discord', commandsEnabled: options.adminConfig.commandsEnabled,
     webDist: options.adminConfig.webDist,
     ...(options.artwork ? { artwork: options.artwork } : {}),
+    tournaments: options.tournaments ?? pgTournamentDirectory(() => !!options.lease && !options.lease.isLost()),
     ...(options.persistentSessions ? { persistentSessions: true } : {}),
     ...(options.launcher ? { launcher: options.launcher } : {})
   });

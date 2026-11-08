@@ -22,9 +22,16 @@ export function shortDateTime(timeMs: number, nowMs: number = Date.now()): strin
   return new Date(nowMs).toDateString() === date.toDateString() ? time : `${date.getDate()} ${MONTHS[date.getMonth()]} ${time}`;
 }
 
-/** Events have no names; label them by kind and start time. */
-export function eventLabel(event: Pick<EventSummaryDto, 'kind' | 'createdAtMs'>, nowMs?: number): string {
-  return `${event.kind === 'signup' ? 'Signup session' : 'Session'} · ${shortDateTime(event.createdAtMs, nowMs)}`;
+/** Name shown in navigation and breadcrumbs; old events retain a useful fallback. */
+export function eventLabel(event: Pick<EventSummaryDto, 'kind'> & { name?: string | null }): string {
+  return event.name?.trim() || (event.kind === 'signup' ? 'Signup session' : 'Session');
+}
+
+/** Compact date and time for the quiet second line; show the year for older events. */
+export function shortDate(timeMs: number, nowMs: number = Date.now()): string {
+  const date = new Date(timeMs);
+  const year = date.getFullYear() === new Date(nowMs).getFullYear() ? '' : ` ${date.getFullYear()}`;
+  return `${date.getDate()} ${MONTHS[date.getMonth()]}${year} · ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /** `Seat C · Cy Park`. */

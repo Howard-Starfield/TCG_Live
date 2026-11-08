@@ -27,6 +27,8 @@ export interface SessionDto {
   setup?: true;
   /** Authenticated game artwork settings are mounted in this runtime. */
   artwork?: true;
+  /** The separate tournament directory is available to this session. */
+  tournaments?: true;
 }
 export interface SessionGrantDto { token: string; session: SessionDto }   // bearer token; kept in sessionStorage
 

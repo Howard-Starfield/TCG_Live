@@ -1,7 +1,8 @@
 import { API_PREFIX, type AuditEntryDto, type EventSnapshotDto, type EventSummaryDto,
   type RuntimeStatusDto, type SessionDto, type SessionGrantDto, type SetupStatusDto,
   type SetupGuildDto, type SetupChannelDto, type SetupSelectionDto, type SetupCheckDto,
-  type SetupFinishDto } from '@tcg-live/core';
+  type SetupFinishDto, type TournamentDirectoryDto,
+  type TournamentDirectoryEntryDto, type CreateTournamentDraftDto } from '@tcg-live/core';
 import { ApiError, errorFromResponse, isAbortError, networkError } from './errors';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -36,6 +37,8 @@ export interface ApiClient {
   rotateLink(signal?: AbortSignal): Promise<void>;
   getStatus(signal?: AbortSignal): Promise<RuntimeStatusDto>;
   listEvents(signal?: AbortSignal): Promise<EventSummaryDto[]>;
+  listTournaments(query: string, signal?: AbortSignal): Promise<TournamentDirectoryDto>;
+  createTournamentDraft(input: CreateTournamentDraftDto): Promise<TournamentDirectoryEntryDto>;
   getSnapshot(eventId: string, signal?: AbortSignal): Promise<EventSnapshotDto>;
   getAudit(eventId: string, query?: AuditPageQuery, signal?: AbortSignal): Promise<AuditEntryDto[]>;
   getSetupStatus(signal?: AbortSignal): Promise<SetupStatusDto>;
@@ -109,6 +112,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     rotateLink: signal => request<void>('POST', '/session/rotate-link', withSignal(signal)),
     getStatus: signal => request<RuntimeStatusDto>('GET', '/status', withSignal(signal)),
     listEvents: signal => request<EventSummaryDto[]>('GET', '/events', withSignal(signal)),
+    listTournaments: (query, signal) => request<TournamentDirectoryDto>('GET',
+      `/tournaments${query ? `?q=${encodeURIComponent(query)}` : ''}`, withSignal(signal)),
+    createTournamentDraft: input => request<TournamentDirectoryEntryDto>('POST', '/tournaments/drafts', { body: input }),
     getSnapshot: (eventId, signal) =>
       request<EventSnapshotDto>('GET', `/events/${segment(eventId)}/snapshot`, withSignal(signal)),
     getAudit: (eventId, query = {}, signal) => {

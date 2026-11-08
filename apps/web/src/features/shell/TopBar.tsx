@@ -11,15 +11,17 @@ export function TopBar() {
   const [preferences] = useConsolePreferences();
   const { viewed, dock } = shell;
   const source = viewed.summary ?? viewed.snapshot;
+  const named = source && shell.directory?.entries.find(entry => entry.eventId === source.eventId);
 
   const crumbs: BreadcrumbItem[] = [{
     id: 'root', label: 'TCG Live',
-    ...(viewed.retired && shell.activeEventId ? { onSelect: shell.followActive } : {})
+    ...((viewed.retired || shell.draft) && shell.activeEventId ? { onSelect: shell.followActive } : {})
   }];
-  if (source) crumbs.push({ id: 'event', label: eventLabel(source) });
-  if (viewed.snapshot) crumbs.push({ id: 'stage', label: viewed.retired ? 'History' : STAGE_LABEL[viewed.snapshot.stage] });
-  else if (viewed.waitingForDatabase) crumbs.push({ id: 'none', label: 'Waiting for the database' });
-  else if (viewed.status === 'none') crumbs.push({ id: 'none', label: 'No active event' });
+  if (shell.draft) crumbs.push({ id: 'draft-name', label: shell.draft.name }, { id: 'draft-stage', label: 'Draft' });
+  else if (source) crumbs.push({ id: 'event', label: named?.name || eventLabel(source) });
+  if (!shell.draft && viewed.snapshot) crumbs.push({ id: 'stage', label: viewed.retired ? 'History' : STAGE_LABEL[viewed.snapshot.stage] });
+  else if (!shell.draft && viewed.waitingForDatabase) crumbs.push({ id: 'none', label: 'Waiting for the database' });
+  else if (!shell.draft && viewed.status === 'none') crumbs.push({ id: 'none', label: 'No active event' });
 
   const discord = discordPill(shell.status);
   const database = databasePill(shell.status);
@@ -27,7 +29,7 @@ export function TopBar() {
   return (
     <header className="shell-topbar">
       <Breadcrumb items={crumbs} className="shell-crumbs" />
-      <span aria-hidden className="shell-vsep" />
+      {!shell.draft && <><span aria-hidden className="shell-vsep" />
       <div role="group" aria-label="Previews" className="shell-toggles">
         <span data-toggle="live" className="contents">
           <ToggleTab pressed={dock.visible.live} onPressedChange={() => dock.toggle('live')}
@@ -37,7 +39,7 @@ export function TopBar() {
           <ToggleTab pressed={dock.visible.list} onPressedChange={() => dock.toggle('list')}
             icon={<Table2 />} shortcut={['Alt', '2']}>List preview</ToggleTab>
         </span>
-      </div>
+      </div></>}
       <div className="ml-auto flex min-w-0 items-center gap-1.5">
         <Tooltip content={discord.description} placement="bottom">
           <span tabIndex={0} className="shell-pill-wrap">

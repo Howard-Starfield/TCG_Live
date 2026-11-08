@@ -9,6 +9,7 @@ import { PreviewDock, PreviewSheet } from './PreviewDock';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 import { useAltDigitShortcuts } from './useShortcuts';
+import { DraftDetails } from '../tournaments/DraftDetails';
 
 /** Width of an element, kept current with ResizeObserver. */
 function useElementWidth(node: HTMLElement | null): number {
@@ -34,7 +35,8 @@ export function Shell({ session }: { session: SessionDto }) {
   const [body, setBody] = useState<HTMLDivElement | null>(null);
   const bodyWidth = useElementWidth(body);
 
-  useAltDigitShortcuts({ 1: () => model.dock.toggle('live'), 2: () => model.dock.toggle('list') });
+  useAltDigitShortcuts({ 1: () => { if (!model.draft) model.dock.toggle('live'); },
+    2: () => { if (!model.draft) model.dock.toggle('list'); } });
 
   return (
     <ShellProvider value={model}>
@@ -48,12 +50,12 @@ export function Shell({ session }: { session: SessionDto }) {
             <Banners />
             <div ref={setBody} className="shell-body">
               <main className="shell-main" aria-label="Console">
-                <MainControls />
+                {model.draft ? <DraftDetails draft={model.draft} /> : <MainControls />}
               </main>
-              <PreviewDock bodyWidth={bodyWidth} />
+              {!model.draft && <PreviewDock bodyWidth={bodyWidth} />}
             </div>
           </div>
-          <PreviewSheet />
+          {!model.draft && <PreviewSheet />}
         </div>
       </CommandsProvider>
     </ShellProvider>

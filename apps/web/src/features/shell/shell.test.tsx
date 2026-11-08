@@ -3,8 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AppRoot } from '../../app/AppRoot';
-import { mockMatchMedia, renderConsole, summaryOf } from '../../app/testing';
-import { change, frame } from '../../data/test/fakes';
+import { mockMatchMedia, renderConsole, sessionFixture, summaryOf } from '../../app/testing';
+import { change, frame, json } from '../../data/test/fakes';
 import { databasePill, discordPill, eventLabel } from './labels';
 import { clampDockWidth, DOCK_MIN, MAIN_MIN } from './PreviewDock';
 import { isTypingTarget } from './useShortcuts';
@@ -170,6 +170,96 @@ describe('preview dock layout', () => {
 });
 
 describe('sidebar', () => {
+  it('shows a safe directory error and caps search to the API limit', async () => {
+    renderConsole({ setup: server => {
+      server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
+      server.always('GET /tournaments', () => json(409,
+        { error: { code: 'conflict', message: 'Tournament schema setup is required.' } }));
+    } });
+    expect(await screen.findByText('Tournament schema setup is required.')).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Search tournaments' })).toHaveAttribute('maxLength', '120');
+  });
+
+  it('queries the tournament directory after search input settles', async () => {
+    const user = userEvent.setup();
+    const { server } = renderConsole({ setup: server => {
+      server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
+      server.always('GET /tournaments', call => {
+        const query = new URL(call.url, 'http://localhost').searchParams.get('q') ?? '';
+        return json(200, { entries: query === 'Poke' ? [{ eventId: 'draft-poke', name: 'Pokemon Cup', game: 'pokemon',
+          status: 'draft', kind: 'signup', createdAtMs: liveDispute.createdAtMs, retiredAtMs: null }] : [],
+        defaultGame: 'pokemon' });
+      });
+    } });
+    await screen.findByRole('searchbox', { name: 'Search tournaments' });
+    await user.type(screen.getByRole('searchbox', { name: 'Search tournaments' }), 'Poke');
+    expect(await screen.findByRole('button', { name: /Pokemon Cup/ })).toBeInTheDocument();
+    expect(server.callsTo('GET /tournaments').some(call => call.url.endsWith('?q=Poke'))).toBe(true);
+  });
+
+  it('saves a named game draft without replacing the live event or requesting a match snapshot', async () => {
+    const user = userEvent.setup();
+    const active = { eventId: liveDispute.eventId, name: 'Live Cup', game: 'pokemon', status: 'active',
+      kind: 'signup', createdAtMs: liveDispute.createdAtMs, retiredAtMs: null };
+    const entries = [active];
+    const { server } = renderConsole({ setup: server => {
+      server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
+      server.always('GET /tournaments', call => {
+        const query = new URL(call.url, 'http://localhost').searchParams.get('q')?.toLowerCase() ?? '';
+        return json(200, { entries: entries.filter(item => item.name.toLowerCase().includes(query)), defaultGame: 'pokemon' });
+      });
+      server.always('POST /tournaments/drafts', call => {
+        const body = call.body as { draftId: string; name: string; game: string };
+        expect(body.draftId).toMatch(/^[0-9a-f-]{36}$/);
+        const draft = { eventId: body.draftId, name: body.name, game: body.game, status: 'draft',
+          kind: 'signup', createdAtMs: liveDispute.createdAtMs + 1, retiredAtMs: null };
+        entries.unshift(draft);
+        return json(201, draft);
+      });
+    } });
+    await ready();
+    expect(await screen.findByRole('button', { name: /Live Cup/ })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create signup tournament' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create signup tournament' });
+    expect(within(dialog).getByRole('textbox', { name: 'Tournament name' })).toHaveValue('Pokémon Tournament');
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Game' }), 'one-piece');
+    expect(within(dialog).getByRole('textbox', { name: 'Tournament name' })).toHaveValue('One Piece Tournament');
+    await user.clear(within(dialog).getByRole('textbox', { name: 'Tournament name' }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Tournament name' }), 'Saturday Cup');
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Game' }), 'pokemon');
+    expect(within(dialog).getByRole('textbox', { name: 'Tournament name' })).toHaveValue('Saturday Cup');
+    await user.click(within(dialog).getByRole('button', { name: 'Save draft' }));
+    expect(await screen.findByRole('heading', { name: 'Saturday Cup' })).toBeInTheDocument();
+    expect(screen.getByText(/Draft signup is not open/)).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Previews' })).not.toBeInTheDocument();
+    expect(server.callsTo(`GET /events/${entries[0]!.eventId}/snapshot`)).toHaveLength(0);
+    expect(server.callsTo('POST /tournaments/drafts')).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: /Live Cup/ }));
+    expect(await screen.findByRole('group', { name: 'Previews' })).toBeInTheDocument();
+  });
+
+  it('filters event names and expands each section independently', async () => {
+    const user = userEvent.setup();
+    const retired = { ...final, eventId: 'retired-1', status: 'retired' as const, retiredAtMs: final.createdAtMs + 3_600_000 };
+    renderConsole({ retired: [retired] });
+    await ready();
+    const liveToggle = screen.getByRole('button', { name: 'Live', expanded: true });
+    const historyToggle = screen.getByRole('button', { name: 'History', expanded: true });
+    const live = screen.getByRole('navigation', { name: 'Active event' });
+    expect(within(live).getByRole('button')).toHaveTextContent('Created');
+    await user.click(liveToggle);
+    expect(liveToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('navigation', { name: 'Active event' })).not.toBeInTheDocument();
+    expect(historyToggle).toHaveAttribute('aria-expanded', 'true');
+    await user.click(liveToggle);
+    await user.type(screen.getByRole('searchbox', { name: 'Search tournaments' }), 'no such event');
+    expect(screen.queryByRole('navigation', { name: 'Active event' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Event history' })).not.toBeInTheDocument();
+    expect(screen.getByText('No matching live tournaments.')).toBeInTheDocument();
+    await user.clear(screen.getByRole('searchbox', { name: 'Search tournaments' }));
+    expect(screen.getByRole('navigation', { name: 'Event history' })).toBeInTheDocument();
+  });
+
   it('lists the active event first with a live marker and retired events as history', async () => {
     const user = userEvent.setup();
     const retired = { ...final, eventId: 'retired-1', status: 'retired' as const, retiredAtMs: final.createdAtMs + 3_600_000 };

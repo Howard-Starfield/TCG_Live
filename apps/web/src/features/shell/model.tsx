@@ -1,9 +1,11 @@
 // Shell state: which event is viewed, which match the live canvas shows, and the preview dock.
-import type { EventSnapshotDto, EventSummaryDto, MatchId, RuntimeStatusDto, SessionDto } from '@tcg-live/core';
+import type { EventSnapshotDto, EventSummaryDto, MatchId, RuntimeStatusDto, SessionDto,
+  TournamentDirectoryDto, TournamentDirectoryEntryDto } from '@tcg-live/core';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useActiveEventId, useEvents, useEventSnapshot, useRuntimeStatus, type CanvasView } from '../../data';
 import { useConsolePreferences } from '../../app/preferences';
 import { NARROW_QUERY, useMediaQuery } from './useMediaQuery';
+import { useTournamentDirectory } from '../tournaments/directory';
 
 export type PaneKey = 'live' | 'list';
 
@@ -37,6 +39,9 @@ export interface ShellModel {
   session: SessionDto;
   status: RuntimeStatusDto | undefined;
   events: EventSummaryDto[];
+  directory: TournamentDirectoryDto | undefined;
+  draft: TournamentDirectoryEntryDto | null;
+  selectDraft(entry: TournamentDirectoryEntryDto): void;
   eventsState: 'loading' | 'error' | 'ready';
   refetchEvents(): void;
   activeEventId: string | null;
@@ -108,15 +113,17 @@ export function useShellModel(session: SessionDto): ShellModel {
   const [preferences, update] = useConsolePreferences();
   const status = useRuntimeStatus();
   const eventsQuery = useEvents();
+  const directoryQuery = useTournamentDirectory('', !!session.tournaments);
   const activeEventId = useActiveEventId();
   const events = eventsQuery.data ?? NO_EVENTS;
   const [selected, setSelected] = useState<string | null>(null);
+  const [draft, setDraft] = useState<TournamentDirectoryEntryDto | null>(null);
   const [liveMatch, setLiveMatch] = useState<MatchId | null>(null);
 
   // A selected event that left the list (or is the active one) falls back to following live.
   const selectedSummary = selected ? events.find(event => event.eventId === selected) : undefined;
   const following = !selected || selected === activeEventId || (eventsQuery.isSuccess && !selectedSummary);
-  const viewedId = following ? activeEventId : selected;
+  const viewedId = draft ? null : following ? activeEventId : selected;
   const snapshotQuery = useEventSnapshot(viewedId);
   const summary = viewedId ? events.find(event => event.eventId === viewedId) : undefined;
   const snapshot = snapshotQuery.data && snapshotQuery.data.eventId === viewedId ? snapshotQuery.data : undefined;
@@ -162,16 +169,20 @@ export function useShellModel(session: SessionDto): ShellModel {
     session,
     status: statusData,
     events,
+    directory: directoryQuery.data,
+    draft,
+    selectDraft: entry => { setSelected(null); setDraft(entry); },
     eventsState,
     refetchEvents: () => { void refetchEvents(); },
     activeEventId,
     viewed,
-    selectEvent: eventId => setSelected(eventId === activeEventId ? null : eventId),
-    followActive: () => setSelected(null),
+    selectEvent: eventId => { setDraft(null); setSelected(eventId === activeEventId ? null : eventId); },
+    followActive: () => { setDraft(null); setSelected(null); },
     canvasView,
     liveMatch,
     setCanvas,
     openMatch,
     dock
-  }), [session, statusData, events, eventsState, refetchEvents, activeEventId, viewed, canvasView, liveMatch, setCanvas, openMatch, dock]);
+  }), [session, statusData, events, directoryQuery.data, draft, eventsState, refetchEvents, activeEventId, viewed,
+    canvasView, liveMatch, setCanvas, openMatch, dock]);
 }

@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { artworkRoutes } from '../../artwork/routes.js';
+import { tournamentRoutes } from '../../tournaments/routes.js';
 import { AUDIT_PAGE_LIMIT, type Capability, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
 import { sessionCapabilities } from '../commands.js';
 import type { AdminHandler, AdminHandlerOptions } from '../mount.js';
@@ -105,7 +106,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       commandsEnabled: options.commandsEnabled,
       ...(options.persistentSessions && options.mode === 'discord' ? { persistent: true as const } : {}),
       ...(options.setup ? { setup: true as const } : {}),
-      ...(options.artwork ? { artwork: true as const } : {})
+      ...(options.artwork ? { artwork: true as const } : {}),
+      ...(options.tournaments ? { tournaments: true as const } : {})
     };
   }
 
@@ -199,6 +201,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       } }
     ] satisfies Route[] : []),
     ...(options.artwork ? artworkRoutes(options.artwork) : []),
+    ...(options.tournaments ? tournamentRoutes(options.tournaments,
+      () => options.artwork?.describe().activeGame ?? 'one-piece') : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 

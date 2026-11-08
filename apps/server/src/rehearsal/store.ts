@@ -10,6 +10,7 @@ const DB_ERROR = 'Rehearsal database operation failed.';
 const TARGET_DB = 'tcg_rehearsal';
 const TABLES_V1 = ['tcg_rehearsal_audit', 'tcg_rehearsal_events', 'tcg_rehearsal_meta'];
 const TABLES_V2 = [...TABLES_V1, 'tcg_rehearsal_sessions'];
+const TABLES_V2_DIRECTORY = [...TABLES_V2, 'tcg_tournament_directory'];
 
 export interface AuditRow {
   sequence: number;
@@ -118,7 +119,7 @@ export async function setupRehearsalSchema(): Promise<'created' | 'already_ready
       await client.query(sql);
       return 'created';
     }
-    if (JSON.stringify(names) !== JSON.stringify(TABLES_V1) && JSON.stringify(names) !== JSON.stringify(TABLES_V2)) {
+    if (![TABLES_V1, TABLES_V2, TABLES_V2_DIRECTORY].some(expected => JSON.stringify(names) === JSON.stringify(expected))) {
       throw new RuleError('Schema setup refused: public schema is not the expected rehearsal fixture.');
     }
     const marker = await client.query<{ value: string }>(
@@ -126,7 +127,8 @@ export async function setupRehearsalSchema(): Promise<'created' | 'already_ready
     );
     if (marker.rows.length !== 1 ||
         (JSON.stringify(names) === JSON.stringify(TABLES_V1) && marker.rows[0]?.value !== '1') ||
-        (JSON.stringify(names) === JSON.stringify(TABLES_V2) && marker.rows[0]?.value !== '2')) {
+        ((JSON.stringify(names) === JSON.stringify(TABLES_V2) ||
+          JSON.stringify(names) === JSON.stringify(TABLES_V2_DIRECTORY)) && marker.rows[0]?.value !== '2')) {
       throw new RuleError('Schema setup refused: rehearsal schema version is incompatible.');
     }
     return 'already_ready';
@@ -143,7 +145,8 @@ export async function setupPrivateDiscordSchema(): Promise<'upgraded' | 'already
     const marker = await client.query<{ value: string }>(
       "SELECT value FROM public.tcg_rehearsal_meta WHERE key = 'schema_version'"
     );
-    if (JSON.stringify(names) === JSON.stringify(TABLES_V2) && marker.rows[0]?.value === '2') return 'already_ready';
+    if ((JSON.stringify(names) === JSON.stringify(TABLES_V2) ||
+         JSON.stringify(names) === JSON.stringify(TABLES_V2_DIRECTORY)) && marker.rows[0]?.value === '2') return 'already_ready';
     if (JSON.stringify(names) !== JSON.stringify(TABLES_V1) || marker.rows[0]?.value !== '1') {
       throw new RuleError('Private Discord migration refused: unexpected rehearsal schema.');
     }

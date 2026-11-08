@@ -1,5 +1,10 @@
 # Tests for when you return
 
+**Sidebar update, 8 November:** Live/History now collapse independently; scrollbar track is transparent; names have muted date/time labels. The search toolbar uses PostgreSQL full-text prefixes, and **+** saves a named, game-selected draft. Draft activation remains a separate next lifecycle step. See [validation](SIDEBAR_DRAFT_VALIDATION.md).
+
+- [ ] Try Live/History collapse with mouse and keyboard, search a name/game or retired status, and clear the search.
+- [ ] Use **+**, change game to check its default name, enter a custom name and save a draft. Reload and confirm the name remains in the sidebar. The current live event should remain unchanged.
+
 **Onboarding update, 7 November:** Manage Permissions is now confirmed in both match rooms. Guided setup discovered the actual channels, resumed the same saved event and preserved all 41 events / 408 audit rows. See [onboarding validation](ONBOARDING_VALIDATION.md). Public activation and the four-human flow still need their separate checks.
 
 **7 November status:** [The latest rehearsal record](REHEARSAL_2026_11_07.md) confirms all unit suites, 112 demo browser tests, four native PostgreSQL tests, a real console login/refresh/guard check, and two real player Join/Withdraw cycles with a human-triggered sticky repost. The live roster ended empty. Public-room permissions and the four-human match flow remain pending; the earlier checklist below remains useful for those steps.
