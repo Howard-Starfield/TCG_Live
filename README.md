@@ -4,7 +4,7 @@ This repository contains the local foundation for TCG Live: a loopback health se
 
 ## Requirements
 
-- Node.js 24.14.0 and npm 11.9.0 (`.nvmrc` and `package.json` record the runtime).
+- Node.js 24.15.0 or newer within 24.x and npm 11.9.0 (`.nvmrc` and `package.json` record the runtime).
 - PostgreSQL is optional for disconnected startup. A configured local database is needed for a ready response.
 
 From the repository root, install and run:

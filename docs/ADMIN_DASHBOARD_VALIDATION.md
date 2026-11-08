@@ -1,5 +1,7 @@
 # Admin console validation (draft)
 
+**7 November follow-up:** [The fresh rehearsal record](REHEARSAL_2026_11_07.md) verifies the merged console against native PostgreSQL and the real Discord runtime for authenticated reads, panel refresh and incomplete-signup refusal. It also records a fresh 112/112 demo browser run. The October evidence and its then-uncovered boundaries below are retained as history; the full four-human Discord match and public voice-room acceptance remain pending.
+
 Draft by lane L8 (QA), 19 October 2026, for the read-only console (Wave 2). Tested on `admin/qa` after merging
 `feat/admin-dashboard` at e919199 (it includes the Wave 2 review fixes).
 

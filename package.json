@@ -2,7 +2,7 @@
   "name": "tcg-live",
   "private": true,
   "workspaces": ["packages/core", "apps/server", "apps/web"],
-  "engines": { "node": ">=24.14.0 <25", "npm": ">=11.9.0 <12" },
+  "engines": { "node": ">=24.15.0 <25", "npm": ">=11.9.0 <12" },
   "scripts": {
     "build": "npm run build --workspace @tcg-live/server",
     "typecheck": "npm run typecheck --workspace @tcg-live/server",

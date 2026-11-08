@@ -1,5 +1,7 @@
 # Tests for when you return
 
+**7 November status:** [The latest rehearsal record](REHEARSAL_2026_11_07.md) confirms all unit suites, 112 demo browser tests, four native PostgreSQL tests, a real console login/refresh/guard check, and two real player Join/Withdraw cycles with a human-triggered sticky repost. The live roster ended empty. Public-room permissions and the four-human match flow remain pending; the earlier checklist below remains useful for those steps.
+
 14 October 2026. New feature: public match voice rooms, spectator read access and automatic placement of assigned players. Automated verification and live boundaries are recorded in [the validation record](PUBLIC_MATCH_ROOMS_VALIDATION.md): 65 offline tests and both native database cases passed. Public activation and actual voice movement remain pending the permission below and human checks.
 
 ## Visuals: quick checks later
