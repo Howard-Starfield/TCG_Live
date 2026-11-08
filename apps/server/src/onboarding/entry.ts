@@ -69,6 +69,7 @@ async function activeSession(): Promise<SessionRow | null> {
 export interface GuidedStartOptions {
   noBrowser?: boolean;
   openBrowser?: (url: string) => void;
+  launcher?: { instanceId: string; secret: string };
 }
 export interface GuidedStartHandle { stop(): Promise<void> }
 
@@ -110,10 +111,12 @@ export async function runGuidedStart(options: GuidedStartOptions = {}): Promise<
   const launchBootstrap = async () => {
     if (stopping) return;
     setupHandler = createAdminHandler({ runtime: new BootstrapRuntime(), port: healthConfig.port,
-      mode: 'discord', commandsEnabled: false, webDist: adminConfig.webDist, setup });
+      mode: 'discord', commandsEnabled: false, webDist: adminConfig.webDist, setup,
+      persistentSessions: true, ...(options.launcher ? { launcher: options.launcher } : {}) });
     setupServer = await startServer(healthConfig, { admin: setupHandler });
     const link = setupHandler.loginUrl();
-    if (link) { process.stdout.write(`Admin setup: ${link}\n`); open(link); }
+    if (link) process.stdout.write(`Admin setup: ${link}\n`);
+    if (!options.noBrowser) open(options.launcher ? setupHandler.claimLauncherOpen?.() ?? null : link);
     process.stdout.write(`Guided setup listening on 127.0.0.1:${healthConfig.port}.\n`);
   };
   const connectDiscovery = async () => {
@@ -141,24 +144,34 @@ export async function runGuidedStart(options: GuidedStartOptions = {}): Promise<
     setupHandler = null;
     await disconnectDiscovery();
     if (stopping) return;
-    try { liveTask = runPrivateDiscord(config, open, false, fresh); live = await liveTask; }
+    try { liveTask = runPrivateDiscord(config, open, false, fresh,
+      { launcher: options.launcher, browserAutoOpen: !options.noBrowser }); live = await liveTask; }
     catch {
       try { await recoverBootstrap(); }
-      catch { process.stderr.write('Guided recovery could not reopen the console; restart npm start.\n'); }
+      catch {
+        await stop();
+        process.stderr.write('Guided recovery could not reopen the console; restart npm start.\n');
+      }
     }
   };
   setup = new SetupService({ token, databaseConfigured: !!healthConfig.database,
     active: activeSession, prepare: config => prepareSignupSession(config, false), onHandover: handover });
-  await connectDiscovery();
-  const ready = await setup.readyConfig();
-  if (ready) {
-    await disconnectDiscovery();
-    try { liveTask = runPrivateDiscord(ready, open, false); live = await liveTask; }
-    catch { await recoverBootstrap(); }
+  try {
+    await connectDiscovery();
+    const ready = await setup.readyConfig();
+    if (ready) {
+      await disconnectDiscovery();
+      try { liveTask = runPrivateDiscord(ready, open, false, false,
+        { launcher: options.launcher, browserAutoOpen: !options.noBrowser }); live = await liveTask; }
+      catch { await recoverBootstrap(); }
+      return { stop };
+    }
+    await launchBootstrap();
     return { stop };
+  } catch (error) {
+    await stop();
+    throw error;
   }
-  await launchBootstrap();
-  return { stop };
 }
 
 async function main(): Promise<void> {

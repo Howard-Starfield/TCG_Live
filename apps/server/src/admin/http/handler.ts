@@ -1,8 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { artworkRoutes } from '../../artwork/routes.js';
 import { AUDIT_PAGE_LIMIT, type Capability, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
 import { sessionCapabilities } from '../commands.js';
 import type { AdminHandler, AdminHandlerOptions } from '../mount.js';
-import { readEmptyBody, readJsonBody, readLoginBody } from './body.js';
+import { readEmptyBody, readJsonBody, readLoginBody, strictObject } from './body.js';
 import { commandRoutes } from './routes-commands.js';
 import { fail, HttpError, sendJson, sendNoContent, unavailable } from './respond.js';
 import { SessionStore, type Session } from './sessions.js';
@@ -72,15 +74,27 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
   if (options.mode === 'demo' && options.devOrigin) origins.add(options.devOrigin);
   const statics = createStaticFiles(options.webDist);
   let closed = false;
+  // Both first startup and keyed repeated launches claim through the same clock.
+  let lastLauncherOpenAtMs = -Infinity;
+  let launcherOpenedOnce = false;
   let closing: Promise<void> | null = null;
   /** API requests still being answered; close() drops them so a slow read cannot hold shutdown open. */
   const inFlight = new Set<ServerResponse>();
 
   const sessions: SessionStore = new SessionStore({
     port, now, fixedLoginToken: options.mode === 'demo' ? options.fixedLoginToken : null,
+    persistent: !!options.persistentSessions && options.mode === 'discord',
     onExpire: session => streams.closeSession(session)
   });
   const streams = new StreamManager(runtime, sessions, { ...DEFAULT_STREAM_TIMINGS, ...internals.timings }, now);
+
+  function claimLauncherOpen(): string | null {
+    if (closed || !options.launcher || streams.size > 0 || now() - lastLauncherOpenAtMs < 10_000) return null;
+    lastLauncherOpenAtMs = now();
+    const link = launcherOpenedOnce ? sessions.rotate() : sessions.loginUrl();
+    launcherOpenedOnce = true;
+    return link;
+  }
 
   function describe(session: Session): SessionDto {
     return {
@@ -89,7 +103,9 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       ...sessions.expiry(session),
       mode: options.mode,
       commandsEnabled: options.commandsEnabled,
-      ...(options.setup ? { setup: true as const } : {})
+      ...(options.persistentSessions && options.mode === 'discord' ? { persistent: true as const } : {}),
+      ...(options.setup ? { setup: true as const } : {}),
+      ...(options.artwork ? { artwork: true as const } : {})
     };
   }
 
@@ -119,6 +135,25 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
         sendNoContent(response);
       } }
     } },
+    ...(options.launcher && options.mode === 'discord' ? [{ pattern: /^\/api\/v1\/launcher\/open$/,
+      methods: { POST: { access: 'public' as const, run: async ({ request, response }: Context) => {
+        const supplied = request.headers['x-tcg-instance-key'];
+        const expected = options.launcher!.secret;
+        const digest = (value: string) => createHash('sha256').update(value).digest();
+        if (typeof supplied !== 'string' || !timingSafeEqual(digest(supplied), digest(expected)))
+          throw new HttpError(401, 'unauthenticated', 'Launcher identity was not accepted.');
+        const body = strictObject(await readJsonBody(request), ['challenge']);
+        const challenge = body.challenge;
+        if (typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(challenge))
+          throw badRequest('Invalid launcher challenge.');
+        const instanceId = options.launcher!.instanceId;
+        const proof = createHmac('sha256', expected).update(`${instanceId}:${challenge}`).digest('base64url');
+        const loginUrl = claimLauncherOpen();
+        const present = loginUrl === null;
+        sendJson(response, 200, { instanceId, proof, present,
+          ...(loginUrl ? { loginUrl } : {}) });
+      } } }
+    } satisfies Route] : []),
     { pattern: /^\/api\/v1\/status$/, methods: {
       GET: { access: 'dashboard.read', run: async ({ response }) => sendJson(response, 200, runtime.status()) }
     } },
@@ -163,6 +198,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
         } }
       } }
     ] satisfies Route[] : []),
+    ...(options.artwork ? artworkRoutes(options.artwork) : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 
@@ -238,6 +274,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
     loginUrl: () => sessions.loginUrl(),
 
     rotateLoginUrl: () => sessions.rotate(),
+    ...(options.launcher ? { claimLauncherOpen } : {}),
 
     close() {
       closed = true;

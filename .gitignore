@@ -6,6 +6,8 @@ dist/
 data/postgres/
 data/discord-room-overwrites/
 data/discord-setup.json
+data/artwork/
+data/guided-instance.json
 backups/
 *.log
 *.dump

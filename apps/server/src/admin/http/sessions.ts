@@ -22,6 +22,8 @@ export interface SessionStoreOptions {
   port: number;
   now: () => number;
   fixedLoginToken?: string | null;
+  /** Guided local runtime only. Demo and direct commands retain timed sessions. */
+  persistent?: boolean;
   /** Called when a session ends by expiry or eviction (not by logout). */
   onExpire: (session: Session) => void;
 }
@@ -95,7 +97,8 @@ export class SessionStore {
     return this.sessions.get(session.id) === session;
   }
 
-  expiry(session: Session): { expiresAtMs: number; idleExpiresAtMs: number } {
+  expiry(session: Session): { expiresAtMs: number | null; idleExpiresAtMs: number | null } {
+    if (this.options.persistent) return { expiresAtMs: null, idleExpiresAtMs: null };
     const expiresAtMs = session.createdAtMs + SESSION_ABSOLUTE_MS;
     const active = session.openStreams > 0 ? this.options.now() : session.lastActiveMs;
     return { expiresAtMs, idleExpiresAtMs: Math.min(expiresAtMs, active + SESSION_IDLE_MS) };
@@ -121,6 +124,7 @@ export class SessionStore {
   }
 
   private expired(session: Session, now: number): boolean {
+    if (this.options.persistent) return false;
     if (now >= session.createdAtMs + SESSION_ABSOLUTE_MS) return true;
     return session.openStreams === 0 && now >= session.lastActiveMs + SESSION_IDLE_MS;
   }

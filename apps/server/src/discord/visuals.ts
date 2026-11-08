@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import type { ArtworkStore } from '../artwork/store.js';
 
 export type VisualState = 'signup' | 'checkin' | 'setup' | 'running' | 'paused' | 'proposal' |
   'disputed' | 'expired' | 'final' | 'reminder' | 'notice' | 'error';
@@ -9,14 +10,26 @@ const files: Record<VisualState, string> = {
   disputed: 'tcg-disputed-v1.png', expired: 'tcg-expired-v1.png', final: 'tcg-final-v1.gif',
   reminder: 'tcg-reminder-v1.gif', notice: 'tcg-notice-v1.gif', error: 'tcg-error-v1.png'
 };
+let artwork: ArtworkStore | null = null;
+
+/** Install the same store used by authenticated artwork routes before Discord starts sending panels. */
+export function setVisualArtworkStore(store: ArtworkStore | null): void { artwork = store; }
+
+export function visualBanner(): { url: string } | null {
+  const image = artwork?.resolveActive('banner');
+  return image ? { url: `attachment://${image.filename}` } : null;
+}
 
 export function visualFilename(state: VisualState): string { return files[state]; }
 
 export function visualThumbnail(state: VisualState): { url: string } {
-  return { url: `attachment://${visualFilename(state)}` };
+  const image = artwork?.resolveActive('thumbnail');
+  return { url: `attachment://${image?.filename ?? visualFilename(state)}` };
 }
 
 export function visualFile(filename: string): { attachment: string; name: string } | null {
+  const selected = artwork?.visualFile(filename);
+  if (selected) return { attachment: selected.path, name: selected.filename };
   if (!Object.values(files).includes(filename)) return null;
   return { attachment: fileURLToPath(new URL(`../../assets/discord/${filename}`, import.meta.url)), name: filename };
 }
@@ -31,14 +44,14 @@ export function filenameFromThumbnail(thumbnail?: { url: string }): string | nul
 export function retainedVisual(message: {
   attachments?: { size: number; values(): IterableIterator<{ name: string | null }> };
   author?: { id: string };
-  embeds?: readonly { thumbnail?: { url: string } | null }[];
+  embeds?: readonly { thumbnail?: { url: string } | null; image?: { url: string } | null }[];
 }, channelId: string, botId: string, filename: string): boolean {
   if (!visualFile(filename)) return false;
   const attachments = message.attachments;
-  if (attachments?.size === 1 && [...attachments.values()][0]?.name === filename) return true;
+  if (attachments?.size === 1 && message.author?.id === botId && [...attachments.values()][0]?.name === filename) return true;
   if (attachments?.size !== 0 || message.author?.id !== botId) return false;
   try {
-    const thumbnail = new URL(message.embeds?.[0]?.thumbnail?.url ?? '');
+    const thumbnail = new URL(message.embeds?.[0]?.image?.url ?? message.embeds?.[0]?.thumbnail?.url ?? '');
     const path = thumbnail.pathname.match(/^\/attachments\/([1-9]\d{14,21})\/([1-9]\d{14,21})\/([^/]+)$/);
     return thumbnail.protocol === 'https:' && !thumbnail.port && !thumbnail.username && !thumbnail.password &&
       !thumbnail.hash && ['cdn.discordapp.com', 'media.discordapp.net'].includes(thumbnail.hostname) &&

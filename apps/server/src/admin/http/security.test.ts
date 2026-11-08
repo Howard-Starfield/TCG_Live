@@ -32,7 +32,7 @@ function assertSecurityHeaders(reply: Reply, label: string): void {
 }
 
 test('the CSP is exactly the planned policy', () => {
-  assert.equal(CONTENT_SECURITY_POLICY, "default-src 'self'; img-src 'self' data: https://cdn.discordapp.com; " +
+  assert.equal(CONTENT_SECURITY_POLICY, "default-src 'self'; img-src 'self' data: blob: https://cdn.discordapp.com; " +
     "style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
 });
 

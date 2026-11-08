@@ -1,4 +1,4 @@
-# Queued: persistent dashboard and one-click launch
+# Implemented: persistent dashboard and one-click launch
 
 Requested 7 November 2026 during final onboarding verification.
 
@@ -9,4 +9,4 @@ Requested 7 November 2026 during final onboarding verification.
 - Define clear behavior for closing the browser, stopping the bot and restarting the computer; a continuously available dashboard does not imply silently installing a Windows service.
 - Verify repeated/double-click launch, existing instance, browser closed, database unavailable, reconnect and explicit shutdown.
 
-Current guided startup already opens an authenticated browser link automatically. Persistent sessions and the deduplicated `.bat` launcher remain queued; the existing session expiry policy is still active until this follow-up is implemented.
+Implemented and verified 7–8 November 2026. Double-click `Start TCG Live.bat`, or use `npm start`. Guided sessions have no routine expiry; direct-command/demo sessions retain their timed policy. The actual Windows launch and repeated-launch reuse were verified, along with safe stale-owner recovery. Native browser-closed reopening and an overnight idle check remain useful manual return tests; automated cases cover the corresponding session/opening rules. See [the validation record](LAUNCHER_ARTWORK_VALIDATION.md).

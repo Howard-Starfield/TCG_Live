@@ -35,7 +35,9 @@ Use a disposable local PostgreSQL database and its own credentials for a connect
 
 ## Guided Discord startup
 
-After installing dependencies and preparing the local rehearsal database, use `npm.cmd start`. This command builds the dashboard and server, loads the root `.env`, connects the bot, and opens the authenticated local admin dashboard in your default browser. Use `npm.cmd start -- --no-browser` to keep browser opening disabled; a private login link remains in the terminal. Treat that link like a password.
+After installing dependencies and preparing the local rehearsal database, double-click **Start TCG Live.bat** in the project root, or use `npm.cmd start`. The Windows launcher selects a supported Node/npm installation. An initial launch builds the dashboard and server, loads the root `.env`, connects the bot, and opens the authenticated dashboard in your default browser without typing a token. Repeated launches verify and reuse this project's instance before building; an open dashboard stays single. Closing the browser leaves the bot running, and another launch reopens the dashboard after the short ten-second launch cooldown. Use `npm.cmd start -- --no-browser` to disable browser opening; a private login link remains in the terminal. Treat that link like a password.
+
+Guided dashboard sessions do not expire from idle time or elapsed hours. Sign out, session eviction and stopping the process still end access. Keep the bot's terminal running and press Ctrl+C for a clean stop. No Windows service is installed. Ignored `data/guided-instance.json` contains local instance credentials; do not share it. A stale dead owner's record is recovered safely; an unknown occupied port is refused rather than starting another bot.
 
 Set `DISCORD_BOT_TOKEN` (or `TCG_DISCORD_TOKEN`) and `DATABASE_URL` privately in `.env`. Run `db:setup` and `db:discord-setup` explicitly with that database configured before starting a new event. Guided startup does not install PostgreSQL or rewrite credentials. Missing prerequisites appear in setup. The older `dev` and direct Discord commands retain their existing environment behavior.
 
@@ -43,7 +45,9 @@ On first use, onboarding lists the bot's servers and available channels, asks fo
 
 An active saved event locks its existing identity and routing; **Save and Start resumes it**, preserving roster, results and audit history. Without an active event, that button prepares one signup event and initializes its panels. Setup settings contain only non-secret IDs and guide-message bookkeeping in ignored `data/discord-setup.json`. Later healthy starts open the normal dashboard directly. Match commands still require the existing `TCG_ADMIN_COMMANDS=1` opt-in. The handover opens a new authenticated dashboard session; the old setup tab can be closed.
 
-Per-game default GIFs are packaged under [the game assets folders](apps/server/assets/games/README.md). Dashboard artwork uploads, previews and reset controls remain in [the artwork queue](docs/GAME_VISUALS_QUEUE.md).
+Open the account menu → **Game artwork…** to preview One Piece, One Punch Man or Pokémon, upload a tournament banner or compact thumbnail, restore defaults and choose the active game's artwork. Signup/check-in use the banner; match cards, reminders and notices use the optional thumbnail, with original state artwork as fallback. Click the existing **Refresh panels** control to apply changes to current Discord cards. Uploading alone does not post messages or change tournament rules.
+
+Uploads accept GIF, PNG and JPEG up to 4 MiB, 4096 pixels per side and 16 megapixels. Runtime settings/uploads stay in ignored `data/artwork/`, separate from [the packaged defaults](apps/server/assets/games/README.md). Storage is capped at 64 MiB; old immutable versions are retained for safe in-flight sends, so archive unused versions locally if the budget is reached. Corrupt settings fall back to original artwork with a dashboard explanation and remain untouched until an explicit save. Type/dimension/header checks do not fully decode the image; a corrupt image may still fail display.
 
 ## Health routes
 
@@ -186,7 +190,7 @@ $env:TCG_ADMIN_COMMANDS = '1'     # optional: let the console act as the configu
 npm.cmd run discord:signup-run    # or discord:run
 ```
 
-The bot prints the console link at startup. Sessions last at most 12 hours and end after 2 idle hours; *Rotate console link* in the account menu prints a fresh link and invalidates the old one. Failed sign-ins are limited to 10 a minute across all clients; rotating the link does not end existing sessions.
+The bot prints the console link at startup. Direct-command and demo sessions last at most 12 hours and end after 2 idle hours; guided `npm start` / Windows-launcher sessions stay signed in while the process runs. *Rotate console link* in the account menu prints a fresh link and invalidates the old one. Failed sign-ins are limited to 10 a minute across all clients; rotating the link does not end existing sessions.
 
 Admin actions (publish, signup close/reopen/remove, judge-resume, resolve, correct, panel refresh) are off unless `TCG_ADMIN_COMMANDS=1`. With it off, the console only reads and shows no action controls. With it on, a console action is the same command as the matching `/tcg-test` subcommand: it goes through the same transaction, gates, card refresh and match-room sync, needs a reason where the slash command does, and is audited as `via console` (`principal_kind = 'web'`). Each action carries the state the organizer saw; if the event changed meanwhile, the console shows the fresh state and asks again rather than applying it. Retrying an action that already succeeded returns the original result.
 

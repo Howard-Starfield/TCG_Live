@@ -3,6 +3,7 @@ import type { AdminMode } from './config.js';
 import { createAdminHttp } from './http/handler.js';
 import type { AdminRuntime } from './runtime-types.js';
 import type { SetupService } from '../onboarding/service.js';
+import type { ArtworkStore } from '../artwork/store.js';
 
 export interface AdminHandlerOptions {
   runtime: AdminRuntime;
@@ -20,6 +21,10 @@ export interface AdminHandlerOptions {
   printLoginUrl?: (url: string) => void;
   /** Mounted only by the guided first-start entry. */
   setup?: SetupService;
+  artwork?: ArtworkStore;
+  persistentSessions?: boolean;
+  /** Ignored local launcher rendezvous; never mounted by direct or demo commands. */
+  launcher?: { instanceId: string; secret: string };
 }
 
 export interface AdminHandler {
@@ -29,6 +34,8 @@ export interface AdminHandler {
   loginUrl(): string | null;
   /** Replaces the launch token, invalidating the old one, and returns the new link. */
   rotateLoginUrl(): string;
+  /** Guided launcher only: atomically claims a browser open or returns null when one is present/recent. */
+  claimLauncherOpen?(): string | null;
   /** Ends streams, answers new requests with 503, clears timers, unsubscribes. Idempotent. */
   close(): Promise<void>;
 }

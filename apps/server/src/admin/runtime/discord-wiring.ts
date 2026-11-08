@@ -5,12 +5,16 @@ import { createAdminHandler, type AdminHandler, type AdminHandlerOptions } from 
 import { DiscordAdminRuntime, type AdminController, type AdminGateway, type AdminRooms,
   type DiscordAdminRuntimeOptions, type GatewayState } from './discord-runtime.js';
 import type { MemberFetcher } from './identity.js';
+import type { ArtworkStore } from '../../artwork/store.js';
 
 export interface DiscordAdminOptions {
   adminConfig: AdminConfig;
   port: number;
   runnerId: string;
   publicMatchRooms: boolean;
+  persistentSessions?: boolean;
+  launcher?: { instanceId: string; secret: string };
+  artwork?: ArtworkStore;
   lease?: { isLost(): boolean };
   createRuntime?: (options: DiscordAdminRuntimeOptions) => DiscordAdminRuntime;
   createHandler?: (options: AdminHandlerOptions) => AdminHandler;
@@ -38,7 +42,10 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
   });
   const handler = (options.createHandler ?? createAdminHandler)({
     runtime, port: options.port, mode: 'discord', commandsEnabled: options.adminConfig.commandsEnabled,
-    webDist: options.adminConfig.webDist
+    webDist: options.adminConfig.webDist,
+    ...(options.artwork ? { artwork: options.artwork } : {}),
+    ...(options.persistentSessions ? { persistentSessions: true } : {}),
+    ...(options.launcher ? { launcher: options.launcher } : {})
   });
   const write = options.write ?? (text => { process.stdout.write(text); });
   let announced = false;

@@ -102,8 +102,8 @@ test('card transport uploads once, retains exact fetched file and replaces any s
   const edits: unknown[] = [];
   let attachments = new Collection<string, { name: string }>();
   const channel = { async send(options: unknown) { sends.push(options); return { id: 'message' }; },
-    messages: { async fetch() { return { attachments, async edit(options: unknown) { edits.push(options); } }; } } };
-  const transport = discordTransport(channel as unknown as TextChannel);
+    messages: { async fetch() { return { author: { id: 'bot' }, attachments, async edit(options: unknown) { edits.push(options); } }; } } };
+  const transport = discordTransport(channel as unknown as TextChannel, undefined, 'bot');
   const setup = renderCard(state, 'M1');
   await transport.send(setup, 'M1');
   const sent = sends[0] as { files: Array<{ name: string }>; embeds: Array<{ thumbnail: { url: string } }> };

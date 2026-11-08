@@ -25,6 +25,35 @@ function DialogHarness({ onClose }: { onClose?: () => void }) {
 }
 
 describe('Dialog', () => {
+  it('locks page scroll until the last dialog closes and restores inline overflow', () => {
+    const html = document.documentElement.style;
+    const body = document.body.style;
+    const previousHtml = html.cssText;
+    const previousBody = body.cssText;
+    html.setProperty('overflow', 'clip', 'important');
+    body.setProperty('overflow', 'auto');
+    const dialogs = (first: boolean, second: boolean) => <>
+      <Dialog open={first} onClose={() => {}} title="First" />
+      <Dialog open={second} onClose={() => {}} title="Second" />
+    </>;
+    try {
+      const view = render(dialogs(true, true));
+      expect(html.overflow).toBe('hidden');
+      expect(body.overflow).toBe('hidden');
+      view.rerender(dialogs(false, true));
+      expect(html.overflow).toBe('hidden');
+      expect(body.overflow).toBe('hidden');
+      view.rerender(dialogs(false, false));
+      expect(html.getPropertyValue('overflow')).toBe('clip');
+      expect(html.getPropertyPriority('overflow')).toBe('important');
+      expect(body.overflow).toBe('auto');
+      view.unmount();
+    } finally {
+      html.cssText = previousHtml;
+      body.cssText = previousBody;
+    }
+  });
+
   it('is a labelled modal that focuses its first field and makes the page inert', async () => {
     const user = userEvent.setup();
     render(<DialogHarness />);

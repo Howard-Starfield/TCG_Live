@@ -4,7 +4,8 @@
   "workspaces": ["packages/core", "apps/server", "apps/web"],
   "engines": { "node": ">=24.15.0 <25", "npm": ">=11.9.0 <12" },
   "scripts": {
-    "start": "npm run build:all && node apps/server/dist/onboarding/entry.js",
+    "start": "node scripts/guided-launch.mjs",
+    "test:launcher": "node --test scripts/*.test.mjs",
     "build": "npm run build --workspace @tcg-live/server",
     "typecheck": "npm run typecheck --workspace @tcg-live/server",
     "test": "npm run test --workspace @tcg-live/server",
@@ -25,7 +26,7 @@
     "typecheck:all": "npm run typecheck && npm run typecheck:web",
     "test:core": "npm run test --workspace @tcg-live/core",
     "test:web": "npm run test --workspace @tcg-live/web",
-    "test:all": "npm run test:core && npm test && npm run test:web",
+    "test:all": "npm run test:core && npm test && npm run test:web && npm run test:launcher",
     "admin:demo": "npm run build:web && npm run admin:demo --workspace @tcg-live/server",
     "web:dev": "npm run dev --workspace @tcg-live/web",
     "test:e2e": "npm run build:all && npm run test:e2e --workspace @tcg-live/web"

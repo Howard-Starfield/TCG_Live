@@ -1,11 +1,77 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 import { auditTimeline, FIXTURE_EVENT_ID, liveDispute } from '@tcg-live/core/fixtures';
 import { AdminUnavailableError } from '../runtime-types.js';
 import { LOGIN_MAX_FAILURES, SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from './sessions.js';
-import { call, login, startHarness } from './test-support.js';
+import { call, login, openStream, startHarness } from './test-support.js';
 
 const HOUR = 3_600_000;
+
+test('initial and repeated browser opens share one claim; a live stream blocks later opens', async () => {
+  let now = 5_000;
+  const launcher = { instanceId: 'i'.repeat(32), secret: 's'.repeat(43) };
+  const harness = await startHarness({ mode: 'discord', launcher }, { now: () => now });
+  const request = () => call(harness.port, '/api/v1/launcher/open', { method: 'POST',
+    body: JSON.stringify({ challenge: 'c'.repeat(32) }), headers: { 'X-TCG-Instance-Key': launcher.secret } });
+  let stream: Awaited<ReturnType<typeof openStream>> | null = null;
+  try {
+    const first = harness.admin.claimLauncherOpen!();
+    assert.equal(first, harness.admin.loginUrl());
+    assert.equal((await request()).json().present, true, 'repeat after initial claim opens no tab');
+    now += 10_001;
+    stream = await openStream(harness.port, await login(harness));
+    assert.equal(stream.status, 200);
+    assert.equal(harness.admin.claimLauncherOpen!(), null);
+    assert.equal((await request()).json().present, true, 'authenticated live stream keeps the tab');
+  } finally { stream?.close(); await harness.stop(); }
+
+  now = 5_000;
+  const second = await startHarness({ mode: 'discord', launcher }, { now: () => now });
+  try {
+    const repeatFirst = (await call(second.port, '/api/v1/launcher/open', { method: 'POST',
+      body: JSON.stringify({ challenge: 'c'.repeat(32) }),
+      headers: { 'X-TCG-Instance-Key': launcher.secret } })).json();
+    assert.equal(repeatFirst.present, false);
+    assert.equal(repeatFirst.loginUrl, second.admin.loginUrl());
+    assert.equal(second.admin.claimLauncherOpen!(), null, 'later initial callback opens no second tab');
+  } finally { await second.stop(); }
+});
+
+test('guided sessions persist until logout and launcher challenge is keyed, cooled down and same-origin', async () => {
+  let now = 1_000_000;
+  const instanceId = 'i'.repeat(32);
+  const secret = 's'.repeat(43);
+  const harness = await startHarness({ mode: 'discord', commandsEnabled: false,
+    persistentSessions: true, launcher: { instanceId, secret } }, { now: () => now });
+  const challenge = 'c'.repeat(32);
+  const launch = (key = secret, origin = true) => call(harness.port, '/api/v1/launcher/open', {
+    method: 'POST', body: JSON.stringify({ challenge }), origin,
+    headers: { 'X-TCG-Instance-Key': key, ...(origin ? {} : { Origin: 'http://evil.example' }) }
+  });
+  try {
+    const token = await login(harness);
+    const session = (await call(harness.port, '/api/v1/session', { token })).json();
+    assert.equal(session.persistent, true);
+    assert.equal(session.expiresAtMs, null);
+    assert.equal(session.idleExpiresAtMs, null);
+    now += 365 * 24 * HOUR;
+    assert.equal((await call(harness.port, '/api/v1/session', { token })).status, 200);
+    assert.equal((await launch('wrong')).status, 401);
+    assert.equal((await launch(secret, false)).status, 403);
+    assert.equal((await call(harness.port, '/api/v1/launcher/open', { method: 'GET' })).status, 405);
+    const first = (await launch()).json();
+    assert.equal(first.present, false);
+    assert.equal(first.instanceId, instanceId);
+    assert.equal(first.proof, createHmac('sha256', secret).update(`${instanceId}:${challenge}`).digest('base64url'));
+    assert.match(first.loginUrl, /#login=/);
+    const second = (await launch()).json();
+    assert.equal(second.present, true);
+    assert.equal(second.loginUrl, undefined);
+    await call(harness.port, '/api/v1/session', { method: 'DELETE', token });
+    assert.equal((await call(harness.port, '/api/v1/session', { token })).status, 401);
+  } finally { await harness.stop(); }
+});
 
 test('the launch token is exchanged for a bearer session describing the local principal', async () => {
   let now = 1_000_000;

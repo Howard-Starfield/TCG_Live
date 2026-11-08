@@ -1,8 +1,9 @@
-import { Laptop, Link2, LogOut, Moon, Sun } from 'lucide-react';
+import { Images, Laptop, Link2, LogOut, Moon, Sun } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useSession } from '../../data';
 import { ConfirmDialog, Menu, useToast, type MenuEntry, type Placement, type TriggerProps } from '../../ui';
 import { useConsolePreferences } from '../../app/preferences';
+import { ArtworkDialog } from '../artwork/ArtworkDialog';
 
 export interface AccountMenuProps {
   trigger: (props: TriggerProps) => ReactNode;
@@ -16,6 +17,8 @@ export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuPr
   const [preferences, update] = useConsolePreferences();
   const [confirming, setConfirming] = useState(false);
   const [rotating, setRotating] = useState(false);
+  const [artworkOpen, setArtworkOpen] = useState(false);
+  const hasArtwork = session.session?.artwork === true;
 
   const rotate = async () => {
     setRotating(true);
@@ -41,6 +44,8 @@ export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuPr
     { id: 'theme-dark', label: 'Dark', checked: preferences.theme === 'dark', onSelect: () => update({ theme: 'dark' }) },
     { id: 'theme-system', label: 'System', checked: preferences.theme === 'system', onSelect: () => update({ theme: 'system' }) },
     { type: 'separator', id: 'sep-1' },
+    ...(hasArtwork ? [{ id: 'artwork', label: 'Game artwork…', textValue: 'Game artwork', icon: <Images />,
+      onSelect: () => setArtworkOpen(true) }] : []),
     { id: 'rotate', label: 'Rotate console link…', textValue: 'Rotate console link', icon: <Link2 />, onSelect: () => setConfirming(true) },
     { type: 'separator', id: 'sep-2' },
     { id: 'sign-out', label: 'Sign out', icon: <LogOut />, onSelect: () => { void session.logout(); } }
@@ -49,6 +54,7 @@ export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuPr
   return (
     <>
       <Menu label="Account and theme" items={items} trigger={trigger} placement={placement} />
+      {hasArtwork && <ArtworkDialog open={artworkOpen} onClose={() => setArtworkOpen(false)} />}
       <ConfirmDialog open={confirming} onCancel={() => setConfirming(false)} onConfirm={() => { void rotate(); }}
         pending={rotating} confirmLabel="Rotate link" title="Rotate the console link?"
         description="The bot prints a fresh console link in its terminal and the current link stops working. Tabs that are already signed in stay signed in." />

@@ -1,8 +1,8 @@
 # TCG future test checklist
 
-Queued 7 November: [game-specific artwork and dashboard uploads](GAME_VISUALS_QUEUE.md). The three user-supplied default GIFs are packaged in game folders; upload controls and runtime game-specific selection remain future work.
+Implemented 8 November: [game-specific artwork and dashboard uploads](GAME_VISUALS_QUEUE.md). The three supplied GIF defaults, uploads, previews, reset and active-game selection are available. See [current validation](LAUNCHER_ARTWORK_VALIDATION.md) and the return list for remaining client checks.
 
-Also queued: [persistent dashboard sessions and a deduplicated one-click Windows launcher](DASHBOARD_STARTUP_QUEUE.md), with automatic default-browser login and no manual token entry.
+Also implemented: [persistent guided sessions and a deduplicated one-click Windows launcher](DASHBOARD_STARTUP_QUEUE.md), with automatic default-browser login and no manual token entry.
 
 Updated 13 October 2026. The user reported that the latest two-account flow works. The implementation baseline passed 47 offline tests and both native database tests; detailed evidence is in [the validation record](PRIVATE_DISCORD_VALIDATION.md).
 

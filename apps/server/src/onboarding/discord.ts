@@ -1,6 +1,6 @@
 import { ChannelType, PermissionFlagsBits, type Client, type Guild, type GuildBasedChannel,
   type GuildMember, type TextChannel } from 'discord.js';
-import { retainedVisual, visualFile, visualThumbnail } from '../discord/visuals.js';
+import { filenameFromThumbnail, retainedVisual, visualFile, visualThumbnail } from '../discord/visuals.js';
 import type { DiscoveredChannel, SetupDiscovery } from './service.js';
 
 const FLAGS: Record<string, bigint> = {
@@ -65,13 +65,14 @@ export function discordSetupDiscovery(client: Client): SetupDiscovery {
       if (!channel.permissionsFor(bot)?.has(PermissionFlagsBits.SendMessages))
         throw new Error('The bot cannot post in the signup channel.');
       const rich = channel.permissionsFor(bot)?.has([PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles]);
+      const thumbnail = visualThumbnail('notice');
       const base = rich ? { content: mentionAdmin ? `<@${adminId}>` : '',
         embeds: [{ description: content, color: content.startsWith('Setup ready') ? 0x22c55e : 0xf59e0b,
-          thumbnail: visualThumbnail('notice') }],
+          thumbnail }],
         allowedMentions: { parse: [] as [], users: mentionAdmin ? [adminId] : [] } } :
         { content: `${mentionAdmin ? `<@${adminId}> ` : ''}${content}`,
           embeds: [], allowedMentions: { parse: [] as [], users: mentionAdmin ? [adminId] : [] } };
-      const file = visualFile('tcg-notice-v1.gif')!;
+      const file = visualFile(filenameFromThumbnail(thumbnail)!)!;
       if (!messageId) return (await channel.send(rich ? { ...base, files: [file] } : base)).id;
       const message = await channel.messages.fetch({ message: messageId, force: true });
       if (message.author.id !== botId) throw new Error('Setup guide is no longer bot-authored.');

@@ -17,7 +17,8 @@ import { PrivateDiscordController, type CardTransport, type PrivateInteraction }
 import { acquireAdvisoryLease, getSessionState, prepareSession, prepareSignupSession, type AdvisoryLease } from './session.js';
 import { privateDiscordClient, privateDiscordRest } from './sdk.js';
 import { MatchRoomReconciler, type Room, type RoomOverwrite, type RoomTransport } from './match-rooms.js';
-import { filenameFromThumbnail, noticeEmbed, retainedVisual, visualFile, visualThumbnail } from './visuals.js';
+import { filenameFromThumbnail, noticeEmbed, retainedVisual, setVisualArtworkStore, visualFile, visualThumbnail } from './visuals.js';
+import { defaultArtworkStore } from '../artwork/store.js';
 
 function safeError(error: unknown): string {
   return error instanceof RuleError ? error.message : 'Private Discord operation failed.';
@@ -70,7 +71,7 @@ export function discordTransport(channel: TextChannel, matches?: Record<MatchId,
   const payload = (card: CardPayload) => ({ embeds: card.embeds, components: card.components,
     allowedMentions: card.allowedMentions });
   const cardFile = (card: CardPayload) => {
-    const filename = filenameFromThumbnail(card.embeds[0]?.thumbnail);
+    const filename = filenameFromThumbnail(card.embeds[0]?.image ?? card.embeds[0]?.thumbnail);
     return filename ? visualFile(filename) : null;
   };
   const destination = (slot: 'checkin' | MatchId = 'checkin') => slot === 'checkin' ? channel : matches?.[slot] ?? channel;
@@ -90,11 +91,12 @@ export function discordTransport(channel: TextChannel, matches?: Record<MatchId,
     async resumeReminder(slot, waitingIds) {
       const ids = [...new Set(waitingIds)];
       if (!ids.length) throw new RuleError('Private Discord reminder has no waiting player.');
+      const reminder = visualThumbnail('reminder');
       const message = await destination(slot).send({
         content: `Waiting to resume: ${ids.map(id => `<@${id}>`).join(', ')}`,
         embeds: [{ description: 'Both players must choose Resume on the match card to continue.',
-          color: 0xf59e0b, thumbnail: visualThumbnail('reminder') }],
-        files: [visualFile('tcg-reminder-v1.gif')!],
+          color: 0xf59e0b, thumbnail: reminder }],
+        files: [visualFile(filenameFromThumbnail(reminder)!)!],
         allowedMentions: { parse: [], users: ids }
       });
       return message.id;
@@ -159,9 +161,10 @@ export function discordRoomTransport(guild: Guild, rooms: Record<MatchId, VoiceC
       await voice.setChannel(rooms[room], 'TCG practice match placement');
     },
     async warnOrganizer(message) {
+      const notice = visualThumbnail('notice');
       await control.send({ content: `<@${adminId}>`, embeds: [{ description: message,
-        color: 0xf59e0b, thumbnail: visualThumbnail('notice') }],
-        files: [visualFile('tcg-notice-v1.gif')!],
+        color: 0xf59e0b, thumbnail: notice }],
+        files: [visualFile(filenameFromThumbnail(notice)!)!],
         allowedMentions: { parse: [], users: [adminId] } });
     }
   };
@@ -262,9 +265,12 @@ function readAdminSettings(): AdminConfig {
 
 export async function runPrivateDiscord(config: PrivateDiscordConfig = readPrivateDiscordConfig(process.env, true),
   onReady?: (loginUrl: string | null) => void, manageSignals = true,
-  initializeFresh = false): Promise<{ stop(): Promise<void> }> {
+  initializeFresh = false, guided?: { launcher?: { instanceId: string; secret: string };
+    browserAutoOpen?: boolean }): Promise<{ stop(): Promise<void> }> {
   const healthConfig = readConfig();
   const adminConfig = readAdminSettings();
+  const artwork = defaultArtworkStore();
+  setVisualArtworkStore(artwork);
   const runnerId = randomUUID();
   const client = privateDiscordClient(!!config.publicMatchRooms);
   let stopping = false;
@@ -317,8 +323,9 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       void shutdown();
     });
     ensureActive();
-    admin = createDiscordAdmin({ adminConfig, port: healthConfig.port, runnerId,
-      publicMatchRooms: !!config.publicMatchRooms, lease });
+    admin = createDiscordAdmin({ adminConfig, port: healthConfig.port, runnerId, artwork,
+      publicMatchRooms: !!config.publicMatchRooms, lease,
+      ...(guided ? { persistentSessions: true, ...(guided.launcher ? { launcher: guided.launcher } : {}) } : {}) });
     health = await startServer(healthConfig, admin ? { admin: admin.handler } : {});
     admin?.announce();
     ensureActive();
@@ -399,7 +406,9 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     client.on('shardResume', reconnect);
     client.on('shardReady', reconnect);
     process.stdout.write(`Private Discord runtime ready; health on 127.0.0.1:${health.port}.\n`);
-    onReady?.(admin?.handler.loginUrl() ?? null);
+    if (onReady) onReady(guided?.launcher ?
+      guided.browserAutoOpen === false ? null : admin?.handler.claimLauncherOpen?.() ?? null :
+      admin?.handler.loginUrl() ?? null);
     return { stop: shutdown };
   } catch (error) {
     await shutdown();

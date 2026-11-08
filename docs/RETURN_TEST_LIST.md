@@ -8,6 +8,11 @@
 
 ## Visuals: quick checks later
 
+- [ ] Double-click **Start TCG Live.bat**: the default browser signs in automatically. Repeat while it is open and confirm there is still one bot/dashboard. Close the browser and relaunch after ten seconds; the bot should remain running and the dashboard reopen.
+- [ ] Leave the guided dashboard open or idle overnight; it should remain signed in. Explicit sign-out should still work.
+- [ ] Account menu → Game artwork: preview all three defaults, upload/reset banner and thumbnail, choose the active game and Refresh panels. Confirm state colors, mentions and controls remain clear. Repeat Refresh without duplicate image uploads.
+- [ ] Try valid PNG/JPEG artwork as well as GIF, and a client with GIF animation disabled. Reject invalid/oversized files with the previous selection intact.
+
 The bot now has 12 original status images/GIFs, inspired by the SysBot state-thumbnail pattern. No need to test these now. When ready:
 
 - [ ] Signup/check-in and both voice panels show one small visual, with no loose duplicate image files after repeated sticky reposts or state changes.
@@ -24,7 +29,7 @@ The 7 November forced role/channel refresh confirms BoBoAssist now has Manage Pe
 - [ ] On a first guided start, confirm the dashboard opens and lists the bot's server and available text/voice channels. Existing active-event selections should be locked and preserved.
 - [ ] In a separate fresh event, select signup and match rooms, check readiness, and confirm Save and Start creates the panels once. Later healthy startup should open the dashboard directly.
 - [ ] When a required permission is genuinely missing, confirm the selected signup channel shows the affected room and repair guide. Rechecking should update the same message without repeated pings. Do not revoke permissions from an active match just to run this check.
-- [ ] Dashboard artwork upload/preview/reset is queued; the three supplied per-game GIF defaults have been copied, but runtime game selection is not implemented yet.
+- [x] Dashboard artwork upload/preview/reset and active-game selection are implemented. The three supplied defaults preview correctly; actual GIF delivery/reset and unchanged-image retention passed. Continue the client-format and animation checks below.
 
 The existing signup bot can remain usable in private mode meanwhile. Do not expect automatic placement or public room access until the feature is enabled. Turning the setting off later does not restore old room permissions; a one-time local overwrite backup is retained for recovery.
 

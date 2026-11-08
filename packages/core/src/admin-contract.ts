@@ -18,10 +18,15 @@ export type Capability = typeof CAPABILITIES[number];
 export interface PrincipalDto { kind: 'local'; id: 'local-admin'; label: string }
 export interface SessionDto {
   principal: PrincipalDto; capabilities: Capability[];
-  expiresAtMs: number; idleExpiresAtMs: number;
+  /** Null only for guided sessions that last until logout, eviction or process stop. */
+  expiresAtMs: number | null; idleExpiresAtMs: number | null;
   mode: 'discord' | 'demo'; commandsEnabled: boolean;
+  /** Guided local runtime only; valid until logout, eviction or process stop. */
+  persistent?: true;
   /** Guided first-start mode; setup actions are not match-command capabilities. */
   setup?: true;
+  /** Authenticated game artwork settings are mounted in this runtime. */
+  artwork?: true;
 }
 export interface SessionGrantDto { token: string; session: SessionDto }   // bearer token; kept in sessionStorage
 

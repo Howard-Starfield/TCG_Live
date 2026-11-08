@@ -29,6 +29,34 @@ export interface DialogProps {
 
 const WIDTH = { sm: 'max-w-[400px]', md: 'max-w-[480px]', lg: 'max-w-[640px]' } as const;
 
+type OverflowSnapshot = { value: string; priority: string };
+const scrollLocks = new WeakMap<Document, { count: number; html: OverflowSnapshot; body: OverflowSnapshot }>();
+
+function lockPageScroll(document: Document): () => void {
+  const html = document.documentElement.style;
+  const body = document.body.style;
+  let lock = scrollLocks.get(document);
+  if (!lock) {
+    lock = { count: 0,
+      html: { value: html.getPropertyValue('overflow'), priority: html.getPropertyPriority('overflow') },
+      body: { value: body.getPropertyValue('overflow'), priority: body.getPropertyPriority('overflow') } };
+    scrollLocks.set(document, lock);
+    html.setProperty('overflow', 'hidden');
+    body.setProperty('overflow', 'hidden');
+  }
+  lock.count += 1;
+  return () => {
+    if (--lock.count > 0) return;
+    const restore = (style: CSSStyleDeclaration, snapshot: OverflowSnapshot) => {
+      if (snapshot.value) style.setProperty('overflow', snapshot.value, snapshot.priority);
+      else style.removeProperty('overflow');
+    };
+    restore(html, lock.html);
+    restore(body, lock.body);
+    scrollLocks.delete(document);
+  };
+}
+
 /**
  * Modal dialog: traps Tab focus inside, closes on Escape and backdrop click, makes the rest of the page
  * inert, and returns focus to the element that opened it.
@@ -52,6 +80,7 @@ export function Dialog({ open, onClose, title, description, children, footer, in
     if (!open || !container || !layerRef.current) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const inerted = makeOthersInert(layerRef.current);
+    const unlockScroll = lockPageScroll(document);
     const panel = panelRef.current;
     if (panel) {
       const target = initialFocus.current?.current ?? focusableWithin(panel).find(el => !el.dataset.dialogClose) ?? panel;
@@ -59,6 +88,7 @@ export function Dialog({ open, onClose, title, description, children, footer, in
     }
     return () => {
       inerted.forEach(el => el.removeAttribute('inert'));
+      unlockScroll();
       if (opener?.isConnected) opener.focus();
     };
   }, [open, container]);

@@ -2,7 +2,7 @@ import type { ServerResponse } from 'node:http';
 import type { ErrorCode, ErrorDto } from '@tcg-live/core';
 import { AdminNotFoundError, AdminUnavailableError } from '../runtime-types.js';
 
-export const CONTENT_SECURITY_POLICY = "default-src 'self'; img-src 'self' data: https://cdn.discordapp.com; " +
+export const CONTENT_SECURITY_POLICY = "default-src 'self'; img-src 'self' data: blob: https://cdn.discordapp.com; " +
   "style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 export const SECURITY_HEADERS: Readonly<Record<string, string>> = {

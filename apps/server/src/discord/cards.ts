@@ -1,10 +1,10 @@
 import { RuleError, type EventState, type MatchId, type MatchState, type Player } from '../rehearsal/domain.js';
 import type { CardSlot } from './session.js';
-import { visualThumbnail, type VisualState } from './visuals.js';
+import { visualBanner, visualThumbnail, type VisualState } from './visuals.js';
 
 export interface CardPayload {
   embeds: Array<{ title: string; description: string; color?: number;
-    fields?: Array<{ name: string; value: string; inline?: boolean }>; thumbnail?: { url: string } }>;
+    fields?: Array<{ name: string; value: string; inline?: boolean }>; thumbnail?: { url: string }; image?: { url: string } }>;
   components: Array<{ type: 1; components: Array<{ type: 2; style: number; label: string; custom_id: string; disabled?: boolean }> }>;
   allowedMentions: { parse: [] };
 }
@@ -135,7 +135,8 @@ export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
         (assigned ? `Assigned: ${(['A', 'B', 'C', 'D'] as const).map(player =>
           `${player} <@${signup.assignment![player]}>`).join(', ')}\nChecked in: ${state.checkins.map(player => `<@${players?.[player] ?? signup.assignment?.[player]}>`).join(', ') || 'none'}\n${state.published ? 'Round published' : 'Check in to publish the round'}` :
           'Join or Withdraw before the admin closes signup.'), color: 0xf59e0b,
-      thumbnail: visualThumbnail(!assigned ? 'signup' : state.published ? 'notice' : 'checkin') }],
+      ...(visualBanner() ? { image: visualBanner()! } :
+        { thumbnail: visualThumbnail(!assigned ? 'signup' : state.published ? 'notice' : 'checkin') }) }],
       components: state.published ? [] : assigned ? [row([{ label: 'Check in', action: 'checkin' }], state.id, slot)] :
         [row([{ label: 'Join', action: 'signupJoin' }, { label: 'Withdraw', action: 'signupWithdraw' }], state.id, slot)],
       allowedMentions: { parse: [] } };
@@ -145,7 +146,8 @@ export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
       title: 'Practice check-in',
       description: `Four-player private rehearsal · ${state.checkins.length}/4 checked in\nChecked in: ${state.checkins.map(player => players?.[player] ? `<@${players[player]}>` : player).join(', ') || 'none'}\n${state.published ? 'Round published' : 'Setup has no deadline'}`,
       color: 0xf59e0b,
-      thumbnail: visualThumbnail(state.published ? 'notice' : 'checkin')
+      ...(visualBanner() ? { image: visualBanner()! } :
+        { thumbnail: visualThumbnail(state.published ? 'notice' : 'checkin') })
     }],
     components: state.published ? [] : [row([{ label: 'Check in', action: 'checkin' }], state.id, slot)],
     allowedMentions: { parse: [] }

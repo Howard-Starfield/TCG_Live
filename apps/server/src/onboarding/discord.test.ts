@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ChannelType, Collection, PermissionFlagsBits, type Client } from 'discord.js';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ArtworkStore } from '../artwork/store.js';
+import { setVisualArtworkStore } from '../discord/visuals.js';
 import { discordSetupDiscovery } from './discord.js';
 
 const guildId = '111111111111111111';
@@ -89,4 +95,32 @@ test('rich guide retains only matching owned embed upload and replaces a foreign
   const replaced = f.edits[1] as { files: Array<{ name: string }>; attachments: unknown[] };
   assert.deepEqual(replaced.attachments, []);
   assert.deepEqual(replaced.files.map(file => file.name), ['tcg-notice-v1.gif']);
+});
+
+test('rich guide sends and retains the selected game thumbnail', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'tcg-guide-artwork-'));
+  assert.equal(path.dirname(directory), tmpdir());
+  try {
+    const store = await ArtworkStore.open(directory);
+    const gif = await readFile(fileURLToPath(new URL('../../assets/games/pokemon/gifs/tournament.gif', import.meta.url)));
+    await store.upload('pokemon', 'thumbnail', gif, 'image/gif');
+    await store.selectGame('pokemon');
+    setVisualArtworkStore(store);
+    const f = fixture([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles]);
+    const discovery = discordSetupDiscovery(f.client);
+    await discovery.guide(textId, adminId, 'Setup ready.', null, false);
+    const sent = f.sends[0] as { files: Array<{ name: string }>; embeds: Array<{ thumbnail: { url: string } }> };
+    const name = store.resolveActive('thumbnail')!.filename;
+    assert.deepEqual(sent.files.map(file => file.name), [name]);
+    assert.equal(sent.embeds[0]?.thumbnail.url, `attachment://${name}`);
+    f.setThumbnail(`https://cdn.discordapp.com/attachments/${textId}/${fileId}/${name}?signature=private`);
+    await discovery.guide(textId, adminId, 'Setup ready.', fileId, false);
+    const retained = f.edits[0] as { files?: unknown; attachments?: unknown };
+    assert.equal(retained.files, undefined);
+    assert.equal(retained.attachments, undefined);
+  } finally {
+    setVisualArtworkStore(null);
+    await rm(directory, { recursive: true, force: true });
+  }
 });
