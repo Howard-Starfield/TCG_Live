@@ -2,7 +2,13 @@
 
 This repository contains the local foundation for TCG Live: a loopback health server, a four-player database rehearsal, and an optional private Discord adapter. Default `dev` startup runs only the health server on `127.0.0.1`.
 
-## Requirements
+## Windows one-click startup
+
+On x64 Windows 10/11, extract the project into a writable folder and double-click **Start TCG Live.bat**. First launch downloads checksum-pinned private Node/npm and PostgreSQL when needed, installs application dependencies, creates its local database and applies the supported schema updates. Later launches reuse the installation and start the database if stopped. Internet is needed for missing downloads; no separate PostgreSQL service or global PATH changes are required. If PostgreSQL reports a missing Microsoft runtime, startup downloads the pinned, Microsoft-signed Visual C++ installer and Windows may request administrator approval. A denied prompt or required reboot is reported instead of bypassed.
+
+The bot token and Discord permissions still belong to the organizer: put the token in the ignored `.env` settings file, invite the bot to your server, then use dashboard onboarding to select channels. The first launch creates `.env` from the blank example only if it does not exist. Existing settings are preserved. This is a source-folder bootstrap, not a signed Setup.exe installer; clean Windows VM/UAC verification remains on the release test list.
+
+## Developer requirements
 
 - Node.js 24.15.0 or newer within 24.x and npm 11.9.0 (`.nvmrc` and `package.json` record the runtime).
 - PostgreSQL is optional for disconnected startup. A configured local database is needed for a ready response.
@@ -39,7 +45,7 @@ After installing dependencies and preparing the local rehearsal database, double
 
 Guided dashboard sessions do not expire from idle time or elapsed hours. Sign out, session eviction and stopping the process still end access. Keep the bot's terminal running and press Ctrl+C for a clean stop. No Windows service is installed. Ignored `data/guided-instance.json` contains local instance credentials; do not share it. A stale dead owner's record is recovered safely; an unknown occupied port is refused rather than starting another bot.
 
-Set `DISCORD_BOT_TOKEN` (or `TCG_DISCORD_TOKEN`) and `DATABASE_URL` privately in `.env`. Run `db:setup`, `db:discord-setup` and `db:directory-setup` explicitly with that database configured before starting a new event. Guided startup does not install PostgreSQL or rewrite credentials. Missing prerequisites appear in setup. The older `dev` and direct Discord commands retain their existing environment behavior.
+Set `DISCORD_BOT_TOKEN` (or `TCG_DISCORD_TOKEN`) privately in `.env`. Leave `DATABASE_URL` unset for the app-managed database. An explicit URL is managed only when it exactly matches this checkout's saved managed or legacy local credentials; unrelated explicit URLs remain manually configured, including their schema setup commands. Generated credentials stay in ignored `data/local-database.json`; existing legacy credentials and data are preserved. PostgreSQL binds to loopback only and may remain running after the dashboard closes; the next launch verifies and reuses it. Do not delete `data/postgres` or credential files to troubleshoot a startup error. The older `dev` and direct Discord commands retain their existing environment behavior.
 
 On first use, onboarding lists the bot's servers and available channels, asks for the separate organizer, signup text channel and two match voice rooms, and checks effective permissions. Give the bot View Channel and refresh if a channel is missing. New events use dedicated non-AFK rooms named with the `TCG Match ` prefix. Public rooms also require Manage Permissions, Manage Channels and Move Members. The signup channel receives an owned setup-status message; missing permissions include a repair guide. Uncertain delivery is shown for manual inspection rather than automatically sending duplicates.
 

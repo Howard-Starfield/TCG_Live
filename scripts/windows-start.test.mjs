@@ -4,8 +4,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { findNode, findNpmCli, startWindows } from './windows-start.mjs';
 
-test('bootstrap chooses a supported cached Node over an older PATH runtime', () => {
-  const env = { USERPROFILE: 'C:\\Users\\example', Path: 'C:\\old', TCG_NODE_EXE: 'C:\\selected\\node.exe' };
+test('bootstrap chooses a supported cached Node but honors an explicit runtime strictly', () => {
+  const env = { USERPROFILE: 'C:\\Users\\example', Path: 'C:\\old' };
   const result = findNode(env, {
     exists: file => !file.includes('node_modules') && (file.endsWith('node.exe') || file.endsWith('codex-runtimes')),
     list: () => [{ name: 'release-a', isDirectory: () => true }],
@@ -13,6 +13,12 @@ test('bootstrap chooses a supported cached Node over an older PATH runtime', () 
       executable.includes('selected') ? '24.15.0' : '24.14.0' })
   });
   assert.match(result, /release-a/);
+  assert.equal(findNode({ ...env, TCG_NODE_EXE: 'C:\\selected\\node.exe' }, {
+    exists: () => true, list: () => [], probe: executable => ({ status: 0,
+      stdout: executable.includes('selected') ? '24.15.0' : '24.22.1' })
+  }), path.resolve('C:\\selected\\node.exe'));
+  assert.throws(() => findNode({ ...env, TCG_NODE_EXE: 'C:\\bad\\node.exe' },
+    { exists: () => true, list: () => [], probe: () => ({ status: 0, stdout: '24.14.0' }) }), /TCG_NODE_EXE/);
   assert.throws(() => findNode({ USERPROFILE: '', Path: '' },
     { exists: () => true, probe: () => ({ status: 0, stdout: '24.14.0' }) }), /24\.15\.0/);
 });

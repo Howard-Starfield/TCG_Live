@@ -6,6 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureDependencies, ensureLocalSettings } from './dependencies.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const INSTANCE = path.join(ROOT, 'data', 'guided-instance.json');
@@ -192,27 +193,28 @@ export async function runOwnedLaunch(claim, { build, start, stopped, isStopping 
   }
 }
 
-async function checkDatabase() {
-  if (!process.env.DATABASE_URL) {
-    process.stdout.write('Database not configured; the setup wizard will explain how to connect it.\n');
-    return;
-  }
+export async function prepareApplication({ root, cli, run = runNpm, database, migrate,
+  dependencies = ensureDependencies, isStopping = () => false }) {
+  await dependencies(root, () => run(cli, ['ci', '--no-audit', '--no-fund']));
+  if (isStopping()) return;
+  const local = await database();
+  if (isStopping()) return;
+  await run(cli, ['run', 'build:all']);
+  if (isStopping()) return;
+  if (local.managed) await migrate();
+}
+
+async function prepareSchema() {
+  process.stdout.write('Checking local database schema and application updates...\n');
   try {
-    const url = new URL(process.env.DATABASE_URL);
-    if (!['postgres:', 'postgresql:'].includes(url.protocol) ||
-        !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('invalid');
-    const host = url.hostname === 'localhost' ? '127.0.0.1' : url.hostname === '[::1]' ? '::1' : url.hostname;
-    const port = Number(url.port || '5432');
-    const reachable = await new Promise(resolve => {
-      const socket = net.connect({ host, port });
-      let done = false;
-      const finish = value => { if (done) return; done = true; socket.destroy(); resolve(value); };
-      socket.once('connect', () => finish(true));
-      socket.once('error', () => finish(false));
-      socket.setTimeout(1_000, () => finish(false));
-    });
-    if (!reachable) process.stdout.write('Database is not reachable; the setup wizard will show guidance.\n');
-  } catch { process.stdout.write('Database settings need review; the setup wizard will show guidance.\n'); }
+    const store = await import('../apps/server/dist/rehearsal/store.js');
+    await store.setupRehearsalSchema();
+    await store.setupPrivateDiscordSchema();
+    const { setupTournamentDirectory } = await import('../apps/server/dist/tournaments/directory.js');
+    await setupTournamentDirectory();
+  } catch {
+    throw new Error('Local database setup could not complete. Existing data was kept; check free disk space and the local PostgreSQL log before retrying. No database reset was attempted.');
+  }
 }
 
 function npmCli() {
@@ -226,6 +228,7 @@ async function main() {
   const { noBrowser } = parseLauncherArgs(process.argv.slice(2));
   if (!supportedNode(process.versions.node)) throw new Error('Node.js 24.15.0 or newer within 24.x is required.');
   process.chdir(ROOT);
+  await ensureLocalSettings(ROOT);
   if (existsSync(path.join(ROOT, '.env'))) process.loadEnvFile(path.join(ROOT, '.env'));
   const rawPort = process.env.PORT || '3000';
   if (!/^[1-9]\d{0,4}$/.test(rawPort) || Number(rawPort) > 65535) throw new Error('PORT must be 1–65535.');
@@ -245,8 +248,12 @@ async function main() {
   await runOwnedLaunch(claim, {
     build: async () => {
       const cli = npmCli();
-      await checkDatabase();
-      await runNpm(cli, ['run', 'build:all']);
+      await prepareApplication({ root: ROOT, cli, isStopping: () => stopping,
+        database: async () => {
+          // pg is loaded only after npm ci on a fresh installation.
+          const { ensureLocalDatabase } = await import('./local-database.mjs');
+          return ensureLocalDatabase({ root: ROOT, env: process.env });
+        }, migrate: prepareSchema });
     },
     start: async () => {
       const { runGuidedStart } = await import('../apps/server/dist/onboarding/entry.js');

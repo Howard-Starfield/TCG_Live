@@ -8,6 +8,8 @@ data/discord-room-overwrites/
 data/discord-setup.json
 data/artwork/
 data/guided-instance.json
+data/local-database.json
+data/.managed-record-*.tmp
 backups/
 *.log
 *.dump

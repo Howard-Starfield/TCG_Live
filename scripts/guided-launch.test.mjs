@@ -4,7 +4,25 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { claimOrReuse, ownedRecord, parseLauncherArgs, probeOwned, runOwnedLaunch, supportedNode } from './guided-launch.mjs';
+import { claimOrReuse, ownedRecord, parseLauncherArgs, probeOwned, runOwnedLaunch, supportedNode, prepareApplication } from './guided-launch.mjs';
+
+test('application preparation installs before database imports, builds before migrations, and leaves external schemas alone', async () => {
+  const calls = [];
+  let managed = true;
+  const options = { root: '/app', cli: '/npm-cli',
+    dependencies: async (_root, install) => { calls.push('dependencies'); await install(); },
+    run: async (_cli, args) => { calls.push(args.join(' ')); },
+    database: async () => { calls.push('database'); return { managed }; },
+    migrate: async () => { calls.push('migrate'); } };
+  await prepareApplication(options);
+  assert.deepEqual(calls, ['dependencies', 'ci --no-audit --no-fund', 'database', 'run build:all', 'migrate']);
+  managed = false; calls.length = 0;
+  await prepareApplication(options);
+  assert.equal(calls.includes('migrate'), false);
+  calls.length = 0;
+  await prepareApplication({ ...options, isStopping: () => true });
+  assert.deepEqual(calls, ['dependencies', 'ci --no-audit --no-fund']);
+});
 
 const withFiles = async run => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'tcg-launch-test-'));

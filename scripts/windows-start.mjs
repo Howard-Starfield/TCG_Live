@@ -24,7 +24,8 @@ function pathEntries(env) {
 export function findNode(env = process.env, { exists = existsSync, list = readdirSync,
   probe = executable => spawnSync(executable, ['-p', 'process.versions.node'],
     { encoding: 'utf8', windowsHide: true, timeout: 5_000 }) } = {}) {
-  const candidates = [env.TCG_NODE_EXE, process.execPath,
+  const privateNode = path.join(ROOT, '.local', 'runtime', 'node-v24.22.2-win-x64', 'node.exe');
+  const candidates = [privateNode, process.execPath,
     ...pathEntries(env).map(folder => path.join(folder, 'node.exe'))];
   const cache = path.join(env.USERPROFILE || '', '.cache', 'codex-runtimes');
   if (env.USERPROFILE && exists(cache)) {
@@ -34,15 +35,24 @@ export function findNode(env = process.env, { exists = existsSync, list = readdi
       }
     } catch { /* Optional runtime cache is unavailable. */ }
   }
-  let selected = null;
-  for (const candidate of new Set(candidates.filter(Boolean).map(value => path.resolve(value)))) {
-    if (!exists(candidate)) continue;
+  const usable = candidate => {
+    if (!exists(candidate)) return null;
     try {
       const result = probe(candidate);
       const version = result.status === 0 ? versionParts(result.stdout || '') : null;
-      if (version?.[0] !== 24 || compareVersions(version, MIN_NODE) < 0) continue;
-      if (!selected || compareVersions(version, selected.version) > 0) selected = { executable: candidate, version };
-    } catch { /* Ignore an unusable candidate. */ }
+      return version?.[0] === 24 && compareVersions(version, MIN_NODE) >= 0 ? { executable: candidate, version } : null;
+    } catch { return null; }
+  };
+  if (env.TCG_NODE_EXE) {
+    const explicit = path.resolve(env.TCG_NODE_EXE);
+    const found = usable(explicit);
+    if (!found) throw new Error('TCG_NODE_EXE is set but is not a supported Node 24.15+ executable. Correct it or unset it.');
+    return found.executable;
+  }
+  let selected = null;
+  for (const candidate of new Set(candidates.filter(Boolean).map(value => path.resolve(value)))) {
+    const found = usable(candidate);
+    if (found && (!selected || compareVersions(found.version, selected.version) > 0)) selected = found;
   }
   if (!selected) throw new Error('Node.js 24.15.0 or newer within 24.x is required. Install it, or set TCG_NODE_EXE.');
   return selected.executable;
@@ -52,16 +62,24 @@ export function findNpmCli(nodeExe, env = process.env, { exists = existsSync,
   probe = (executable, cli) => spawnSync(executable, [cli, '--version'],
     { encoding: 'utf8', windowsHide: true, timeout: 5_000 }) } = {}) {
   const npmRelative = path.join('node_modules', 'npm', 'bin', 'npm-cli.js');
-  const candidates = [env.TCG_NPM_CLI, env.npm_execpath,
+  const candidates = [env.npm_execpath,
     path.join(path.dirname(nodeExe), npmRelative),
     ...pathEntries(env).map(folder => path.join(folder, npmRelative))];
-  for (const candidate of new Set(candidates.filter(Boolean).map(value => path.resolve(value)))) {
-    if (!exists(candidate)) continue;
+  const usable = candidate => {
+    if (!exists(candidate)) return false;
     try {
       const result = probe(nodeExe, candidate);
       const version = result.status === 0 ? versionParts(result.stdout || '') : null;
-      if (version?.[0] === 11 && compareVersions(version, [11, 9, 0]) >= 0) return candidate;
-    } catch { /* Keep searching installed npm locations. */ }
+      return version?.[0] === 11 && compareVersions(version, [11, 9, 0]) >= 0;
+    } catch { return false; }
+  };
+  if (env.TCG_NPM_CLI) {
+    const explicit = path.resolve(env.TCG_NPM_CLI);
+    if (!usable(explicit)) throw new Error('TCG_NPM_CLI is set but is not npm 11.9+. Correct it or unset it.');
+    return explicit;
+  }
+  for (const candidate of new Set(candidates.filter(Boolean).map(value => path.resolve(value)))) {
+    if (usable(candidate)) return candidate;
   }
   throw new Error('npm 11.9.x is required. Install it alongside Node.js, or set TCG_NPM_CLI.');
 }
@@ -91,7 +109,14 @@ export async function startWindows(args = process.argv.slice(2), env = process.e
   });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  void startWindows().then(code => { process.exitCode = code; })
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv.length === 3 && process.argv[2] === '--probe-runtime') {
+    try { findNpmCli(findNode()); process.exitCode = 0; }
+    catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : 'Node/npm runtime is unavailable.'}\n`);
+      process.exitCode = 42;
+    }
+  } else void startWindows().then(code => { process.exitCode = code; })
     .catch(error => { process.stderr.write(`${error instanceof Error ? error.message : 'Windows launch failed.'}\n`);
       process.exitCode = 1; });
+}
