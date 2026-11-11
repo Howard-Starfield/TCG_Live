@@ -15,13 +15,14 @@ export function TopBar() {
 
   const crumbs: BreadcrumbItem[] = [{
     id: 'root', label: 'TCG Live',
-    ...((viewed.retired || shell.draft) && shell.activeEventId ? { onSelect: shell.followActive } : {})
+    ...(!shell.home ? { onSelect: shell.showHome } : {})
   }];
-  if (shell.draft) crumbs.push({ id: 'draft-name', label: shell.draft.name }, { id: 'draft-stage', label: 'Draft' });
+  if (shell.home) crumbs.push({ id: 'home', label: 'Home' });
+  else if (shell.draft) crumbs.push({ id: 'draft-name', label: shell.draft.name }, { id: 'draft-stage', label: 'Draft' });
   else if (source) crumbs.push({ id: 'event', label: named?.name || eventLabel(source) });
-  if (!shell.draft && viewed.snapshot) crumbs.push({ id: 'stage', label: viewed.retired ? 'History' : STAGE_LABEL[viewed.snapshot.stage] });
-  else if (!shell.draft && viewed.waitingForDatabase) crumbs.push({ id: 'none', label: 'Waiting for the database' });
-  else if (!shell.draft && viewed.status === 'none') crumbs.push({ id: 'none', label: 'No active event' });
+  if (!shell.home && !shell.draft && viewed.snapshot) crumbs.push({ id: 'stage', label: viewed.retired ? 'History' : STAGE_LABEL[viewed.snapshot.stage] });
+  else if (!shell.home && !shell.draft && viewed.waitingForDatabase) crumbs.push({ id: 'none', label: 'Waiting for the database' });
+  else if (!shell.home && !shell.draft && viewed.status === 'none') crumbs.push({ id: 'none', label: 'No active event' });
 
   const discord = discordPill(shell.status);
   const database = databasePill(shell.status);
@@ -29,7 +30,7 @@ export function TopBar() {
   return (
     <header className="shell-topbar">
       <Breadcrumb items={crumbs} className="shell-crumbs" />
-      {!shell.draft && <><span aria-hidden className="shell-vsep" />
+      {!shell.home && !shell.draft && <><span aria-hidden className="shell-vsep" />
       <div role="group" aria-label="Previews" className="shell-toggles">
         <span data-toggle="live" className="contents">
           <ToggleTab pressed={dock.visible.live} onPressedChange={() => dock.toggle('live')}

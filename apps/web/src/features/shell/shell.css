@@ -87,6 +87,14 @@
   padding: 0 2px;
 }
 .shell-sidebar-tools.is-collapsed { justify-content: center; }
+.shell-sidebar-brand { display: flex; flex: 1; min-width: 0; align-items: center; gap: 9px; text-align: left; border-radius: 7px; }
+.shell-sidebar-brand:focus-visible { outline: 2px solid var(--color-accent-fill); outline-offset: 2px; }
+.shell-sidebar[data-collapsed] {
+  --rail-scroll-offset: calc(var(--shell-gap) - 4px);
+  width: calc(100% + var(--rail-scroll-offset));
+}
+.shell-sidebar[data-collapsed] > :not(.shell-sidebar-scroll) { margin-inline-end: var(--rail-scroll-offset); }
+.shell-sidebar[data-collapsed] .shell-sidebar-brand { flex: none; width: 32px; height: 32px; justify-content: center; }
 .shell-sidebar[data-collapsed] .shell-sidebar-top {
   height: auto;
   flex-direction: column;
@@ -122,6 +130,28 @@
 .shell-sidebar-scroll::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: var(--color-fg-subtle);
+}
+.shell-sidebar[data-collapsed] .shell-sidebar-scroll {
+  position: relative;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.shell-sidebar[data-collapsed] .shell-sidebar-scroll:is(:hover, :focus-within) {
+  scrollbar-color: var(--color-fg-subtle) transparent;
+}
+@supports selector(::-webkit-scrollbar) {
+  .shell-sidebar[data-collapsed] .shell-sidebar-scroll,
+  .shell-sidebar[data-collapsed] .shell-sidebar-scroll:is(:hover, :focus-within) {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+  .shell-sidebar[data-collapsed] .shell-sidebar-scroll::-webkit-scrollbar { width: var(--rail-scroll-offset); }
+  .shell-sidebar[data-collapsed] .shell-sidebar-scroll::-webkit-scrollbar-button { display: none; }
+  .shell-sidebar[data-collapsed] .shell-sidebar-scroll::-webkit-scrollbar-thumb { background: transparent; }
+  .shell-sidebar[data-collapsed] .shell-sidebar-scroll:is(:hover, :focus-within)::-webkit-scrollbar-thumb {
+    background: var(--color-fg-subtle);
+  }
 }
 
 .shell-sidebar-section-toggle {

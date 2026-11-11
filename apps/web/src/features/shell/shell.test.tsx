@@ -169,6 +169,29 @@ describe('preview dock layout', () => {
   });
 });
 
+describe('home', () => {
+  it('shows live player counts and opens the match behind a judge or confirmation alert', async () => {
+    const user = userEvent.setup();
+    renderConsole({
+      snapshot: { ...liveDispute, matches: liveDispute.matches.map(match => match.id === 'M1'
+        ? { ...match, proposal: { revision: 1, winner: 'A', reporter: 'A', decision: 'open' } }
+        : match) },
+      setup: server => {
+        server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord' }));
+      }
+    });
+    await screen.findByRole('heading', { name: 'Home' });
+    const chart = await screen.findByRole('list', { name: 'Player counts' });
+    expect(within(chart).getAllByRole('listitem').map(row => row.textContent)).toEqual(['Joined4', 'Assigned4', 'Checked in4']);
+    const actions = screen.getByRole('region', { name: 'Action needed' });
+    expect(within(actions).getByText('Awaiting result confirmation')).toBeInTheDocument();
+    expect(within(actions).getByRole('button', { name: 'Match M1' })).toBeInTheDocument();
+    await user.click(within(actions).getByRole('button', { name: 'Match M2' }));
+    await ready();
+    expect(screen.getByRole('button', { name: 'Match M2', pressed: true })).toBeInTheDocument();
+  });
+});
+
 describe('sidebar', () => {
   it('shows a safe directory error and caps search to the API limit', async () => {
     renderConsole({ setup: server => {
@@ -217,8 +240,8 @@ describe('sidebar', () => {
         return json(201, draft);
       });
     } });
-    await ready();
-    expect(await screen.findByRole('button', { name: /Live Cup/ })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Home' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Live Cup' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Create signup tournament' }));
     const dialog = screen.getByRole('dialog', { name: 'Create signup tournament' });
     expect(within(dialog).getByRole('textbox', { name: 'Tournament name' })).toHaveValue('Pokémon Tournament');

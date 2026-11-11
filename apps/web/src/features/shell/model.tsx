@@ -40,6 +40,9 @@ export interface ShellModel {
   status: RuntimeStatusDto | undefined;
   events: EventSummaryDto[];
   directory: TournamentDirectoryDto | undefined;
+  directoryState: 'loading' | 'error' | 'ready';
+  home: boolean;
+  showHome(): void;
   draft: TournamentDirectoryEntryDto | null;
   selectDraft(entry: TournamentDirectoryEntryDto): void;
   eventsState: 'loading' | 'error' | 'ready';
@@ -117,6 +120,7 @@ export function useShellModel(session: SessionDto): ShellModel {
   const activeEventId = useActiveEventId();
   const events = eventsQuery.data ?? NO_EVENTS;
   const [selected, setSelected] = useState<string | null>(null);
+  const [home, setHome] = useState(session.mode === 'discord');
   const [draft, setDraft] = useState<TournamentDirectoryEntryDto | null>(null);
   const [liveMatch, setLiveMatch] = useState<MatchId | null>(null);
 
@@ -165,24 +169,28 @@ export function useShellModel(session: SessionDto): ShellModel {
   const eventsState = eventsQuery.data ? 'ready' : eventsQuery.error ? 'error' : 'loading';
   const statusData = status.data;
   const canvasView = preferences.canvasView;
+  const directoryState = !session.tournaments || directoryQuery.data ? 'ready' : directoryQuery.isError ? 'error' : 'loading';
   return useMemo<ShellModel>(() => ({
     session,
     status: statusData,
     events,
     directory: directoryQuery.data,
+    directoryState,
+    home,
+    showHome: () => { setDraft(null); setSelected(null); setHome(true); dock.dismissSheet(); },
     draft,
-    selectDraft: entry => { setSelected(null); setDraft(entry); },
+    selectDraft: entry => { setSelected(null); setDraft(entry); setHome(false); },
     eventsState,
     refetchEvents: () => { void refetchEvents(); },
     activeEventId,
     viewed,
-    selectEvent: eventId => { setDraft(null); setSelected(eventId === activeEventId ? null : eventId); },
-    followActive: () => { setDraft(null); setSelected(null); },
+    selectEvent: eventId => { setDraft(null); setSelected(eventId === activeEventId ? null : eventId); setHome(false); },
+    followActive: () => { setDraft(null); setSelected(null); setHome(false); },
     canvasView,
     liveMatch,
     setCanvas,
     openMatch,
     dock
-  }), [session, statusData, events, directoryQuery.data, draft, eventsState, refetchEvents, activeEventId, viewed,
+  }), [session, statusData, events, directoryQuery.data, directoryState, home, draft, eventsState, refetchEvents, activeEventId, viewed,
     canvasView, liveMatch, setCanvas, openMatch, dock]);
 }

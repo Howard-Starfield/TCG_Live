@@ -50,24 +50,27 @@ export function Sidebar() {
     label: event.name,
     meta: event.status === 'draft' ? `Draft · Created ${shortDate(event.createdAtMs)}` : `Created ${shortDate(event.createdAtMs)}`,
     live: event.status === 'active',
-    active: event.status === 'draft' ? shell.draft?.eventId === event.eventId : viewed.eventId === event.eventId
+    active: !shell.home && (event.status === 'draft' ? shell.draft?.eventId === event.eventId : viewed.eventId === event.eventId)
   }));
   const retiredItems: SidebarItem[] = retired.map(event => ({
     id: event.eventId,
     label: event.name,
     meta: event.retiredAtMs ? `Retired ${shortDate(event.retiredAtMs)}` : `Created ${shortDate(event.createdAtMs)}`,
     icon: <History />,
-    active: viewed.eventId === event.eventId
+    active: !shell.home && viewed.eventId === event.eventId
   }));
 
   return (
     <aside className="shell-sidebar" aria-label="Sidebar" data-collapsed={collapsed || undefined}>
       <div className="shell-sidebar-top">
-        <BrandMark />
-        {!collapsed && <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-fg">TCG Live</span>}
+        <button type="button" className="shell-sidebar-brand" aria-label="TCG Live home"
+          aria-current={shell.home ? 'page' : undefined} onClick={shell.showHome}>
+          <BrandMark />
+          {!collapsed && <span className="truncate text-[14px] font-semibold text-fg">TCG Live</span>}
+        </button>
         <Tooltip content={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} describe={false} placement={collapsed ? 'right' : 'bottom'}>
           <IconButton aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!collapsed}
-            size="sm" icon={collapsed ? <PanelLeftOpen aria-hidden /> : <PanelLeftClose aria-hidden />}
+            size={collapsed ? 'md' : 'sm'} icon={collapsed ? <PanelLeftOpen aria-hidden /> : <PanelLeftClose aria-hidden />}
             onClick={() => update({ sidebarCollapsed: !collapsed })} />
         </Tooltip>
       </div>
@@ -79,7 +82,7 @@ export function Sidebar() {
             maxLength={120} onChange={event => setQuery(event.target.value)} className="h-8 pl-8 text-xs" />
         </div>}
         {directoryEnabled && <Tooltip content="Create signup tournament" describe={false} placement="right">
-          <IconButton aria-label="Create signup tournament" size="sm" icon={<Plus aria-hidden />}
+          <IconButton aria-label="Create signup tournament" size={collapsed ? 'md' : 'sm'} icon={<Plus aria-hidden />}
             onClick={() => setCreateOpen(true)} />
         </Tooltip>}
       </div>
