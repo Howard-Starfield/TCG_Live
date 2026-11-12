@@ -6,7 +6,7 @@ import {
   SlashCommandBuilder, type Guild, type GuildMember, type Interaction, type TextChannel, type VoiceChannel
 } from 'discord.js';
 import { readAdminConfig, type AdminConfig } from '../admin/config.js';
-import { createDiscordAdmin, discordGateway, guildMembers, type DiscordAdmin } from '../admin/runtime/discord-wiring.js';
+import { createDiscordAdmin, discordGateway, guildMembers, type DiscordAdmin, type DiscordAdminOptions } from '../admin/runtime/discord-wiring.js';
 import { readConfig } from '../config.js';
 import { RuleError, type MatchId, type Player } from '../rehearsal/domain.js';
 import { startServer } from '../server.js';
@@ -67,14 +67,15 @@ export async function registerPrivateCommand(config: PrivateDiscordConfig): Prom
   else await rest.post(route, { body: commandDefinition() });
 }
 
-export function discordTransport(channel: TextChannel, matches?: Record<MatchId, VoiceChannel>, botId?: string): CardTransport {
+export function discordTransport(channel: TextChannel | (() => TextChannel), matches?: Record<MatchId, VoiceChannel>, botId?: string): CardTransport {
   const payload = (card: CardPayload) => ({ embeds: card.embeds, components: card.components,
     allowedMentions: card.allowedMentions });
   const cardFile = (card: CardPayload) => {
     const filename = filenameFromThumbnail(card.embeds[0]?.image ?? card.embeds[0]?.thumbnail);
     return filename ? visualFile(filename) : null;
   };
-  const destination = (slot: 'checkin' | MatchId = 'checkin') => slot === 'checkin' ? channel : matches?.[slot] ?? channel;
+  const signup = () => typeof channel === 'function' ? channel() : channel;
+  const destination = (slot: 'checkin' | MatchId = 'checkin') => slot === 'checkin' ? signup() : matches?.[slot] ?? signup();
   return {
     async send(card, slot) {
       const file = cardFile(card);
@@ -102,6 +103,7 @@ export function discordTransport(channel: TextChannel, matches?: Record<MatchId,
       return message.id;
     },
     async pin(id) {
+      const channel = signup();
       const before = await channel.messages.fetch({ limit: 10 });
       const message = await channel.messages.fetch(id);
       await message.pin();
@@ -130,7 +132,7 @@ export function discordTransport(channel: TextChannel, matches?: Record<MatchId,
 }
 
 export function discordRoomTransport(guild: Guild, rooms: Record<MatchId, VoiceChannel>, bot: GuildMember,
-  control: TextChannel, adminId: string): RoomTransport {
+  control: TextChannel | (() => TextChannel), adminId: string): RoomTransport {
   const current = (room: Room): RoomOverwrite[] => [...rooms[room].permissionOverwrites.cache.values()].map(overwrite => ({
     id: overwrite.id, type: overwrite.type, allow: overwrite.allow.bitfield.toString(),
     deny: overwrite.deny.bitfield.toString()
@@ -162,7 +164,7 @@ export function discordRoomTransport(guild: Guild, rooms: Record<MatchId, VoiceC
     },
     async warnOrganizer(message) {
       const notice = visualThumbnail('notice');
-      await control.send({ content: `<@${adminId}>`, embeds: [{ description: message,
+      await (typeof control === 'function' ? control() : control).send({ content: `<@${adminId}>`, embeds: [{ description: message,
         color: 0xf59e0b, thumbnail: notice }],
         files: [visualFile(filenameFromThumbnail(notice)!)!],
         allowedMentions: { parse: [], users: [adminId] } });
@@ -323,8 +325,18 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       void shutdown();
     });
     ensureActive();
+    let listSignupChannels: DiscordAdminOptions['signupChannels'];
+    let prepareSignupChannel: DiscordAdminOptions['prepareSignupChannel'];
     admin = createDiscordAdmin({ adminConfig, port: healthConfig.port, runnerId, artwork,
       publicMatchRooms: !!config.publicMatchRooms, lease,
+      signupChannels: async () => {
+        if (!listSignupChannels || !client.isReady()) throw new RuleError('Discord is not ready.');
+        return listSignupChannels();
+      },
+      prepareSignupChannel: async id => {
+        if (!prepareSignupChannel || !client.isReady()) throw new RuleError('Discord is not ready.');
+        return prepareSignupChannel(id);
+      },
       ...(guided ? { persistentSessions: true, ...(guided.launcher ? { launcher: guided.launcher } : {}) } : {}) });
     health = await startServer(healthConfig, admin ? { admin: admin.handler } : {});
     admin?.announce();
@@ -336,6 +348,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     ensureActive();
     if (channel?.type !== ChannelType.GuildText || channel.guildId !== config.guildId)
       throw new RuleError('Configured private Discord channel is not a text channel.');
+    let signupChannel = channel;
     const guild = await client.guilds.fetch(config.guildId);
     admin?.attachClient(discordGateway(client), guildMembers(guild));
     const bot = await guild.members.fetchMe();
@@ -343,6 +356,14 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles];
     if (!channel.permissionsFor(bot)?.has(textPermissions))
       throw new RuleError('Private Discord control channel requires bot View Channel, Send Messages, Read Message History, Embed Links, and Attach Files permissions.');
+    const supportsSignup = (target: TextChannel) => target.permissionsFor(bot)?.has(
+      [...textPermissions, PermissionFlagsBits.PinMessages]) === true;
+    listSignupChannels = async () => {
+      const channels = await guild.channels.fetch();
+      return [...channels.values()].flatMap(target => target?.type === ChannelType.GuildText &&
+        (target.id === signupChannel.id || supportsSignup(target)) ? [{ id: target.id, name: target.name }] : [])
+        .sort((left, right) => left.name.localeCompare(right.name));
+    };
     let matches: Record<MatchId, VoiceChannel> | undefined;
     if (config.matchChannels) {
       const m1 = await client.channels.fetch(config.matchChannels.M1);
@@ -359,7 +380,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     }
     if (config.publicMatchRooms) {
       if (!matches) throw new RuleError('Public match rooms require both match channels.');
-      const roomTransport: RoomTransport = discordRoomTransport(guild, matches, bot, channel, config.adminId);
+      const roomTransport: RoomTransport = discordRoomTransport(guild, matches, bot, () => signupChannel, config.adminId);
       await roomTransport.assertPermissions('M1', 'policy');
       await roomTransport.assertPermissions('M2', 'policy');
       roomSync = new MatchRoomReconciler(config, bot.id, guild.afkChannelId, roomTransport,
@@ -368,7 +389,18 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       await roomSync.trigger();
     }
     ensureActive();
-    controller = new PrivateDiscordController(config, runnerId, discordTransport(channel, matches, client.user!.id),
+    const botId = client.user!.id;
+    prepareSignupChannel = async id => {
+      const target = await client.channels.fetch(id, { force: true }).catch(() => null);
+      if (target?.type !== ChannelType.GuildText || target.guildId !== config.guildId || !supportsSignup(target))
+        throw new RuleError('Choose a text channel in this server where the bot can send, read and pin messages, attach files and embed links.');
+      return () => {
+        const previous = discordTransport(signupChannel, matches, botId);
+        signupChannel = target;
+        return async (messageId, slot) => { await previous.remove?.(messageId, slot); };
+      };
+    };
+    controller = new PrivateDiscordController(config, runnerId, discordTransport(() => signupChannel, matches, botId),
       undefined, undefined, undefined, undefined, undefined, undefined, () => !stopping && !lease?.isLost(),
       undefined, undefined, explicit => roomSync?.trigger(explicit) ?? Promise.resolve());
     admin?.attachController(controller);

@@ -133,6 +133,7 @@ export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
   if (state.signup) {
     const signup = state.signup;
     const assigned = signup.status === 'assigned';
+    const banner = tournament?.bannerStyle === 'compact' ? null : visualBanner();
     return { embeds: [{ title: tournament?.name ?? 'Signup tournament',
       description: `Game: ${tournament?.game ? gameLabels[tournament.game] : 'Not set by organizer'}\n` +
         `Format: 4-player rehearsal · BO1 · camera play · ${state.durationMs / 60_000} min per match\n` +
@@ -140,7 +141,7 @@ export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
         `Signup: ${assigned ? 'closed' : 'open'} · ${signup.roster.length}/4 joined\n` +
         (assigned ? `Checked in: ${state.checkins.length}/4\n${state.published ? 'Round published' : 'Check in to publish the round'}` :
           'Join or Withdraw before the admin closes signup.'), color: 0xf59e0b,
-      ...(visualBanner() ? { image: visualBanner()! } :
+      ...(banner ? { image: banner } :
         { thumbnail: visualThumbnail(!assigned ? 'signup' : state.published ? 'notice' : 'checkin') }) }],
       components: state.published ? [row([{ label: 'View roster', action: 'signupRoster' }], state.id, slot)] :
         assigned ? [row([{ label: 'Check in', action: 'checkin' }, { label: 'View roster', action: 'signupRoster' }], state.id, slot)] :

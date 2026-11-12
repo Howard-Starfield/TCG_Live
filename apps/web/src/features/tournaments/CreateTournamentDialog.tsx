@@ -1,8 +1,11 @@
 import { ARTWORK_GAMES, DEFAULT_MATCH_MINUTES, MAX_MATCH_MINUTES, type ArtworkGame,
-  type OpenTournamentSignupRequest, type OpenTournamentSignupResult, type TournamentDirectoryEntryDto } from '@tcg-live/core';
+  type OpenTournamentSignupRequest, type OpenTournamentSignupResult, type SignupBannerStyle, type TournamentDirectoryEntryDto,
+  type TournamentSignupChannelDto } from '@tcg-live/core';
+import { useQuery } from '@tanstack/react-query';
+import { CircleHelp } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { adminKeys, useAdminData } from '../../data';
-import { Button, Dialog, Field, Input, Select, Textarea, useToast } from '../../ui';
+import { adminKeys, useAdminData, useEventSnapshot } from '../../data';
+import { Button, Dialog, Field, IconButton, Input, Select, Textarea, Tooltip, useToast } from '../../ui';
 import { useShell } from '../shell/model';
 import { tournamentDirectoryKey } from './directory';
 
@@ -22,6 +25,8 @@ export function CreateTournamentDialog({ open, defaultGame, onClose, onSaved, on
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [minutes, setMinutes] = useState(String(DEFAULT_MATCH_MINUTES));
+  const [bannerOverride, setBannerOverride] = useState<SignupBannerStyle>();
+  const [channelOverride, setChannelOverride] = useState<string>();
   const [confirm, setConfirm] = useState<OpenTournamentSignupRequest | null>(null);
   const [saved, setSaved] = useState<TournamentDirectoryEntryDto | null>(null);
   const [busy, setBusy] = useState(false);
@@ -29,6 +34,19 @@ export function CreateTournamentDialog({ open, defaultGame, onClose, onSaved, on
   const form = useRef<HTMLFormElement>(null);
   const draftId = useRef<string | null>(null);
   const unavailable = !shell.session.commandsEnabled;
+  const active = useEventSnapshot(open ? shell.activeEventId : null).data;
+  const destination = active?.status === 'active' ? active.discord : undefined;
+  const previous = shell.directory?.entries.filter(entry => entry.game === game && entry.status !== 'draft')
+    .sort((left, right) => (right.retiredAtMs ?? Number.MAX_SAFE_INTEGER) - (left.retiredAtMs ?? Number.MAX_SAFE_INTEGER))[0];
+  const bannerStyle = bannerOverride ?? previous?.bannerStyle ?? 'game';
+  const signupChannelId = channelOverride ?? previous?.signupChannelId ?? destination?.channelId ?? '';
+  const channels = useQuery({
+    queryKey: ['tournament-signup-channels', shell.activeEventId],
+    queryFn: ({ signal }) => api.request<TournamentSignupChannelDto[]>('GET', '/tournaments/signup-channels', { signal }),
+    enabled: open,
+    staleTime: 0,
+    retry: false
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -36,6 +54,8 @@ export function CreateTournamentDialog({ open, defaultGame, onClose, onSaved, on
     setName(`${gameLabel[defaultGame]} Tournament`);
     setDescription('');
     setMinutes(String(DEFAULT_MATCH_MINUTES));
+    setBannerOverride(undefined);
+    setChannelOverride(undefined);
     setConfirm(null);
     setSaved(null);
     setError(null);
@@ -49,7 +69,8 @@ export function CreateTournamentDialog({ open, defaultGame, onClose, onSaved, on
     draftId.current ??= crypto.randomUUID();
     try {
       const entry = saved ?? await api.createTournamentDraft({
-        draftId: draftId.current, name: name.trim() || undefined, game, description: description.trim(), matchMinutes: Number(minutes)
+        draftId: draftId.current, name: name.trim() || undefined, game, description: description.trim(),
+        matchMinutes: Number(minutes), bannerStyle, signupChannelId: signupChannelId || undefined
       });
       setSaved(entry);
       if (!activation) {
@@ -93,7 +114,7 @@ export function CreateTournamentDialog({ open, defaultGame, onClose, onSaved, on
     <form id="create-tournament-form" ref={form} className="space-y-5" onSubmit={submit}>
       {confirm ? <div className="rounded-lg border border-line bg-raised p-4 text-sm">
         <p className="font-semibold">Open signup for {name.trim() || `${gameLabel[game]} Tournament`}?</p>
-        <p className="mt-2 text-fg-muted">The active tournament moves to History and its Discord panels switch to the new signup.
+        <p className="mt-2 text-fg-muted">The active tournament moves to History. The new signup opens in the selected channel.
           Players must join the new tournament. Finish any published round before switching.</p>
       </div> : <>
         <div className="grid gap-4 sm:grid-cols-2">
@@ -101,12 +122,14 @@ export function CreateTournamentDialog({ open, defaultGame, onClose, onSaved, on
             <Input value={name} placeholder={`${gameLabel[game]} Tournament`} maxLength={80} disabled={fieldsLocked}
               onChange={event => setName(event.target.value)} />
           </Field>
-          <Field label="Game" required>
+          <Field label="Game type" required>
             <Select value={game} disabled={fieldsLocked} onChange={event => {
               const next = ARTWORK_GAMES.find(item => item === event.target.value);
               if (next) {
                 if (name === `${gameLabel[game]} Tournament`) setName(`${gameLabel[next]} Tournament`);
                 setGame(next);
+                setBannerOverride(undefined);
+                setChannelOverride(undefined);
               }
             }}>
               {ARTWORK_GAMES.map(item => <option key={item} value={item}>{gameLabel[item]}</option>)}
@@ -116,14 +139,39 @@ export function CreateTournamentDialog({ open, defaultGame, onClose, onSaved, on
         <div className="grid items-start gap-4 rounded-lg border border-line bg-raised p-4 sm:grid-cols-2">
           <div>
             <p className="text-sm font-semibold">Tournament format</p>
-            <p className="mt-1 text-xs text-fg-muted">Four players · One best-of-one round · Camera play</p>
+            <p className="mt-1 text-xs text-fg-muted">One best-of-one round · Camera play</p>
+            <p className="mt-2 text-xs text-fg-muted">Signup limit <strong className="text-fg">4 players</strong></p>
           </div>
-          <Field label="Match timer in minutes" required>
+          <Field label="Match timer in minutes" required labelAction={
+            <Tooltip content="Each match gets this many minutes. The clock starts once both players click Ready. When it expires, a judge is needed to resolve the match.">
+              <IconButton size="sm" className="!size-6" aria-label="How the match timer works" icon={<CircleHelp aria-hidden />} />
+            </Tooltip>
+          }>
             <Input type="number" min={1} max={MAX_MATCH_MINUTES} step={1} value={minutes} disabled={fieldsLocked}
               onChange={event => setMinutes(event.target.value)} />
           </Field>
         </div>
-        <Field label="Signup notes" description="Optional. Players see this on the Discord signup panel.">
+        <div className="grid items-start gap-4 sm:grid-cols-2">
+          <Field label="Signup banner" description="Full banner uses the saved artwork for the selected game.">
+            <Select value={bannerStyle} disabled={fieldsLocked}
+              onChange={event => setBannerOverride(event.target.value === 'compact' ? 'compact' : 'game')}>
+              <option value="game">Full game banner</option>
+              <option value="compact">Compact artwork</option>
+            </Select>
+          </Field>
+          <Field label="Discord signup channel" description={channels.isError
+            ? 'Channel list unavailable. Use the current channel or retry when Discord is online.'
+            : 'The sticky signup panel is posted and pinned here.'}>
+            <Select value={signupChannelId} disabled={fieldsLocked} onChange={event => setChannelOverride(event.target.value)}>
+              <option value="">Use current signup channel</option>
+              {signupChannelId && !channels.data?.some(channel => channel.id === signupChannelId) &&
+                <option value={signupChannelId}>{signupChannelId === destination?.channelId ? 'Current signup channel'
+                  : 'Previously selected channel'}</option>}
+              {channels.data?.map(channel => <option key={channel.id} value={channel.id}>#{channel.name}</option>)}
+            </Select>
+          </Field>
+        </div>
+        <Field label="Tournament details" description="Optional. Players see this on the Discord signup panel.">
           <Textarea value={description} maxLength={500} rows={3} disabled={fieldsLocked}
             onChange={event => setDescription(event.target.value)} />
         </Field>

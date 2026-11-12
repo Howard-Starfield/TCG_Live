@@ -428,18 +428,26 @@ export class PrivateDiscordController {
   }
 
   openSignup(eventId: string, expectedActiveEventId: string | null,
-    selectArtwork: (game: ArtworkGame) => Promise<void>): Promise<OpenTournamentSignupResult> {
+    selectArtwork: (game: ArtworkGame) => Promise<void>,
+    prepareChannel?: Parameters<typeof activateSignupDraft>[4]): Promise<OpenTournamentSignupResult> {
     const available = () => this.accepting && this.canPost();
     if (!available()) return Promise.reject(new ControllerUnavailableError('The Discord bot is unavailable.'));
     const task = this.refreshTask.then(async (): Promise<OpenTournamentSignupResult> => {
-      const game = await activateSignupDraft(this.config, eventId, expectedActiveEventId, available);
+      const result = await activateSignupDraft(this.config, eventId, expectedActiveEventId, available, prepareChannel);
+      const removeOld = result.installChannel?.();
+      this.config.channelId = result.channelId;
       this.notify({ type: 'event', eventId });
       let panels: OpenTournamentSignupResult['panels'] = 'posted';
-      try { await selectArtwork(game); } catch { panels = 'pending'; }
+      try { await selectArtwork(result.game); } catch { panels = 'pending'; }
       try {
         if (!available()) throw new ControllerUnavailableError('The Discord bot is unavailable.');
         await this.refresh('explicit');
       } catch { panels = 'pending'; }
+      if (removeOld && available() && panels === 'posted') {
+        for (const { id, slot } of result.retiredCards) {
+          try { await removeOld(id, slot); } catch { /* Retired card controls are invalid. */ }
+        }
+      }
       try { if (available()) await this.syncRooms?.(true); } catch { panels = 'pending'; }
       return { eventId, panels };
     });

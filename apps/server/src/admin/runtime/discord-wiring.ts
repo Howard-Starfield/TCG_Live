@@ -18,6 +18,8 @@ export interface DiscordAdminOptions {
   launcher?: { instanceId: string; secret: string };
   artwork?: ArtworkStore;
   tournaments?: TournamentDirectory;
+  signupChannels?: AdminHandlerOptions['signupChannels'];
+  prepareSignupChannel?: Parameters<NonNullable<AdminController['openSignup']>>[3];
   lease?: { isLost(): boolean };
   createRuntime?: (options: DiscordAdminRuntimeOptions) => DiscordAdminRuntime;
   createHandler?: (options: AdminHandlerOptions) => AdminHandler;
@@ -54,10 +56,12 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
         Promise.resolve({ status: 'pending' as const, message: 'Existing Discord panels are not available yet.' });
     } } : {}),
     tournaments: options.tournaments ?? pgTournamentDirectory(() => !!options.lease && !options.lease.isLost()),
+    ...(options.signupChannels ? { signupChannels: options.signupChannels } : {}),
     ...(options.adminConfig.commandsEnabled ? { openSignup: async (id, expectedId) => {
       if (runtime.status().gateway !== 'ready' || !attachedController?.openSignup)
         throw new ControllerUnavailableError('Discord is not ready. Retry when the bot reconnects.');
-      return attachedController.openSignup(id, expectedId, async game => { await options.artwork?.selectGame(game); });
+      return attachedController.openSignup(id, expectedId, async game => { await options.artwork?.selectGame(game); },
+        options.prepareSignupChannel);
     } } : {}),
     ...(options.persistentSessions ? { persistentSessions: true } : {}),
     ...(options.launcher ? { launcher: options.launcher } : {})

@@ -1,4 +1,4 @@
-import { ARTWORK_GAMES, type ArtworkGame, type TournamentDetailsDto } from '@tcg-live/core';
+import { ARTWORK_GAMES, type ArtworkGame, type SignupBannerStyle, type TournamentDetailsDto } from '@tcg-live/core';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useAdminData } from '../../data';
 import { Button, Dialog, Field, Input, Select, Textarea } from '../../ui';
@@ -12,6 +12,7 @@ export function TournamentDetailsDialog({ open, eventId, onClose }: {
   const [name, setName] = useState('');
   const [game, setGame] = useState<ArtworkGame>('pokemon');
   const [description, setDescription] = useState('');
+  const [bannerStyle, setBannerStyle] = useState<SignupBannerStyle | undefined>();
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +24,7 @@ export function TournamentDetailsDialog({ open, eventId, onClose }: {
     setLoaded(false); setError(null); setMessage(null);
     void api.request<TournamentDetailsDto>('GET', path, { signal: abort.signal }).then(value => {
       if (abort.signal.aborted) return;
-      setName(value.name); setGame(value.game ?? 'pokemon'); setDescription(value.description); setLoaded(true);
+      setName(value.name); setGame(value.game ?? 'pokemon'); setDescription(value.description); setBannerStyle(value.bannerStyle); setLoaded(true);
       if (!value.configured) setMessage('No tournament details saved yet. Choose the game and title, then save.');
     }).catch(cause => { if (!abort.signal.aborted) setError(cause instanceof Error ? cause.message : 'Details could not be loaded.'); });
     return () => abort.abort();
@@ -33,7 +34,7 @@ export function TournamentDetailsDialog({ open, eventId, onClose }: {
     if (busy || !loaded) return;
     setBusy(true); setError(null); setMessage(null);
     try {
-      const value = await api.request<TournamentDetailsDto>('PUT', path, { body: { name: name.trim(), game, description: description.trim() } });
+      const value = await api.request<TournamentDetailsDto>('PUT', path, { body: { name: name.trim(), game, description: description.trim(), bannerStyle } });
       setMessage(value.applyStatus === 'applied' ? 'Saved and updated the Discord signup panel.' :
         'Details saved. Discord update pending; save again to retry, or use Refresh panels to repair missing panels.');
       await queryClient.invalidateQueries({ queryKey: tournamentDirectoryKey });
@@ -52,6 +53,11 @@ export function TournamentDetailsDialog({ open, eventId, onClose }: {
       <Field label="Game" required><Select value={game} disabled={busy || !loaded}
         onChange={event => setGame(event.target.value as ArtworkGame)}>
         {ARTWORK_GAMES.map(item => <option key={item} value={item}>{gameLabel[item]}</option>)}
+      </Select></Field>
+      <Field label="Signup banner"><Select value={bannerStyle ?? 'game'} disabled={busy || !loaded}
+        onChange={event => setBannerStyle(event.target.value === 'compact' ? 'compact' : 'game')}>
+        <option value="game">Full game banner</option>
+        <option value="compact">Compact artwork</option>
       </Select></Field>
       <Field label="Description" description="Optional, up to 500 characters. Keep signup instructions short.">
         <Textarea value={description} maxLength={500} rows={4} disabled={busy || !loaded}

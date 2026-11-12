@@ -150,11 +150,12 @@ export async function getSessionState(config: PrivateDiscordConfig): Promise<{ s
     // Older direct-bot installations may not have enabled the optional directory.
     const directory = await client.query<{ present: string | null }>("SELECT to_regclass('public.tcg_tournament_directory')::text AS present");
     if (directory.rows[0]?.present) {
-      const metadata = await client.query<{ name: string; game: TournamentDetailsDto['game']; description: string | null }>(
-        "SELECT name, game, to_jsonb(d)->>'description' AS description FROM public.tcg_tournament_directory d WHERE id = $1", [session.event_id]);
+      const metadata = await client.query<{ name: string; game: TournamentDetailsDto['game']; description: string | null; banner_style: string | null }>(
+        "SELECT name, game, to_jsonb(d)->>'description' AS description, to_jsonb(d)->>'banner_style' AS banner_style FROM public.tcg_tournament_directory d WHERE id = $1", [session.event_id]);
       const details = metadata.rows[0];
       if (details) session.tournament = { eventId: session.event_id, name: details.name, game: details.game,
-        description: details.description ?? '', configured: true };
+        description: details.description ?? '', configured: true,
+        ...(details.banner_style === 'compact' ? { bannerStyle: 'compact' as const } : {}) };
     }
     return { session, state: event.rows[0].state };
   });
@@ -199,21 +200,32 @@ export async function prepareSignupSession(config: PrivateDiscordConfig, replace
 
 /** Switches the event behind the configured Discord channels under the runtime's existing lease. */
 export async function activateSignupDraft(config: PrivateDiscordConfig, eventId: string,
-  expectedActiveEventId: string | null, ownsRuntime: () => boolean): Promise<NonNullable<TournamentDetailsDto['game']>> {
+  expectedActiveEventId: string | null, ownsRuntime: () => boolean,
+  prepareChannel?: (channelId: string) => Promise<() => (id: string, slot: CardSlot) => Promise<void>>) {
   if (config.mode !== 'signup') throw new RuleError('Open signup from a runtime configured for signup tournaments.');
   return withClient(client => transaction(client, async () => {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('tcg_live_signup_activation'))");
     if (!ownsRuntime()) throw new RuleError('The bot is unavailable. Retry when Discord reconnects.');
-    const { rows: [draft] } = await client.query<{ game: NonNullable<TournamentDetailsDto['game']>; match_minutes: number }>(
-      'SELECT game, match_minutes FROM public.tcg_tournament_directory WHERE id = $1 FOR UPDATE', [eventId]);
+    const { rows: [draft] } = await client.query<{ game: NonNullable<TournamentDetailsDto['game']>; match_minutes: number; signup_channel_id: string | null }>(
+      'SELECT game, match_minutes, signup_channel_id FROM public.tcg_tournament_directory WHERE id = $1 FOR UPDATE', [eventId]);
     if (!draft) throw new RuleError('This draft no longer exists.');
     const { rows: [active] } = await client.query<SessionRow>("SELECT * FROM public.tcg_rehearsal_sessions WHERE status = 'active'");
     if (active) assertSessionConfig(active, config);
-    if (active?.event_id === eventId) return draft.game;
+    if (active?.event_id === eventId) return { game: draft.game, channelId: active.channel_id, retiredCards: [] };
     if ((active?.event_id ?? null) !== expectedActiveEventId)
       throw new RuleError('The active tournament changed. Return to the draft and review the current event.');
     const existing = await client.query('SELECT 1 FROM public.tcg_rehearsal_sessions WHERE event_id = $1', [eventId]);
     if (existing.rows.length) throw new RuleError('This tournament already ran. Create a new draft.');
+    const channelId = draft.signup_channel_id ?? config.channelId;
+    const moved = channelId !== config.channelId;
+    if (moved && !prepareChannel) throw new RuleError('This bot cannot change signup channels.');
+    const installChannel = moved ? await prepareChannel?.(channelId) : undefined;
+    const reusable = (slot: CardSlot) => !moved || (slot !== 'checkin' && !!config.matchChannels);
+    const retiredCards: Array<{ id: string; slot: CardSlot }> = [];
+    if (active) for (const slot of ['checkin', 'M1', 'M2'] as const) {
+      const id = messageId(active, slot);
+      if (!reusable(slot) && id) retiredCards.push({ id, slot });
+    }
     if (active) {
       // Gameplay commands lock this row before checking the session status.
       const { rows: [old] } = await client.query<{ state: EventState; version: number }>(
@@ -234,13 +246,14 @@ export async function activateSignupDraft(config: PrivateDiscordConfig, eventId:
     await client.query(`INSERT INTO public.tcg_rehearsal_sessions
       (event_id,application_id,guild_id,channel_id,identity_map,status,created_at_ms,checkin_message_id,m1_message_id,m2_message_id)
       VALUES ($1,$2,$3,$4,$5::jsonb,'active',$6,$7,$8,$9)`, [
-      event.id, config.applicationId, config.guildId, config.channelId,
+      event.id, config.applicationId, config.guildId, channelId,
       JSON.stringify({ kind: 'signup', adminId: config.adminId, matchChannels: config.matchChannels,
-        publicMatchRooms: config.publicMatchRooms, stickySuspended: active?.identity_map.stickySuspended }),
-      now, active?.checkin_message_id ?? null, active?.m1_message_id ?? null, active?.m2_message_id ?? null
+        publicMatchRooms: config.publicMatchRooms, stickySuspended: active?.identity_map.stickySuspended?.filter(reusable) }),
+      now, reusable('checkin') ? active?.checkin_message_id ?? null : null,
+      reusable('M1') ? active?.m1_message_id ?? null : null, reusable('M2') ? active?.m2_message_id ?? null : null
     ]);
     if (!ownsRuntime()) throw new RuleError('The bot is unavailable. Retry when Discord reconnects.');
-    return draft.game;
+    return { game: draft.game, channelId, retiredCards, installChannel };
   }));
 }
 

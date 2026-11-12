@@ -78,6 +78,20 @@ test('active signup is frozen, cannot auto-bypass before Finish, and resumes wit
   assert.equal((await service.readyConfig())?.mode, 'signup');
 }));
 
+test('restart follows a tournament signup channel moved after setup', async () => fixture(async profile => {
+  const moved = ids[5]!;
+  await profile.save({ selection, guide: null, completed: true });
+  const service = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    active: async () => activeSession({ channel_id: moved }),
+    prepare: async () => { throw new Error('must not prepare'); }, onHandover: async () => {} });
+  const original = discovery();
+  service.attach({ ...original, async channels(guildId) {
+    return [...await original.channels(guildId),
+      { id: moved, name: 'one-piece-signup', category: 'Tournament', type: 'text', permissions, afk: false }];
+  } });
+  assert.equal((await service.readyConfig())?.channelId, moved);
+}));
+
 test('legacy shared-chat event resumes without inventing match rooms', async () => fixture(async profile => {
   const active = activeSession({ identity_map: { kind: 'legacy', adminId: selection.adminId,
     players: { A: ids[1]!, B: ids[2]!, C: ids[3]!, D: ids[5]! } } });

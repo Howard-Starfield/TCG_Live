@@ -202,7 +202,13 @@ describe('sidebar', () => {
     const user = userEvent.setup();
     const { server } = renderConsole({ setup: server => {
       server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
-      server.always('GET /tournaments', () => json(200, { entries: [], defaultGame: 'one-piece' }));
+      server.always('GET /tournaments', () => json(200, { defaultGame: 'one-piece', entries: [{
+        eventId: 'previous-one-piece', name: 'Previous Grand Line Cup', game: 'one-piece', status: 'retired', kind: 'signup',
+        createdAtMs: 1, retiredAtMs: 2, signupChannelId: '100000000000000008', bannerStyle: 'compact'
+      }] }));
+      server.always('GET /tournaments/signup-channels', () => json(200, [
+        { id: '100000000000000008', name: 'previous-signups' }, { id: '100000000000000009', name: 'one-piece-signups' }
+      ]));
       server.always('POST /tournaments/drafts', call => {
         const input = call.body as { draftId: string };
         server.always(`POST /tournaments/${input.draftId}/open-signup`, () => json(200, { eventId: input.draftId, panels: 'posted' }));
@@ -217,15 +223,24 @@ describe('sidebar', () => {
     await user.clear(title);
     await user.type(title, 'Grand Line Cup');
     const timer = within(dialog).getByRole('spinbutton', { name: 'Match timer in minutes' });
+    expect(timer).toHaveValue(30);
     await user.clear(timer);
     await user.type(timer, '35');
-    await user.type(within(dialog).getByRole('textbox', { name: 'Signup notes' }), 'Bring your camera.');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Tournament details' }), 'Bring your camera.');
+    const banner = within(dialog).getByRole('combobox', { name: 'Signup banner' });
+    expect(banner).toHaveValue('compact');
+    await user.selectOptions(banner, 'game');
+    await within(dialog).findByRole('option', { name: '#one-piece-signups' });
+    const channel = within(dialog).getByRole('combobox', { name: 'Discord signup channel' });
+    expect(channel).toHaveValue('100000000000000008');
+    await user.selectOptions(channel, '100000000000000009');
     await user.click(within(dialog).getByRole('button', { name: /^Create$/ }));
     expect(server.callsTo('POST /tournaments/drafts')).toHaveLength(0);
     await user.click(within(dialog).getByRole('button', { name: 'Create and open signup' }));
     expect(await screen.findByText('Signup opened in Discord')).toBeInTheDocument();
     const body = server.callsTo('POST /tournaments/drafts')[0]?.body as { draftId: string };
-    expect(body).toMatchObject({ name: 'Grand Line Cup', game: 'one-piece', matchMinutes: 35, description: 'Bring your camera.' });
+    expect(body).toMatchObject({ name: 'Grand Line Cup', game: 'one-piece', matchMinutes: 35,
+      description: 'Bring your camera.', bannerStyle: 'game', signupChannelId: '100000000000000009' });
     expect(server.callsTo(`POST /tournaments/${body.draftId}/open-signup`)[0]?.body)
       .toEqual({ expectedActiveEventId: liveDispute.eventId });
   });
@@ -285,11 +300,11 @@ describe('sidebar', () => {
     await user.click(screen.getByRole('button', { name: 'Create signup tournament' }));
     const dialog = screen.getByRole('dialog', { name: 'Create signup tournament' });
     expect(within(dialog).getByRole('textbox', { name: 'Tournament name' })).toHaveValue('Pokémon Tournament');
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Game' }), 'one-piece');
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Game type' }), 'one-piece');
     expect(within(dialog).getByRole('textbox', { name: 'Tournament name' })).toHaveValue('One Piece Tournament');
     await user.clear(within(dialog).getByRole('textbox', { name: 'Tournament name' }));
     await user.type(within(dialog).getByRole('textbox', { name: 'Tournament name' }), 'Saturday Cup');
-    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Game' }), 'pokemon');
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Game type' }), 'pokemon');
     expect(within(dialog).getByRole('textbox', { name: 'Tournament name' })).toHaveValue('Saturday Cup');
     await user.click(within(dialog).getByRole('button', { name: 'Save as draft' }));
     expect(await screen.findByRole('heading', { name: 'Saturday Cup' })).toBeInTheDocument();

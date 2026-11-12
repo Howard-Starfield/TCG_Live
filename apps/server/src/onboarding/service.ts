@@ -274,6 +274,7 @@ export class SetupService {
     const active = await this.active();
     const profile = await (this.options.profile ?? new SetupProfileStore()).read();
     return active && profile.completed && profile.selection &&
-      sameSelection(profile.selection, selectionFromSession(active)) ? configFromSession(active, this.options.token!) : null;
+      sameSelection({ ...profile.selection, channelId: active.channel_id }, selectionFromSession(active))
+      ? configFromSession(active, this.options.token!) : null;
   }
 }

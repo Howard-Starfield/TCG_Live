@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { ArtworkGame, OpenTournamentSignupResult } from '@tcg-live/core';
+import type { ArtworkGame, OpenTournamentSignupResult, TournamentSignupChannelDto } from '@tcg-live/core';
 import type { ArtworkApplyResult } from '../artwork/routes.js';
 import { readJsonBody, strictObject } from '../admin/http/body.js';
 import { RuleError } from '../rehearsal/domain.js';
@@ -22,9 +22,17 @@ function fail(error: unknown): never {
 
 export function tournamentRoutes(directory: TournamentDirectory, defaultGame: () => ArtworkGame,
   apply?: (game: ArtworkGame) => Promise<ArtworkApplyResult>,
-  openSignup?: (eventId: string, expectedActiveEventId: string | null) => Promise<OpenTournamentSignupResult>): TournamentRoute[] {
+  openSignup?: (eventId: string, expectedActiveEventId: string | null) => Promise<OpenTournamentSignupResult>,
+  signupChannels?: () => Promise<TournamentSignupChannelDto[]>): TournamentRoute[] {
   const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
   return [
+    { pattern: /^\/api\/v1\/tournaments\/signup-channels$/, methods: {
+      GET: { access: 'session', run: async ({ response }) => {
+        if (!signupChannels) throw new HttpError(503, 'unavailable', 'Discord channel discovery is unavailable.');
+        try { sendJson(response, 200, await signupChannels()); }
+        catch { throw new HttpError(503, 'unavailable', 'Discord channels could not be loaded. Retry when the bot is online.'); }
+      } }
+    } },
     { pattern: /^\/api\/v1\/tournaments\/([0-9a-f-]+)\/open-signup$/i, methods: {
       POST: { access: 'session', run: async ({ request, response, params }) => {
         if (!openSignup) throw new HttpError(403, 'forbidden', 'Tournament commands are disabled for this console.');

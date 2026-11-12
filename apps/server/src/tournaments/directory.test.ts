@@ -15,7 +15,9 @@ test('live details require an explicit game and title and bound the plain-text d
 test('draft inputs use a safe game default and reject paths, controls and unknown fields', () => {
   const draftId = '11111111-1111-4111-8111-111111111111';
   assert.deepEqual(parseDraft({ draftId, game: 'pokemon' }),
-    { draftId, game: 'pokemon', name: 'Pokémon Tournament', description: '', matchMinutes: 1 });
+    { draftId, game: 'pokemon', name: 'Pokémon Tournament', description: '', matchMinutes: 30, bannerStyle: 'game' });
+  assert.equal(parseDraft({ draftId, game: 'pokemon', bannerStyle: 'compact' }).bannerStyle, 'compact');
+  assert.throws(() => parseDraft({ draftId, game: 'pokemon', bannerStyle: 'unknown' }), DirectoryInputError);
   assert.equal(parseDraft({ draftId, game: 'pokemon', matchMinutes: 35 }).matchMinutes, 35);
   assert.throws(() => parseDraft({ draftId, game: 'pokemon', matchMinutes: 181 }), DirectoryInputError);
   assert.equal(parseDraft({ draftId, game: 'one-piece', name: '  Grand Line  ' }).name, 'Grand Line');

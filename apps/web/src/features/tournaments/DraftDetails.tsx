@@ -53,6 +53,7 @@ export function DraftDetails({ draft }: { draft: TournamentDirectoryEntryDto }) 
         </div>
       </div>
       <p className="mt-4 text-sm text-fg-muted">Four players · BO1 · Camera play · {draft.matchMinutes ?? DEFAULT_MATCH_MINUTES} min per match</p>
+      <p className="mt-1 text-xs text-fg-muted">{draft.bannerStyle === 'compact' ? 'Compact artwork' : 'Full game banner'}</p>
       {draft.description && <p className="mt-2 whitespace-pre-wrap break-words text-sm">{draft.description}</p>}
       <p className="mt-5 rounded-lg bg-line-faint p-3 text-sm text-fg-muted">
         Draft signup is not open. Open signup when you’re ready for players to join in the configured Discord channel.

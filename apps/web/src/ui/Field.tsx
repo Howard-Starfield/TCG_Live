@@ -15,6 +15,7 @@ const FieldContext = createContext<FieldContextValue | null>(null);
 
 export interface FieldProps {
   label: ReactNode;
+  labelAction?: ReactNode;
   description?: ReactNode;
   /** Error text; marks the control invalid and is announced through aria-describedby. */
   error?: ReactNode;
@@ -26,16 +27,17 @@ export interface FieldProps {
 }
 
 /** Label, description and error wiring for one control (Input, Textarea, Select or Switch). */
-export function Field({ label, description, error, required = false, inline = false, children, className }: FieldProps) {
+export function Field({ label, labelAction, description, error, required = false, inline = false, children, className }: FieldProps) {
   const id = useId();
   const descriptionId = description ? `${id}-description` : undefined;
   const errorId = error ? `${id}-error` : undefined;
   const describedBy = [descriptionId, errorId].filter(Boolean).join(' ') || undefined;
-  const labelNode = (
+  const labelText = (
     <label htmlFor={id} className="text-[13px] font-medium text-fg">
       {label}{required && <span aria-hidden className="ml-0.5 text-danger">*</span>}
     </label>
   );
+  const labelNode = labelAction ? <div className="flex items-center gap-1">{labelText}{labelAction}</div> : labelText;
   return (
     <FieldContext.Provider value={{ id, describedBy, invalid: Boolean(error), required }}>
       <div className={cx('flex flex-col gap-1.5', className)}>
