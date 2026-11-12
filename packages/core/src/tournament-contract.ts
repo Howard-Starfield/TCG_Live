@@ -24,6 +24,8 @@ export interface TournamentDirectoryEntryDto {
   kind: 'signup' | 'legacy';
   createdAtMs: number;
   retiredAtMs: number | null;
+  matchMinutes?: number;
+  description?: string;
 }
 
 export interface TournamentDirectoryDto {
@@ -35,7 +37,12 @@ export interface CreateTournamentDraftDto {
   draftId: string;
   name?: string;
   game: ArtworkGame;
+  description?: string;
+  matchMinutes?: number;
 }
+
+export const DEFAULT_MATCH_MINUTES = 1;
+export const MAX_MATCH_MINUTES = 180;
 
 export interface OpenTournamentSignupRequest {
   expectedActiveEventId: string | null;

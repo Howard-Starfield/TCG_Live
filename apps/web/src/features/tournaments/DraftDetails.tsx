@@ -1,4 +1,4 @@
-import type { OpenTournamentSignupRequest, OpenTournamentSignupResult, TournamentDirectoryEntryDto } from '@tcg-live/core';
+import { DEFAULT_MATCH_MINUTES, type OpenTournamentSignupRequest, type OpenTournamentSignupResult, type TournamentDirectoryEntryDto } from '@tcg-live/core';
 import { FileClock } from 'lucide-react';
 import { useState } from 'react';
 import { adminKeys, useAdminData } from '../../data';
@@ -52,6 +52,8 @@ export function DraftDetails({ draft }: { draft: TournamentDirectoryEntryDto }) 
           <p className="mt-1 text-xs text-fg-muted">{draft.game ? GAME_LABEL[draft.game] : 'Game not selected'} · Created {shortDate(draft.createdAtMs)}</p>
         </div>
       </div>
+      <p className="mt-4 text-sm text-fg-muted">Four players · BO1 · Camera play · {draft.matchMinutes ?? DEFAULT_MATCH_MINUTES} min per match</p>
+      {draft.description && <p className="mt-2 whitespace-pre-wrap break-words text-sm">{draft.description}</p>}
       <p className="mt-5 rounded-lg bg-line-faint p-3 text-sm text-fg-muted">
         Draft signup is not open. Open signup when you’re ready for players to join in the configured Discord channel.
       </p>

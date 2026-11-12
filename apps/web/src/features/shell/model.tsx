@@ -42,6 +42,8 @@ export interface ShellModel {
   directory: TournamentDirectoryDto | undefined;
   directoryState: 'loading' | 'error' | 'ready';
   home: boolean;
+  showDrafts(): void;
+  draftsOpen: boolean;
   showHome(): void;
   draft: TournamentDirectoryEntryDto | null;
   selectDraft(entry: TournamentDirectoryEntryDto): void;
@@ -121,6 +123,7 @@ export function useShellModel(session: SessionDto): ShellModel {
   const events = eventsQuery.data ?? NO_EVENTS;
   const [selected, setSelected] = useState<string | null>(null);
   const [home, setHome] = useState(session.mode === 'discord');
+  const [draftsOpen, setDraftsOpen] = useState(false);
   const [draft, setDraft] = useState<TournamentDirectoryEntryDto | null>(null);
   const [liveMatch, setLiveMatch] = useState<MatchId | null>(null);
 
@@ -177,7 +180,9 @@ export function useShellModel(session: SessionDto): ShellModel {
     directory: directoryQuery.data,
     directoryState,
     home,
-    showHome: () => { setDraft(null); setSelected(null); setHome(true); dock.dismissSheet(); },
+    draftsOpen: home && draftsOpen,
+    showHome: () => { setDraft(null); setSelected(null); setDraftsOpen(false); setHome(true); dock.dismissSheet(); },
+    showDrafts: () => { setDraft(null); setSelected(null); setDraftsOpen(true); setHome(true); dock.dismissSheet(); },
     draft,
     selectDraft: entry => { setSelected(null); setDraft(entry); setHome(false); },
     eventsState,
@@ -191,6 +196,6 @@ export function useShellModel(session: SessionDto): ShellModel {
     setCanvas,
     openMatch,
     dock
-  }), [session, statusData, events, directoryQuery.data, directoryState, home, draft, eventsState, refetchEvents, activeEventId, viewed,
+  }), [session, statusData, events, directoryQuery.data, directoryState, home, draftsOpen, draft, eventsState, refetchEvents, activeEventId, viewed,
     canvasView, liveMatch, setCanvas, openMatch, dock]);
 }

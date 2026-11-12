@@ -198,6 +198,38 @@ describe('home', () => {
 });
 
 describe('sidebar', () => {
+  it('creates and opens signup from the form after confirming the active tournament switch', async () => {
+    const user = userEvent.setup();
+    const { server } = renderConsole({ setup: server => {
+      server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
+      server.always('GET /tournaments', () => json(200, { entries: [], defaultGame: 'one-piece' }));
+      server.always('POST /tournaments/drafts', call => {
+        const input = call.body as { draftId: string };
+        server.always(`POST /tournaments/${input.draftId}/open-signup`, () => json(200, { eventId: input.draftId, panels: 'posted' }));
+        return json(201, { eventId: input.draftId, name: 'Grand Line Cup', game: 'one-piece', status: 'draft',
+          kind: 'signup', createdAtMs: liveDispute.createdAtMs, retiredAtMs: null });
+      });
+    } });
+    await screen.findByRole('list', { name: 'Player counts' });
+    await user.click(screen.getByRole('button', { name: 'Create signup tournament' }));
+    const dialog = screen.getByRole('dialog', { name: 'Create signup tournament' });
+    const title = within(dialog).getByRole('textbox', { name: 'Tournament name' });
+    await user.clear(title);
+    await user.type(title, 'Grand Line Cup');
+    const timer = within(dialog).getByRole('spinbutton', { name: 'Match timer in minutes' });
+    await user.clear(timer);
+    await user.type(timer, '35');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Signup notes' }), 'Bring your camera.');
+    await user.click(within(dialog).getByRole('button', { name: /^Create$/ }));
+    expect(server.callsTo('POST /tournaments/drafts')).toHaveLength(0);
+    await user.click(within(dialog).getByRole('button', { name: 'Create and open signup' }));
+    expect(await screen.findByText('Signup opened in Discord')).toBeInTheDocument();
+    const body = server.callsTo('POST /tournaments/drafts')[0]?.body as { draftId: string };
+    expect(body).toMatchObject({ name: 'Grand Line Cup', game: 'one-piece', matchMinutes: 35, description: 'Bring your camera.' });
+    expect(server.callsTo(`POST /tournaments/${body.draftId}/open-signup`)[0]?.body)
+      .toEqual({ expectedActiveEventId: liveDispute.eventId });
+  });
+
   it('shows a safe directory error and caps search to the API limit', async () => {
     renderConsole({ setup: server => {
       server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
@@ -259,7 +291,7 @@ describe('sidebar', () => {
     await user.type(within(dialog).getByRole('textbox', { name: 'Tournament name' }), 'Saturday Cup');
     await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Game' }), 'pokemon');
     expect(within(dialog).getByRole('textbox', { name: 'Tournament name' })).toHaveValue('Saturday Cup');
-    await user.click(within(dialog).getByRole('button', { name: 'Save draft' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Save as draft' }));
     expect(await screen.findByRole('heading', { name: 'Saturday Cup' })).toBeInTheDocument();
     expect(screen.getByText(/Draft signup is not open/)).toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'Previews' })).not.toBeInTheDocument();
@@ -272,6 +304,9 @@ describe('sidebar', () => {
     await user.click(within(confirmation).getByRole('button', { name: 'Open signup' }));
     expect(await screen.findByText('Finish the current round before opening a new tournament.')).toBeInTheDocument();
     expect(server.callsTo(activationPath)[0]?.body).toEqual({ expectedActiveEventId: liveDispute.eventId });
+    await user.click(screen.getByRole('button', { name: /^Drafts$/ }));
+    expect(await screen.findByRole('heading', { name: 'Drafts' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Saturday Cup' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Live Cup/ }));
     expect(await screen.findByRole('group', { name: 'Previews' })).toBeInTheDocument();
   });

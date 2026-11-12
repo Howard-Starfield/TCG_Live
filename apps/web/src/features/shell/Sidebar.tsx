@@ -1,4 +1,4 @@
-import { ChevronRight, History, House, PanelLeftClose, PanelLeftOpen, Plus, Search } from 'lucide-react';
+import { ChevronRight, FileClock, History, House, PanelLeftClose, PanelLeftOpen, Plus, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TournamentDirectoryEntryDto } from '@tcg-live/core';
 import { useServerNow, useStreamConnection } from '../../data';
@@ -35,7 +35,7 @@ export function Sidebar() {
     : events.map(event => ({ ...event, name: eventLabel(event), game: null }));
   const matchesQuery = (event: TournamentDirectoryEntryDto) => collapsed || directoryEnabled ||
     `${event.name} ${event.kind} ${shortDate(event.createdAtMs)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-  const active = entries.filter(event => event.status !== 'retired' && matchesQuery(event));
+  const active = entries.filter(event => (event.status === 'active' || (!collapsed && !!query.trim() && event.status === 'draft')) && matchesQuery(event));
   const retired = entries.filter(event => event.status === 'retired' && matchesQuery(event));
   const listState = directoryEnabled ? pendingSearch || directory.isPending ? 'loading' : directory.isError ? 'error' : 'ready'
     : shell.eventsState;
@@ -74,8 +74,6 @@ export function Sidebar() {
         </Tooltip>
       </div>
 
-      <SidebarList label="Dashboard" collapsed={collapsed} onSelect={shell.showHome}
-        className="shell-sidebar-home" items={[{ id: 'home', label: 'Home', icon: <House />, active: shell.home }]} />
       <div className={cx('shell-sidebar-tools', collapsed && 'is-collapsed')}>
         {!collapsed && <div className="relative min-w-0 flex-1">
           <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" />
@@ -87,6 +85,11 @@ export function Sidebar() {
             onClick={() => setCreateOpen(true)} />
         </Tooltip>}
       </div>
+      <SidebarList label="Dashboard" collapsed={collapsed} onSelect={id => id === 'drafts' ? shell.showDrafts() : shell.showHome()}
+        className="shell-sidebar-home" items={[
+          { id: 'home', label: 'Home', icon: <House />, active: shell.home && !shell.draftsOpen },
+          ...(directoryEnabled ? [{ id: 'drafts', label: 'Drafts', icon: <FileClock />, active: shell.draftsOpen || !!shell.draft }] : [])
+        ]} />
       <div className="shell-sidebar-scroll">
         {listState === 'loading' && (
           <div aria-busy="true" aria-label="Loading events" className="flex flex-col gap-2 px-2 pt-2">
@@ -129,6 +132,8 @@ export function Sidebar() {
       {directoryEnabled && <CreateTournamentDialog open={createOpen} defaultGame={shell.directory?.defaultGame ?? 'one-piece'}
         onClose={() => setCreateOpen(false)} onSaved={entry => {
           setCreateOpen(false); setQuery(''); setDebouncedQuery(''); setLiveOpen(true); shell.selectDraft(entry);
+        }} onCreated={eventId => {
+          setCreateOpen(false); setQuery(''); setDebouncedQuery(''); setLiveOpen(true); shell.selectEvent(eventId);
         }} />}
 
       <div className="shell-sidebar-bottom">

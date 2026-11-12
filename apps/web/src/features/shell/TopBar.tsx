@@ -17,7 +17,7 @@ export function TopBar() {
     id: 'root', label: 'TCG Live',
     ...(!shell.home ? { onSelect: shell.showHome } : {})
   }];
-  if (shell.home) crumbs.push({ id: 'home', label: 'Home' });
+  if (shell.home) crumbs.push({ id: 'home', label: shell.draftsOpen ? 'Drafts' : 'Home' });
   else if (shell.draft) crumbs.push({ id: 'draft-name', label: shell.draft.name }, { id: 'draft-stage', label: 'Draft' });
   else if (source) crumbs.push({ id: 'event', label: named?.name || eventLabel(source) });
   if (!shell.home && !shell.draft && viewed.snapshot) crumbs.push({ id: 'stage', label: viewed.retired ? 'History' : STAGE_LABEL[viewed.snapshot.stage] });

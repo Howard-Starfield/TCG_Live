@@ -135,7 +135,7 @@ export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
     const assigned = signup.status === 'assigned';
     return { embeds: [{ title: tournament?.name ?? 'Signup tournament',
       description: `Game: ${tournament?.game ? gameLabels[tournament.game] : 'Not set by organizer'}\n` +
-        'Format: 4-player rehearsal · BO1 · camera play\n' +
+        `Format: 4-player rehearsal · BO1 · camera play · ${state.durationMs / 60_000} min per match\n` +
         (tournament?.description ? `${literal(tournament.description)}\n\n` : '') +
         `Signup: ${assigned ? 'closed' : 'open'} · ${signup.roster.length}/4 joined\n` +
         (assigned ? `Checked in: ${state.checkins.length}/4\n${state.published ? 'Round published' : 'Check in to publish the round'}` :

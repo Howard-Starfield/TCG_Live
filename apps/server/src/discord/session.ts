@@ -204,8 +204,8 @@ export async function activateSignupDraft(config: PrivateDiscordConfig, eventId:
   return withClient(client => transaction(client, async () => {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('tcg_live_signup_activation'))");
     if (!ownsRuntime()) throw new RuleError('The bot is unavailable. Retry when Discord reconnects.');
-    const { rows: [draft] } = await client.query<{ game: NonNullable<TournamentDetailsDto['game']> }>(
-      'SELECT game FROM public.tcg_tournament_directory WHERE id = $1 FOR UPDATE', [eventId]);
+    const { rows: [draft] } = await client.query<{ game: NonNullable<TournamentDetailsDto['game']>; match_minutes: number }>(
+      'SELECT game, match_minutes FROM public.tcg_tournament_directory WHERE id = $1 FOR UPDATE', [eventId]);
     if (!draft) throw new RuleError('This draft no longer exists.');
     const { rows: [active] } = await client.query<SessionRow>("SELECT * FROM public.tcg_rehearsal_sessions WHERE status = 'active'");
     if (active) assertSessionConfig(active, config);
@@ -225,7 +225,7 @@ export async function activateSignupDraft(config: PrivateDiscordConfig, eventId:
     }
     if (!ownsRuntime()) throw new RuleError('The bot is unavailable. Retry when Discord reconnects.');
     const now = Date.now();
-    const event = createSignupFixture(eventId, 60_000);
+    const event = createSignupFixture(eventId, draft.match_minutes * 60_000);
     if (active) await client.query(
       "UPDATE public.tcg_rehearsal_sessions SET status = 'retired', retired_at_ms = $2, checkin_message_id = NULL, m1_message_id = NULL, m2_message_id = NULL WHERE event_id = $1",
       [active.event_id, now]);
