@@ -6,6 +6,7 @@ import type { SetupService } from '../onboarding/service.js';
 import type { ArtworkStore } from '../artwork/store.js';
 import type { ArtworkApplyResult } from '../artwork/routes.js';
 import type { TournamentDirectory } from '../tournaments/directory.js';
+import type { OpenTournamentSignupResult } from '@tcg-live/core';
 
 export interface AdminHandlerOptions {
   runtime: AdminRuntime;
@@ -26,6 +27,7 @@ export interface AdminHandlerOptions {
   artwork?: ArtworkStore;
   applyArtwork?: () => Promise<ArtworkApplyResult>;
   tournaments?: TournamentDirectory;
+  openSignup?: (eventId: string, expectedActiveEventId: string | null) => Promise<OpenTournamentSignupResult>;
   persistentSessions?: boolean;
   /** Ignored local launcher rendezvous; never mounted by direct or demo commands. */
   launcher?: { instanceId: string; secret: string };

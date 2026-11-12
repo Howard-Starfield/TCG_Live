@@ -1,7 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { ArtworkGame } from '@tcg-live/core';
+import type { ArtworkGame, OpenTournamentSignupResult } from '@tcg-live/core';
 import type { ArtworkApplyResult } from '../artwork/routes.js';
-import { readJsonBody } from '../admin/http/body.js';
+import { readJsonBody, strictObject } from '../admin/http/body.js';
+import { RuleError } from '../rehearsal/domain.js';
+import { ControllerUnavailableError } from '../discord/controller.js';
 import { HttpError, sendJson } from '../admin/http/respond.js';
 import { DirectoryConflictError, DirectoryInputError, DirectoryUnavailableError,
   type TournamentDirectory } from './directory.js';
@@ -19,8 +21,26 @@ function fail(error: unknown): never {
 }
 
 export function tournamentRoutes(directory: TournamentDirectory, defaultGame: () => ArtworkGame,
-  apply?: (game: ArtworkGame) => Promise<ArtworkApplyResult>): TournamentRoute[] {
+  apply?: (game: ArtworkGame) => Promise<ArtworkApplyResult>,
+  openSignup?: (eventId: string, expectedActiveEventId: string | null) => Promise<OpenTournamentSignupResult>): TournamentRoute[] {
+  const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
   return [
+    { pattern: /^\/api\/v1\/tournaments\/([0-9a-f-]+)\/open-signup$/i, methods: {
+      POST: { access: 'session', run: async ({ request, response, params }) => {
+        if (!openSignup) throw new HttpError(403, 'forbidden', 'Tournament commands are disabled for this console.');
+        const eventId = params[0]!;
+        const { expectedActiveEventId } = strictObject(await readJsonBody(request), ['expectedActiveEventId']);
+        if (!uuid.test(eventId) || (expectedActiveEventId !== null &&
+            (typeof expectedActiveEventId !== 'string' || !uuid.test(expectedActiveEventId))))
+          throw new HttpError(400, 'bad_request', 'Select a valid draft and confirm the active tournament.');
+        try { sendJson(response, 200, await openSignup(eventId.toLowerCase(), expectedActiveEventId?.toLowerCase() ?? null)); }
+        catch (error) {
+          if (error instanceof ControllerUnavailableError) throw new HttpError(503, 'unavailable', error.message);
+          if (error instanceof RuleError) throw new HttpError(409, 'conflict', error.message);
+          fail(error);
+        }
+      } }
+    } },
     { pattern: /^\/api\/v1\/tournaments\/([0-9a-f-]+)\/details$/i, methods: {
       GET: { access: 'session', run: async ({ response, params }) => {
         try {

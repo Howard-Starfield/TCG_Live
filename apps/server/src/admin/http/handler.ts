@@ -205,7 +205,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       () => options.artwork?.describe().activeGame ?? 'one-piece', async game => {
         await options.artwork?.selectGame(game);
         return await options.applyArtwork?.() ?? { status: 'pending', message: 'Existing Discord panels are not available yet.' };
-      }) : []),
+      }, options.openSignup) : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 

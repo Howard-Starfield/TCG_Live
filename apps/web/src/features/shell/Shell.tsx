@@ -52,7 +52,7 @@ export function Shell({ session }: { session: SessionDto }) {
             <Banners />
             <div ref={setBody} className="shell-body">
               <main className="shell-main" aria-label="Console">
-                {model.home ? <Home /> : model.draft ? <DraftDetails draft={model.draft} /> : <MainControls />}
+                {model.home ? <Home /> : model.draft ? <DraftDetails key={model.draft.eventId} draft={model.draft} /> : <MainControls />}
               </main>
               {eventView && <PreviewDock bodyWidth={bodyWidth} />}
             </div>

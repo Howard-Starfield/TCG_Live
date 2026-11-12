@@ -48,7 +48,7 @@ export function CreateTournamentDialog({ open, defaultGame, onClose, onSaved }: 
   };
 
   return <Dialog open={open} onClose={() => { if (!busy) onClose(); }} dismissible={!busy}
-    title="Create signup tournament" description="Save a tournament draft for later. The current live event keeps running."
+    title="Create signup tournament" description="Choose a game and title. After saving, use Open signup when you’re ready to post in Discord."
     footer={<><Button variant="secondary" disabled={busy} onClick={onClose}>Cancel</Button>
       <Button variant="primary" type="submit" form="create-tournament-form" disabled={busy}>
         {busy ? 'Saving…' : 'Save draft'}

@@ -1,4 +1,4 @@
-import { ChevronRight, History, PanelLeftClose, PanelLeftOpen, Plus, Search } from 'lucide-react';
+import { ChevronRight, History, House, PanelLeftClose, PanelLeftOpen, Plus, Search } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TournamentDirectoryEntryDto } from '@tcg-live/core';
 import { useServerNow, useStreamConnection } from '../../data';
@@ -63,11 +63,10 @@ export function Sidebar() {
   return (
     <aside className="shell-sidebar" aria-label="Sidebar" data-collapsed={collapsed || undefined}>
       <div className="shell-sidebar-top">
-        <button type="button" className="shell-sidebar-brand" aria-label="TCG Live home"
-          aria-current={shell.home ? 'page' : undefined} onClick={shell.showHome}>
+        <div className="shell-sidebar-brand">
           <BrandMark />
           {!collapsed && <span className="truncate text-[14px] font-semibold text-fg">TCG Live</span>}
-        </button>
+        </div>
         <Tooltip content={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} describe={false} placement={collapsed ? 'right' : 'bottom'}>
           <IconButton aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!collapsed}
             size={collapsed ? 'md' : 'sm'} icon={collapsed ? <PanelLeftOpen aria-hidden /> : <PanelLeftClose aria-hidden />}
@@ -75,6 +74,8 @@ export function Sidebar() {
         </Tooltip>
       </div>
 
+      <SidebarList label="Dashboard" collapsed={collapsed} onSelect={shell.showHome}
+        className="shell-sidebar-home" items={[{ id: 'home', label: 'Home', icon: <House />, active: shell.home }]} />
       <div className={cx('shell-sidebar-tools', collapsed && 'is-collapsed')}>
         {!collapsed && <div className="relative min-w-0 flex-1">
           <Search aria-hidden className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fg-subtle" />

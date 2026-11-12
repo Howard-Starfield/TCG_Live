@@ -1,9 +1,10 @@
 import type { Command, EventState, MatchId, Outcome, Player } from '../rehearsal/domain.js';
+import type { ArtworkGame, OpenTournamentSignupResult } from '@tcg-live/core';
 import { RuleError } from '../rehearsal/domain.js';
 import { applyDiscordCommand, applyWebCommand, type WebCommandContext } from '../rehearsal/store.js';
 import { parseButtonId, renderCard, type CardPayload, type ParsedButton } from './cards.js';
 import { channelForSlot, type PrivateDiscordConfig } from './config.js';
-import { bindCard, claimResumeReminder, completeStickyCard, getSessionState, messageId, replaceStickyCard, suspendStickyCard,
+import { activateSignupDraft, bindCard, claimResumeReminder, completeStickyCard, getSessionState, messageId, replaceStickyCard, suspendStickyCard,
   resolvePlayers, type CardSlot, type SessionRow } from './session.js';
 
 export interface PrivateInteraction {
@@ -424,6 +425,26 @@ export class PrivateDiscordController {
   refreshExplicit(): Promise<ExplicitRefreshResult> {
     if (!this.accepting || !this.canPost()) return Promise.reject(new ControllerUnavailableError('Private Discord runtime is not accepting commands.'));
     return this.track(this.explicitRefresh());
+  }
+
+  openSignup(eventId: string, expectedActiveEventId: string | null,
+    selectArtwork: (game: ArtworkGame) => Promise<void>): Promise<OpenTournamentSignupResult> {
+    const available = () => this.accepting && this.canPost();
+    if (!available()) return Promise.reject(new ControllerUnavailableError('The Discord bot is unavailable.'));
+    const task = this.refreshTask.then(async (): Promise<OpenTournamentSignupResult> => {
+      const game = await activateSignupDraft(this.config, eventId, expectedActiveEventId, available);
+      this.notify({ type: 'event', eventId });
+      let panels: OpenTournamentSignupResult['panels'] = 'posted';
+      try { await selectArtwork(game); } catch { panels = 'pending'; }
+      try {
+        if (!available()) throw new ControllerUnavailableError('The Discord bot is unavailable.');
+        await this.refresh('explicit');
+      } catch { panels = 'pending'; }
+      try { if (available()) await this.syncRooms?.(true); } catch { panels = 'pending'; }
+      return { eventId, panels };
+    });
+    this.refreshTask = task.then(() => {}, () => {});
+    return this.track(task);
   }
 
   /** Applies a visual selection only to existing canonical cards. Never sends, pins, binds or clears suspension. */

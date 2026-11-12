@@ -197,6 +197,53 @@ export async function prepareSignupSession(config: PrivateDiscordConfig, replace
   return prepareSession(config, replace);
 }
 
+/** Switches the event behind the configured Discord channels under the runtime's existing lease. */
+export async function activateSignupDraft(config: PrivateDiscordConfig, eventId: string,
+  expectedActiveEventId: string | null, ownsRuntime: () => boolean): Promise<NonNullable<TournamentDetailsDto['game']>> {
+  if (config.mode !== 'signup') throw new RuleError('Open signup from a runtime configured for signup tournaments.');
+  return withClient(client => transaction(client, async () => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('tcg_live_signup_activation'))");
+    if (!ownsRuntime()) throw new RuleError('The bot is unavailable. Retry when Discord reconnects.');
+    const { rows: [draft] } = await client.query<{ game: NonNullable<TournamentDetailsDto['game']> }>(
+      'SELECT game FROM public.tcg_tournament_directory WHERE id = $1 FOR UPDATE', [eventId]);
+    if (!draft) throw new RuleError('This draft no longer exists.');
+    const { rows: [active] } = await client.query<SessionRow>("SELECT * FROM public.tcg_rehearsal_sessions WHERE status = 'active'");
+    if (active) assertSessionConfig(active, config);
+    if (active?.event_id === eventId) return draft.game;
+    if ((active?.event_id ?? null) !== expectedActiveEventId)
+      throw new RuleError('The active tournament changed. Return to the draft and review the current event.');
+    const existing = await client.query('SELECT 1 FROM public.tcg_rehearsal_sessions WHERE event_id = $1', [eventId]);
+    if (existing.rows.length) throw new RuleError('This tournament already ran. Create a new draft.');
+    if (active) {
+      // Gameplay commands lock this row before checking the session status.
+      const { rows: [old] } = await client.query<{ state: EventState; version: number }>(
+        'SELECT state, version FROM public.tcg_rehearsal_events WHERE id = $1 FOR UPDATE', [active.event_id]);
+      if (!old) throw new RuleError('The current tournament could not be loaded.');
+      verifyState(old.state, active.event_id, old.version);
+      if (old.state.published && old.state.matches.some(match => match.phase !== 'final'))
+        throw new RuleError('Finish the current round before opening a new tournament.');
+    }
+    if (!ownsRuntime()) throw new RuleError('The bot is unavailable. Retry when Discord reconnects.');
+    const now = Date.now();
+    const event = createSignupFixture(eventId, 60_000);
+    if (active) await client.query(
+      "UPDATE public.tcg_rehearsal_sessions SET status = 'retired', retired_at_ms = $2, checkin_message_id = NULL, m1_message_id = NULL, m2_message_id = NULL WHERE event_id = $1",
+      [active.event_id, now]);
+    await client.query('INSERT INTO public.tcg_rehearsal_events (id, version, state) VALUES ($1,$2,$3::jsonb)',
+      [event.id, event.version, JSON.stringify(event)]);
+    await client.query(`INSERT INTO public.tcg_rehearsal_sessions
+      (event_id,application_id,guild_id,channel_id,identity_map,status,created_at_ms,checkin_message_id,m1_message_id,m2_message_id)
+      VALUES ($1,$2,$3,$4,$5::jsonb,'active',$6,$7,$8,$9)`, [
+      event.id, config.applicationId, config.guildId, config.channelId,
+      JSON.stringify({ kind: 'signup', adminId: config.adminId, matchChannels: config.matchChannels,
+        publicMatchRooms: config.publicMatchRooms, stickySuspended: active?.identity_map.stickySuspended }),
+      now, active?.checkin_message_id ?? null, active?.m1_message_id ?? null, active?.m2_message_id ?? null
+    ]);
+    if (!ownsRuntime()) throw new RuleError('The bot is unavailable. Retry when Discord reconnects.');
+    return draft.game;
+  }));
+}
+
 export async function bindCard(config: PrivateDiscordConfig, eventId: string, slot: CardSlot, id: string): Promise<void> {
   if (!/^[1-9]\d{14,21}$/.test(id)) throw new RuleError('Invalid Discord message ID.');
   await withClient(client => transaction(client, async () => {

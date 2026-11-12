@@ -88,7 +88,7 @@
 }
 .shell-sidebar-tools.is-collapsed { justify-content: center; }
 .shell-sidebar-brand { display: flex; flex: 1; min-width: 0; align-items: center; gap: 9px; text-align: left; border-radius: 7px; }
-.shell-sidebar-brand:focus-visible { outline: 2px solid var(--color-accent-fill); outline-offset: 2px; }
+.shell-sidebar-home { flex-shrink: 0; margin-block-end: 7px; }
 .shell-sidebar[data-collapsed] {
   --rail-scroll-offset: calc(var(--shell-gap) - 4px);
   width: calc(100% + var(--rail-scroll-offset));

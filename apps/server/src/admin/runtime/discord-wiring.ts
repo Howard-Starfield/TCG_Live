@@ -7,6 +7,7 @@ import { DiscordAdminRuntime, type AdminController, type AdminGateway, type Admi
 import type { MemberFetcher } from './identity.js';
 import type { ArtworkStore } from '../../artwork/store.js';
 import { pgTournamentDirectory, type TournamentDirectory } from '../../tournaments/directory.js';
+import { ControllerUnavailableError } from '../../discord/controller.js';
 
 export interface DiscordAdminOptions {
   adminConfig: AdminConfig;
@@ -42,17 +43,22 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     runnerId: options.runnerId, commandsEnabled: options.adminConfig.commandsEnabled,
     publicMatchRooms: options.publicMatchRooms, ...(options.lease ? { lease: options.lease } : {})
   });
-  let artworkController: AdminController | undefined;
+  let attachedController: AdminController | undefined;
   const handler = (options.createHandler ?? createAdminHandler)({
     runtime, port: options.port, mode: 'discord', commandsEnabled: options.adminConfig.commandsEnabled,
     webDist: options.adminConfig.webDist,
     ...(options.artwork ? { artwork: options.artwork } : {}),
     ...(options.artwork ? { applyArtwork: () => {
       if (options.lease?.isLost()) return Promise.resolve({ status: 'pending' as const, message: 'Bot ownership was lost.' });
-      return artworkController?.refreshArtworkExisting?.() ??
+      return attachedController?.refreshArtworkExisting?.() ??
         Promise.resolve({ status: 'pending' as const, message: 'Existing Discord panels are not available yet.' });
     } } : {}),
     tournaments: options.tournaments ?? pgTournamentDirectory(() => !!options.lease && !options.lease.isLost()),
+    ...(options.adminConfig.commandsEnabled ? { openSignup: async (id, expectedId) => {
+      if (runtime.status().gateway !== 'ready' || !attachedController?.openSignup)
+        throw new ControllerUnavailableError('Discord is not ready. Retry when the bot reconnects.');
+      return attachedController.openSignup(id, expectedId, async game => { await options.artwork?.selectGame(game); });
+    } } : {}),
     ...(options.persistentSessions ? { persistentSessions: true } : {}),
     ...(options.launcher ? { launcher: options.launcher } : {})
   });
@@ -63,7 +69,7 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     handler, runtime,
     attachClient: (gateway, members) => { try { runtime.attachGateway(gateway, members); } catch { /* Console only. */ } },
     attachController: controller => {
-      artworkController = controller;
+      attachedController = controller;
       try { runtime.attachController(controller); } catch { /* Console only. */ }
     },
     attachRooms: rooms => { try { runtime.attachRooms(rooms); } catch { /* Console only. */ } },

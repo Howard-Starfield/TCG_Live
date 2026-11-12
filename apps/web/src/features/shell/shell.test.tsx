@@ -189,6 +189,11 @@ describe('home', () => {
     await user.click(within(actions).getByRole('button', { name: 'Match M2' }));
     await ready();
     expect(screen.getByRole('button', { name: 'Match M2', pressed: true })).toBeInTheDocument();
+    const sidebar = screen.getByRole('complementary', { name: 'Sidebar' });
+    await user.click(within(sidebar).getByRole('button', { name: 'Collapse sidebar' }));
+    await user.click(within(sidebar).getByRole('button', { name: 'Home' }));
+    expect(await screen.findByRole('heading', { name: 'Home' })).toBeInTheDocument();
+    expect(within(sidebar).getByRole('button', { name: 'Home' })).toHaveAttribute('aria-current', 'page');
   });
 });
 
@@ -237,6 +242,9 @@ describe('sidebar', () => {
         const draft = { eventId: body.draftId, name: body.name, game: body.game, status: 'draft',
           kind: 'signup', createdAtMs: liveDispute.createdAtMs + 1, retiredAtMs: null };
         entries.unshift(draft);
+        server.always(`POST /tournaments/${draft.eventId}/open-signup`, () => json(409, {
+          error: { code: 'conflict', message: 'Finish the current round before opening a new tournament.' }
+        }));
         return json(201, draft);
       });
     } });
@@ -257,6 +265,13 @@ describe('sidebar', () => {
     expect(screen.queryByRole('group', { name: 'Previews' })).not.toBeInTheDocument();
     expect(server.callsTo(`GET /events/${entries[0]!.eventId}/snapshot`)).toHaveLength(0);
     expect(server.callsTo('POST /tournaments/drafts')).toHaveLength(1);
+    const activationPath = `POST /tournaments/${entries[0]!.eventId}/open-signup`;
+    expect(server.callsTo(activationPath)).toHaveLength(0);
+    await user.click(screen.getByRole('button', { name: 'Open signup' }));
+    const confirmation = await screen.findByRole('alertdialog', { name: 'Open signup for Saturday Cup?' });
+    await user.click(within(confirmation).getByRole('button', { name: 'Open signup' }));
+    expect(await screen.findByText('Finish the current round before opening a new tournament.')).toBeInTheDocument();
+    expect(server.callsTo(activationPath)[0]?.body).toEqual({ expectedActiveEventId: liveDispute.eventId });
     await user.click(screen.getByRole('button', { name: /Live Cup/ }));
     expect(await screen.findByRole('group', { name: 'Previews' })).toBeInTheDocument();
   });

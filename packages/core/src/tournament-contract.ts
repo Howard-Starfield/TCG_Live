@@ -36,3 +36,12 @@ export interface CreateTournamentDraftDto {
   name?: string;
   game: ArtworkGame;
 }
+
+export interface OpenTournamentSignupRequest {
+  expectedActiveEventId: string | null;
+}
+
+export interface OpenTournamentSignupResult {
+  eventId: string;
+  panels: 'posted' | 'pending';
+}
