@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { EventSnapshotDto } from '@tcg-live/core';
 
@@ -14,7 +13,6 @@ function ChartDetails({ row, capacity }: { row: ChartRow; capacity: number }) {
 }
 
 export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }) {
-  const [view, setView] = useState<'bar' | 'donut'>('bar');
   const seats = Object.values(snapshot.seats);
   const assigned = seats.filter(seat => seat !== null).length;
   const capacity = snapshot.signup?.capacity ?? seats.length;
@@ -38,19 +36,13 @@ export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }
   };
 
   return <>
-    <div className="home-chart-heading">
-      <p className="home-card-count"><strong>{signup ? joined : assigned}</strong><span> of {capacity} {signup ? 'joined' : 'assigned'}</span></p>
-      <div className="home-chart-toggle" role="group" aria-label="Player chart view">
-        <button type="button" aria-pressed={view === 'bar'} onClick={() => setView('bar')}>Bar</button>
-        <button type="button" aria-pressed={view === 'donut'} onClick={() => setView('donut')}>Donut</button>
-      </div>
-    </div>
+    <p className="home-card-count"><strong>{signup ? joined : assigned}</strong><span> of {capacity} {signup ? 'joined' : 'assigned'}</span></p>
     <ul className="sr-only" aria-label="Player counts">
       {counts.map(row => <li key={row.label}><span>{row.label}</span><strong>{row.value}</strong></li>)}
     </ul>
-    <div className="home-player-chart" data-view={view}>
+    <div className="home-player-chart">
       <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 260, height: 158 }}>
-        {view === 'bar' ? <BarChart data={counts} accessibilityLayer margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
+        <BarChart data={counts} accessibilityLayer margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke="var(--color-line-strong)" strokeDasharray="2 4" />
           <XAxis dataKey="label" axisLine={false} tickLine={false} tickMargin={8}
             tick={{ fontSize: 11, fill: 'var(--color-fg-muted)' }} />
@@ -62,20 +54,24 @@ export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }
           <Bar dataKey="value" radius={[3, 3, 0, 0]} maxBarSize={25} {...MOTION}>
             {counts.map(row => <Cell key={row.label} fill={row.color} />)}
           </Bar>
-        </BarChart> : <PieChart accessibilityLayer>
-          <Pie data={breakdown} dataKey="value" nameKey="label" innerRadius={43} outerRadius={65}
-            paddingAngle={breakdown.length > 1 ? 2 : 0} stroke="none" {...MOTION}>
-            {breakdown.map(row => <Cell key={row.label} fill={row.color} />)}
-          </Pie>
-          <Tooltip {...MOTION} content={({ active, payload }) => renderDetails(active, breakdown, payload[0]?.name)} />
-        </PieChart>}
+        </BarChart>
       </ResponsiveContainer>
-      {view === 'donut' && <div className="home-donut-center" aria-hidden="true">
-        <strong>{capacity - joined}</strong><span>open seats</span>
-      </div>}
     </div>
-    {view === 'donut' && <ul className="home-chart-legend" aria-label="Seat breakdown">
-      {breakdown.map(row => <li key={row.label}><i style={{ background: row.color }} aria-hidden="true" />{row.label} <strong>{row.value}</strong></li>)}
-    </ul>}
+    <div className="home-seat-donut">
+      <PieChart width={72} height={72} accessibilityLayer aria-label="Seat availability">
+        <Pie data={breakdown} dataKey="value" nameKey="label" innerRadius={23} outerRadius={32}
+          paddingAngle={breakdown.length > 1 ? 2 : 0} stroke="none" {...MOTION}>
+          {breakdown.map(row => <Cell key={row.label} fill={row.color} />)}
+        </Pie>
+        <Tooltip {...MOTION} position={{ x: -140 }} allowEscapeViewBox={{ x: true, y: true }}
+          content={({ active, payload }) => renderDetails(active, breakdown, payload[0]?.name)} />
+      </PieChart>
+      <div className="home-donut-center" aria-hidden="true">
+        <strong>{capacity - joined}</strong><span>open seats</span>
+      </div>
+    </div>
+    <ul className="sr-only" aria-label="Seat breakdown">
+      {breakdown.map(row => <li key={row.label}>{row.label} {row.value}</li>)}
+    </ul>
   </>;
 }

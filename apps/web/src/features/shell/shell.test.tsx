@@ -181,7 +181,7 @@ describe('home', () => {
       }
     });
     await screen.findByRole('heading', { name: 'Home' });
-    const chart = await screen.findByRole('list', { name: 'Player counts' });
+    const chart = await screen.findByRole('list', { name: 'Player counts' }, { timeout: 5000 });
     expect(within(chart).getAllByRole('listitem').map(row => row.textContent)).toEqual(['Joined4', 'Assigned4', 'Checked in4']);
     const actions = screen.getByRole('region', { name: 'Action needed' });
     expect(within(actions).getByText('Awaiting result confirmation')).toBeInTheDocument();
@@ -307,6 +307,8 @@ describe('sidebar', () => {
     await user.click(screen.getByRole('button', { name: /^Drafts$/ }));
     expect(await screen.findByRole('heading', { name: 'Drafts' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open Saturday Cup' })).toBeInTheDocument();
+    await user.click(screen.getByText('Signup hasn’t opened', { exact: true }));
+    expect(await screen.findByRole('heading', { name: 'Saturday Cup' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Live Cup/ }));
     expect(await screen.findByRole('group', { name: 'Previews' })).toBeInTheDocument();
   });

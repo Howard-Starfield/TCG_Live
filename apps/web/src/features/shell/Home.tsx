@@ -1,7 +1,7 @@
 import { ArrowUpRight, Gavel, ListChecks, Search, UserRound } from 'lucide-react';
 import { DEFAULT_MATCH_MINUTES, type TournamentDirectoryEntryDto } from '@tcg-live/core';
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { Button, IconButton, Input } from '../../ui';
+import { Button, Input } from '../../ui';
 import { gameLabel } from '../tournaments/CreateTournamentDialog';
 import { eventLabel, STAGE_LABEL } from './labels';
 import { useShell } from './model';
@@ -12,11 +12,10 @@ const PlayerChart = lazy(() => import('./PlayerChart'));
 
 function DraftCard({ draft }: { draft: TournamentDirectoryEntryDto }) {
   const shell = useShell();
-  return <article className="home-event">
+  return <article className="home-event" onClick={() => shell.selectDraft(draft)}>
     <div className="home-event-heading">
-      <div><p>Draft{draft.game && ` · ${gameLabel[draft.game]}`}</p><h3>{draft.name}</h3></div>
-      <IconButton size="sm" aria-label={`Open ${draft.name}`} icon={<ArrowUpRight aria-hidden />}
-        onClick={() => shell.selectDraft(draft)} />
+      <div><p>Draft{draft.game && ` · ${gameLabel[draft.game]}`}</p>
+        <h3><button type="button" aria-label={`Open ${draft.name}`}>{draft.name}</button></h3></div>
     </div>
     <div className="home-draft-seats" aria-hidden="true">
       {['A', 'B', 'C', 'D'].map(seat => <span key={seat}><UserRound /></span>)}
@@ -76,14 +75,12 @@ export function Home() {
       <section aria-labelledby="home-events">
         <div className="home-section-heading">
           <h2 id="home-events">{shell.draftsOpen ? 'Saved drafts' : 'Upcoming and live'}</h2>
-          {!shell.draftsOpen && activeId && <Button variant="ghost" size="sm" onClick={shell.followActive}>Open live event</Button>}
         </div>
         <div className="home-events">
-          {!shell.draftsOpen && activeId && <article className="home-event">
+          {!shell.draftsOpen && activeId && <article className="home-event home-live-event" onClick={shell.followActive}>
             <div className="home-event-heading">
               <div><p>{snapshot ? STAGE_LABEL[snapshot.stage] : 'Live event'}{named?.game && ` · ${gameLabel[named.game]}`}</p>
-                <h3>{named?.name ?? (active ? eventLabel(active) : 'Live tournament')}</h3></div>
-              <IconButton size="sm" aria-label="Open tournament" icon={<ArrowUpRight aria-hidden />} onClick={shell.followActive} />
+                <h3><button type="button">{named?.name ?? (active ? eventLabel(active) : 'Live tournament')}</button></h3></div>
             </div>
             {snapshot ? <Suspense fallback={<p className="home-event-empty" role="status">Loading player chart…</p>}>
               <PlayerChart snapshot={snapshot} />

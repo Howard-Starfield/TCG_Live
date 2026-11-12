@@ -17,7 +17,7 @@
 .home-inner h2 { font-size: 16px; font-weight: 650; }
 .home-events { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .home-event, .home-actions, .home-empty { padding: 18px; border: 1px solid var(--color-line); border-radius: 12px; }
-.home-event { display: flex; min-height: 230px; flex-direction: column; background: var(--color-raised); transition: border-color 180ms ease, box-shadow 180ms ease; }
+.home-event { position: relative; cursor: pointer; display: flex; min-height: 230px; flex-direction: column; background: var(--color-raised); transition: border-color 180ms ease, box-shadow 180ms ease; }
 .home-event:focus-within, .home-event:hover { border-color: var(--color-line-strong); box-shadow: var(--shadow-raised); }
 .home-event-heading { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
 .home-event-heading h3 { font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
@@ -31,20 +31,19 @@
 .home-empty { grid-column: 1 / -1; }
 .home-card-count { margin-block: 10px; font-variant-numeric: tabular-nums; }
 .home-card-count strong, .home-action-grid > div > strong { font-size: 27px; font-weight: 650; }
-.home-chart-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
-.home-chart-toggle { display: inline-flex; padding: 2px; border: 1px solid var(--color-line); border-radius: 7px; background: var(--color-sunken); }
-.home-chart-toggle button { padding: 4px 8px; border-radius: 5px; color: var(--color-fg-muted); font-size: 11px; }
-.home-chart-toggle button[aria-pressed="true"] { background: var(--color-raised); color: var(--color-fg); box-shadow: var(--shadow-hairline); }
+.home-event-heading button { text-align: start; }
+.home-live-event .home-event-heading, .home-live-event .home-card-count { padding-inline-end: 76px; }
+.home-seat-donut { position: absolute; z-index: 1; inset-block-start: 12px; inset-inline-end: 14px; width: 72px; height: 72px; }
+.home-seat-donut .recharts-tooltip-wrapper { z-index: 2; }
+.home-seat-donut .home-chart-tooltip { width: 132px; }
 .home-player-chart { position: relative; height: 158px; min-width: 0; margin-top: auto; }
 .home-chart-tooltip { display: grid; min-width: 115px; gap: 5px; padding: 8px 10px; border: 1px solid var(--color-line);
   border-radius: 7px; background: var(--color-raised); box-shadow: var(--shadow-pop); color: var(--color-fg); font-size: 11px; }
-.home-chart-tooltip span, .home-chart-legend li { display: flex; align-items: center; gap: 5px; color: var(--color-fg-muted); }
-.home-chart-tooltip i, .home-chart-legend i { width: 7px; height: 7px; flex: none; border-radius: 2px; }
+.home-chart-tooltip span { display: flex; align-items: center; gap: 5px; color: var(--color-fg-muted); }
+.home-chart-tooltip i { width: 7px; height: 7px; flex: none; border-radius: 2px; }
 .home-donut-center { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; pointer-events: none; }
-.home-donut-center strong { font-size: 24px; line-height: 1.05; }
-.home-donut-center span, .home-chart-legend { font-size: 11px; color: var(--color-fg-muted); }
-.home-chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding-top: 4px; }
-.home-chart-legend strong { color: var(--color-fg); }
+.home-donut-center strong { font-size: 17px; line-height: 1.05; }
+.home-donut-center span { font-size: 8px; color: var(--color-fg-muted); }
 .home-actions { margin-top: 18px; background: var(--color-base); }
 .home-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
 .home-action-grid > div { min-width: 0; padding: 0 14px; }
