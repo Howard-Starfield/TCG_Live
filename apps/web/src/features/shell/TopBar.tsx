@@ -1,4 +1,4 @@
-import { ChevronDown, Table2, Workflow } from 'lucide-react';
+import { ChevronDown, FileClock, House, Table2, Workflow } from 'lucide-react';
 import { Avatar, Breadcrumb, ConnectionPill, ToggleTab, Tooltip, type BreadcrumbItem } from '../../ui';
 import { useConsolePreferences } from '../../app/preferences';
 import { AccountMenu, ThemeIcon } from './AccountMenu';
@@ -17,8 +17,7 @@ export function TopBar() {
     id: 'root', label: 'TCG Live',
     ...(!shell.home ? { onSelect: shell.showHome } : {})
   }];
-  if (shell.home) crumbs.push({ id: 'home', label: shell.draftsOpen ? 'Drafts' : 'Home' });
-  else if (shell.draft) crumbs.push({ id: 'draft-name', label: shell.draft.name }, { id: 'draft-stage', label: 'Draft' });
+  if (shell.draft) crumbs.push({ id: 'draft-name', label: shell.draft.name }, { id: 'draft-stage', label: 'Draft' });
   else if (source) crumbs.push({ id: 'event', label: named?.name || eventLabel(source) });
   if (!shell.home && !shell.draft && viewed.snapshot) crumbs.push({ id: 'stage', label: viewed.retired ? 'History' : STAGE_LABEL[viewed.snapshot.stage] });
   else if (!shell.home && !shell.draft && viewed.waitingForDatabase) crumbs.push({ id: 'none', label: 'Waiting for the database' });
@@ -29,7 +28,10 @@ export function TopBar() {
 
   return (
     <header className="shell-topbar">
-      <Breadcrumb items={crumbs} className="shell-crumbs" />
+      {shell.home ? <h1 className="home-title">
+        <span className="home-icon">{shell.draftsOpen ? <FileClock aria-hidden /> : <House aria-hidden />}</span>
+        {shell.draftsOpen ? 'Drafts' : 'Home'}
+      </h1> : <Breadcrumb items={crumbs} className="shell-crumbs" />}
       {!shell.home && !shell.draft && <><span aria-hidden className="shell-vsep" />
       <div role="group" aria-label="Previews" className="shell-toggles">
         <span data-toggle="live" className="contents">

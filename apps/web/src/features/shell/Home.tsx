@@ -1,6 +1,6 @@
-import { ArrowUpRight, FileClock, Gavel, House, ListChecks, Search, UserRound } from 'lucide-react';
-import { DEFAULT_MATCH_MINUTES, type EventSnapshotDto, type TournamentDirectoryEntryDto } from '@tcg-live/core';
-import { useEffect, useState } from 'react';
+import { ArrowUpRight, Gavel, ListChecks, Search, UserRound } from 'lucide-react';
+import { DEFAULT_MATCH_MINUTES, type TournamentDirectoryEntryDto } from '@tcg-live/core';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Button, IconButton, Input } from '../../ui';
 import { gameLabel } from '../tournaments/CreateTournamentDialog';
 import { eventLabel, STAGE_LABEL } from './labels';
@@ -8,28 +8,7 @@ import { useShell } from './model';
 import { useTournamentDirectory } from '../tournaments/directory';
 import './home.css';
 
-function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }) {
-  const seats = Object.values(snapshot.seats);
-  const assigned = seats.filter(seat => seat !== null).length;
-  const capacity = snapshot.signup?.capacity ?? seats.length;
-  const counts = [
-    { label: 'Joined', value: snapshot.signup?.roster.length ?? assigned },
-    { label: 'Assigned', value: assigned },
-    { label: 'Checked in', value: snapshot.checkins.length }
-  ];
-  const signup = snapshot.stage === 'signup';
-  return <>
-    <p className="home-card-count"><strong>{signup ? counts[0]?.value : assigned}</strong><span> of {capacity} {signup ? 'joined' : 'assigned'}</span></p>
-    <ul className="home-chart" aria-label="Player counts">
-      {counts.map(({ label, value }) => <li key={label}>
-        <span className="home-chart-track" aria-hidden="true">
-          <span style={{ height: `${100 * value / capacity}%` }} />
-        </span>
-        <span>{label}</span><strong>{value}</strong>
-      </li>)}
-    </ul>
-  </>;
-}
+const PlayerChart = lazy(() => import('./PlayerChart'));
 
 function DraftCard({ draft }: { draft: TournamentDirectoryEntryDto }) {
   const shell = useShell();
@@ -76,8 +55,6 @@ export function Home() {
   const countsAvailable = !!snapshot || (!activeId && shell.eventsState === 'ready' && shell.status?.database !== 'unavailable');
   return <div className="home-page">
     <div className="home-inner">
-      <h1><span className="home-icon">{shell.draftsOpen ? <FileClock aria-hidden /> : <House aria-hidden />}</span>
-        {shell.draftsOpen ? 'Drafts' : 'Home'}</h1>
       <div className="home-search">
         <Search aria-hidden />
         <Input type="search" value={search} maxLength={120}
@@ -108,7 +85,9 @@ export function Home() {
                 <h3>{named?.name ?? (active ? eventLabel(active) : 'Live tournament')}</h3></div>
               <IconButton size="sm" aria-label="Open tournament" icon={<ArrowUpRight aria-hidden />} onClick={shell.followActive} />
             </div>
-            {snapshot ? <PlayerChart snapshot={snapshot} /> : <p className="home-event-empty">
+            {snapshot ? <Suspense fallback={<p className="home-event-empty" role="status">Loading player chart…</p>}>
+              <PlayerChart snapshot={snapshot} />
+            </Suspense> : <p className="home-event-empty">
               {shell.viewed.status === 'error' ? 'Player counts unavailable.' : 'Loading player counts…'}</p>}
           </article>}
           {visibleDrafts.map(draft => <DraftCard key={draft.eventId} draft={draft} />)}

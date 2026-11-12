@@ -1,6 +1,7 @@
 .home-page { overflow: auto; flex: 1; container-type: inline-size; }
-.home-inner { max-width: 1280px; margin-inline: auto; padding: clamp(20px, 4cqi, 52px); }
-.home-inner h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; font-size: 29px; font-weight: 650; letter-spacing: -.03em; }
+.home-inner { padding: 16px 24px 32px; }
+.shell-topbar:has(.home-title) { height: 56px; padding-inline: 24px; }
+.home-title { display: flex; align-items: center; gap: 10px; font-size: 24px; font-weight: 650; letter-spacing: -.03em; }
 .home-search { position: relative; margin-bottom: 26px; }
 .home-search > svg { position: absolute; z-index: 1; inset-inline-start: 15px; top: 50%; width: 17px; height: 17px; transform: translateY(-50%); color: var(--color-fg-muted); pointer-events: none; }
 .home-search > input { height: 46px; border-radius: 999px; padding-inline: 43px 16px; }
@@ -30,14 +31,20 @@
 .home-empty { grid-column: 1 / -1; }
 .home-card-count { margin-block: 10px; font-variant-numeric: tabular-nums; }
 .home-card-count strong, .home-action-grid > div > strong { font-size: 27px; font-weight: 650; }
-.home-chart { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: auto; }
-.home-chart li { display: grid; justify-items: center; gap: 4px; text-align: center; font-size: 11px; color: var(--color-fg-muted); }
-.home-chart li strong { color: var(--color-fg); font-variant-numeric: tabular-nums; }
-.home-chart-track { display: flex; align-items: end; width: min(100%, 26px); height: 78px; overflow: hidden; border-radius: 4px; background: var(--color-sunken); }
-.home-chart-track > span { width: 100%; border-radius: 4px 4px 0 0; background: var(--color-accent-fill); transition: height 400ms ease; }
-.home-chart li:first-child .home-chart-track > span { background: var(--color-fg-muted); }
-.home-chart li:last-child .home-chart-track > span { background: var(--color-success); }
-@starting-style { .home-chart-track > span { height: 0; } }
+.home-chart-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
+.home-chart-toggle { display: inline-flex; padding: 2px; border: 1px solid var(--color-line); border-radius: 7px; background: var(--color-sunken); }
+.home-chart-toggle button { padding: 4px 8px; border-radius: 5px; color: var(--color-fg-muted); font-size: 11px; }
+.home-chart-toggle button[aria-pressed="true"] { background: var(--color-raised); color: var(--color-fg); box-shadow: var(--shadow-hairline); }
+.home-player-chart { position: relative; height: 158px; min-width: 0; margin-top: auto; }
+.home-chart-tooltip { display: grid; min-width: 115px; gap: 5px; padding: 8px 10px; border: 1px solid var(--color-line);
+  border-radius: 7px; background: var(--color-raised); box-shadow: var(--shadow-pop); color: var(--color-fg); font-size: 11px; }
+.home-chart-tooltip span, .home-chart-legend li { display: flex; align-items: center; gap: 5px; color: var(--color-fg-muted); }
+.home-chart-tooltip i, .home-chart-legend i { width: 7px; height: 7px; flex: none; border-radius: 2px; }
+.home-donut-center { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; pointer-events: none; }
+.home-donut-center strong { font-size: 24px; line-height: 1.05; }
+.home-donut-center span, .home-chart-legend { font-size: 11px; color: var(--color-fg-muted); }
+.home-chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding-top: 4px; }
+.home-chart-legend strong { color: var(--color-fg); }
 .home-actions { margin-top: 18px; background: var(--color-base); }
 .home-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
 .home-action-grid > div { min-width: 0; padding: 0 14px; }
@@ -49,5 +56,9 @@
 @container (max-width: 760px) { .home-events { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @container (max-width: 490px) { .home-events { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) {
-  .home-event, .home-chart-track > span { transition: none; }
+  .home-event { transition: none; }
+}
+
+@media (max-width: 760px) {
+  .home-inner, .shell-topbar:has(.home-title) { padding-inline: 14px; }
 }
