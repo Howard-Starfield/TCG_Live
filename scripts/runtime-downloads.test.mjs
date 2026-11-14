@@ -43,10 +43,59 @@ test('failed downloads retry without leaving an archive behind', async () => tem
     { fetchImpl: async () => { attempts++; throw new Error('offline'); }, write: () => {}, sleep: async () => {} }), /offline/);
   assert.equal(attempts, 3);
   assert.equal(existsSync(destination), false);
-  const corrupt = Buffer.from('corrupt');
+  const corrupt = Buffer.from('corrupt!');
   await assert.rejects(downloadArchive(destination, artifactFor(Buffer.from('expected')),
     { fetchImpl: async () => new Response(corrupt), write: () => {}, sleep: async () => {} }), /checksum or size/);
   assert.equal(existsSync(destination), false);
+  await assert.rejects(downloadArchive(destination, artifactFor(Buffer.from('expected')),
+    { fetchImpl: async () => new Response('short'), write: () => {}, sleep: async () => {} }), /ended early/);
+  assert.equal(existsSync(destination), false);
+}));
+
+const interrupted = (bytes, cut) => {
+  let sent = false;
+  return new Response(new ReadableStream({ pull(controller) {
+    if (sent) controller.error(new Error('connection reset'));
+    else { sent = true; controller.enqueue(bytes.subarray(0, cut)); }
+  } }));
+};
+
+test('interrupted download resumes with a Range request and verifies the whole file', async () => temporary(async root => {
+  const bytes = Buffer.from('0123456789abcdefghij');
+  const destination = path.join(root, 'download.zip');
+  const ranges = [];
+  await downloadArchive(destination, artifactFor(bytes), { write: () => {}, sleep: async () => {},
+    fetchImpl: async (_url, init) => {
+      const range = init.headers?.Range;
+      ranges.push(range ?? null);
+      if (!range) return interrupted(bytes, 7);
+      const start = Number(/^bytes=(\d+)-$/.exec(range)[1]);
+      return new Response(bytes.subarray(start), { status: 206, headers: {
+        'content-range': `bytes ${start}-${bytes.length - 1}/${bytes.length}` } });
+    } });
+  assert.deepEqual(ranges, [null, 'bytes=7-']);
+  assert.equal((await readFile(destination)).toString(), bytes.toString());
+}));
+
+test('server ignoring Range restarts from zero; stalled transfer aborts on idle timeout', async () => temporary(async root => {
+  const bytes = Buffer.from('0123456789abcdefghij');
+  const destination = path.join(root, 'download.zip');
+  let calls = 0;
+  await downloadArchive(destination, artifactFor(bytes), { write: () => {}, sleep: async () => {},
+    fetchImpl: async () => (++calls === 1 ? interrupted(bytes, 5) : new Response(bytes)) });
+  assert.equal(calls, 2);
+  assert.equal((await readFile(destination)).toString(), bytes.toString());
+  const stalled = path.join(root, 'stalled.zip');
+  let attempts = 0;
+  await assert.rejects(downloadArchive(stalled, artifactFor(bytes), { write: () => {}, sleep: async () => {},
+    stallMs: 20, fetchImpl: async (_url, init) => {
+      attempts++;
+      return new Response(new ReadableStream({ start(controller) {
+        init.signal.addEventListener('abort', () => controller.error(init.signal.reason));
+      } }));
+    } }), /stalled/);
+  assert.equal(attempts, 3);
+  assert.equal(existsSync(stalled), false);
 }));
 
 test('verified staged PostgreSQL publishes once and reuses the app-local bin', async () => temporary(async root => {

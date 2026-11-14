@@ -28,9 +28,24 @@ export interface RequestOptions {
 
 export interface AuditPageQuery { after?: number; limit?: number }
 
+/** Options for `requestRaw`: a body sent as is (binary uploads) and the raw response back. */
+export interface RawRequestOptions {
+  body?: BodyInit;
+  /** Content-Type of `body`. */
+  contentType?: string;
+  signal?: AbortSignal;
+  /** Accept header; defaults to any type. */
+  accept?: string;
+}
+
 /** Typed client for `/api/v1`. Every method rejects with ApiError, or rethrows an AbortError unchanged. */
 export interface ApiClient {
   request<T>(method: string, path: string, options?: RequestOptions): Promise<T>;
+  /**
+   * Like `request`, but sends `body` unchanged and resolves with the successful Response (for binary
+   * bodies such as artwork). Failures reject with ApiError exactly like `request`.
+   */
+  requestRaw(method: string, path: string, options?: RawRequestOptions): Promise<Response>;
   createSession(launchToken: string, signal?: AbortSignal): Promise<SessionGrantDto>;
   getSession(signal?: AbortSignal): Promise<SessionDto>;
   deleteSession(signal?: AbortSignal): Promise<void>;
@@ -55,13 +70,17 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   const doFetch: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const baseUrl = options.baseUrl ?? '';
 
-  async function send(method: string, path: string, request: RequestOptions, accept: string): Promise<Response> {
+  async function send(method: string, path: string, request: RequestOptions, accept: string,
+    raw?: { body: BodyInit; contentType: string | undefined }): Promise<Response> {
     const auth = request.auth ?? true;
     const headers: Record<string, string> = { Accept: accept, ...request.headers };
     const token = auth ? options.getToken() : null;
     if (token) headers.Authorization = `Bearer ${token}`;
     const init: RequestInit = { method, headers, cache: 'no-store', credentials: 'omit' };
-    if (request.body !== undefined) {
+    if (raw) {
+      if (raw.contentType) headers['Content-Type'] = raw.contentType;
+      init.body = raw.body;
+    } else if (request.body !== undefined) {
       headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(request.body);
     }
@@ -105,6 +124,8 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
   return {
     request,
+    requestRaw: (method, path, raw = {}) => send(method, path, withSignal(raw.signal), raw.accept ?? '*/*',
+      raw.body === undefined ? undefined : { body: raw.body, contentType: raw.contentType }),
     createSession: (launchToken, signal) =>
       request<SessionGrantDto>('POST', '/session', { body: { token: launchToken }, auth: false, ...withSignal(signal) }),
     getSession: signal => request<SessionDto>('GET', '/session', withSignal(signal)),

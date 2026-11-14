@@ -10,7 +10,7 @@ export { AdminDataProvider } from './provider';
 // API client and errors
 /** Typed `/api/v1` client; rejects with ApiError (aborts rethrown unchanged). */
 export { createApiClient } from './client';
-export type { ApiClient, ApiClientOptions, AuditPageQuery, FetchLike, RequestOptions } from './client';
+export type { ApiClient, ApiClientOptions, AuditPageQuery, FetchLike, RawRequestOptions, RequestOptions } from './client';
 /** Typed API failure: `code`, `status` (0 = no response), `message`, optional `snapshot` and `retryAfterMs`. */
 export { ApiError, isAbortError } from './errors';
 export type { ApiErrorCode } from './errors';

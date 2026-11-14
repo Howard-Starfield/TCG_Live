@@ -12,6 +12,9 @@ const GAME_LABEL: Record<string, string> = {
   'one-piece': 'One Piece', 'one-punch-man': 'One Punch Man', pokemon: 'Pokémon'
 };
 
+export const DRAFT_POLL_MIN_MS = 3_000;
+export const DRAFT_POLL_MAX_MS = 60_000;
+
 export function DraftDetails({ draft }: { draft: TournamentDirectoryEntryDto }) {
   const shell = useShell();
   const { api, queryClient } = useAdminData();
@@ -24,14 +27,23 @@ export function DraftDetails({ draft }: { draft: TournamentDirectoryEntryDto }) 
   useEffect(() => {
     if (activated) selectEvent(draft.eventId);
   }, [activated, selectEvent, draft.eventId]);
+  // Signup time has passed but the event is not active yet: poll for it, backing off (3 s doubling to
+  // 60 s) so a draft that never opens does not poll every 3 s forever. A visible change restarts it.
   useEffect(() => {
     if (draft.signupOpensAtMs === undefined || signupIsFuture || activated) return;
-    const timer = window.setInterval(() => {
-      void queryClient.invalidateQueries({ queryKey: tournamentDirectoryKey });
-      void queryClient.invalidateQueries({ queryKey: adminKeys.events() });
-    }, 3_000);
-    return () => window.clearInterval(timer);
-  }, [draft.signupOpensAtMs, signupIsFuture, activated, queryClient]);
+    let delay = DRAFT_POLL_MIN_MS;
+    let timer: number;
+    const schedule = () => {
+      timer = window.setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: tournamentDirectoryKey });
+        void queryClient.invalidateQueries({ queryKey: adminKeys.events() });
+        delay = Math.min(DRAFT_POLL_MAX_MS, delay * 2);
+        schedule();
+      }, delay);
+    };
+    schedule();
+    return () => window.clearTimeout(timer);
+  }, [draft.signupOpensAtMs, draft.status, signupIsFuture, activated, queryClient]);
   const [confirm, setConfirm] = useState<OpenTournamentSignupRequest | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

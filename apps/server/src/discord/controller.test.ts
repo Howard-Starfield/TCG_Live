@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createFixture, createSignupFixture, transition, type Command, type EventState, type Outcome } from '../rehearsal/domain.js';
+import { adoptRunningClocks, createFixture, createSignupFixture, createTournamentFirstRound, transition, type Command, type EventState, type Outcome, type Player } from '../rehearsal/domain.js';
 import { buttonId, parseButtonId, renderCard, type CardPayload } from './cards.js';
 import { PrivateDiscordController, type CardTransport, type PrivateInteraction } from './controller.js';
 import type { PrivateDiscordConfig } from './config.js';
@@ -797,4 +797,136 @@ test('first resume consent claims one targeted reminder and leaves ordinary card
   assert.equal(claims, 2);
   assert.equal(replies.at(-1), 'Saved: resume_consent. Card update pending.');
   await controller.stop();
+});
+
+const until = async (condition: () => boolean, label: string) => {
+  const limit = Date.now() + 2_000;
+  while (!condition() && Date.now() < limit) await new Promise(resolve => setTimeout(resolve, 2));
+  assert.ok(condition(), label);
+};
+
+test('startup adopts the saved signup channel and takes over running clocks left by a stopped runner', async () => {
+  const restarted: PrivateDiscordConfig = { ...config };
+  const base = createFixture(eventId, 20);
+  let state: EventState = { ...base, version: 3, published: true,
+    matches: [{ ...base.matches[0]!, phase: 'running', runnerId: 'stopped-runner', startedAtMs: Date.now(), remainingMs: 20 }, base.matches[1]!] };
+  const session: SessionRow = { event_id: eventId, application_id: config.applicationId, guild_id: config.guildId,
+    channel_id: ids[6]!, identity_map: { players: config.players, adminId: config.adminId }, status: 'active',
+    checkin_message_id: null, m1_message_id: null, m2_message_id: null };
+  const adoptedChannels: string[] = [];
+  const timerRunners: string[] = [];
+  const controller = new PrivateDiscordController(restarted, 'runner', {
+    async send() { throw new Error('no card creation'); }, async edit() {}, async pin() {}, classify() { return 'retry'; }
+  }, async () => ({ session, state }), async (context, command, runnerId) => {
+    assert.equal(command.type, 'clockCheck');
+    assert.equal(context.principalId, 'system:timer');
+    timerRunners.push(runnerId);
+    state = { ...state, version: 4, matches: [{ ...state.matches[0]!, phase: 'expired', runnerId: null,
+      startedAtMs: null, remainingMs: 0, judgeAttention: true }, state.matches[1]!] };
+    return { eventId, version: 4, applied: true, result: 'clockCheck' };
+  }, async () => {}, Date.now, 5, undefined, () => true, 5, undefined, undefined, undefined, undefined,
+  async (_config, adoptedEvent, runnerId) => {
+    assert.equal(adoptedEvent, eventId);
+    state = adoptRunningClocks(state, runnerId) ?? state;
+    return true;
+  });
+  try {
+    await controller.start(async id => { adoptedChannels.push(id); });
+    assert.deepEqual(adoptedChannels, [ids[6]]);
+    assert.equal(restarted.channelId, ids[6], 'commands and cards follow the saved signup channel');
+    assert.equal(state.matches[0]!.runnerId, 'runner');
+    await until(() => timerRunners.length > 0, 'the adopted clock re-arms its timer');
+    assert.deepEqual(timerRunners, ['runner']);
+    assert.equal(state.matches[0]!.phase, 'expired');
+  } finally { await controller.stop(); }
+});
+
+test('scheduled publication decides once at the start: never early, never later once too few checked in', async () => {
+  const base = createTournamentFirstRound(eventId, 60_000, 4, 0);
+  let state: EventState = { ...base, startsAtMs: 10_000, signup: { status: 'assigned',
+    roster: [ids[3]!, ids[4]!], assignment: { P1: ids[3]!, P2: ids[4]! } as unknown as Record<Player, string> }, checkins: ['P1'] };
+  const session: SessionRow = { event_id: eventId, application_id: config.applicationId, guild_id: config.guildId,
+    channel_id: config.channelId, identity_map: { kind: 'signup', adminId: config.adminId }, status: 'active',
+    checkin_message_id: null, m1_message_id: null, m2_message_id: null };
+  let now = 9_000;
+  const publications: number[] = [];
+  const controller = new PrivateDiscordController(config, 'runner', {
+    async send() { return ids[0]!; }, async edit() {}, async pin() {}, classify() { return 'retry'; }
+  }, async () => ({ session, state }), async context => {
+    publications.push(context.scheduledPublish!.startsAtMs);
+    state = { ...state, version: state.version + 1, published: true };
+    return { eventId, version: state.version, applied: true, result: 'publish' };
+  }, async () => {}, () => now);
+  try {
+    await controller.publishDueRound();
+    state = { ...state, checkins: ['P1', 'P2'] };
+    await controller.publishDueRound();
+    assert.deepEqual(publications, [], 'never before the scheduled start');
+    state = { ...state, checkins: ['P1'] };
+    now = 10_000;
+    await controller.publishDueRound();
+    state = { ...state, checkins: ['P1', 'P2'] };
+    now = 11_000;
+    await controller.publishDueRound();
+    assert.deepEqual(publications, [], 'a second check-in after the start does not publish');
+    state = { ...state, startsAtMs: 20_000 };
+    now = 20_000;
+    await controller.publishDueRound();
+    assert.deepEqual(publications, [20_000], 'a delayed start is decided again');
+  } finally { await controller.stop(); }
+});
+
+test('queued card refreshes coalesce while one is in flight', async () => {
+  const f = fixture();
+  f.session = { ...f.session, checkin_message_id: ids[0]! };
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let edits = 0;
+  const controller = new PrivateDiscordController(config, 'runner', {
+    async send() { throw new Error('no card creation'); },
+    async edit() { edits++; if (edits === 1) await gate; },
+    async pin() {}, classify() { return 'retry'; }
+  }, async () => ({ state: f.state, session: f.session }));
+  try {
+    controller.reconnect();
+    await until(() => edits === 1, 'first refresh is in flight');
+    for (let index = 0; index < 5; index++) controller.reconnect();
+    release();
+    await until(() => !controller.status().updatePending, 'refreshes settle');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(edits, 2, 'five queued requests share one refresh');
+  } finally { await controller.stop(); }
+});
+
+test('a signup card that failed to post after activation is created by the background retry', async () => {
+  const state = createSignupFixture(eventId);
+  let session: SessionRow = { event_id: eventId, application_id: config.applicationId, guild_id: config.guildId,
+    channel_id: config.channelId, identity_map: { kind: 'signup', adminId: config.adminId }, status: 'active',
+    checkin_message_id: null, m1_message_id: null, m2_message_id: null };
+  const sends: Array<string | undefined> = [];
+  const pins: string[] = [];
+  const controller = new PrivateDiscordController(config, 'runner', {
+    async send(_payload, slot, nonce) {
+      assert.equal(slot, 'checkin');
+      sends.push(nonce);
+      if (sends.length === 1) throw new Error('transient');
+      return ids[5]!;
+    },
+    async edit() {}, async pin(id) { pins.push(id); }, classify() { return 'retry'; }
+  }, async () => ({ state, session }), undefined, async (_config, _event, slot, id) => {
+    assert.equal(slot, 'checkin');
+    session = { ...session, checkin_message_id: id };
+  }, Date.now, 5);
+  try {
+    // openSignup sets this once the activation commits; the activation itself needs the DB suite.
+    (controller as unknown as { signupCardPending?: string }).signupCardPending = eventId;
+    controller.reconnect();
+    await until(() => session.checkin_message_id === ids[5], 'retry posts and binds the signup card');
+    assert.equal(sends.length, 2);
+    assert.ok(sends[0] && sends[0] === sends[1], 'retries reuse one Discord nonce, so an uncertain post is not duplicated');
+    assert.deepEqual(pins, [ids[5]]);
+    controller.reconnect();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(sends.length, 2, 'a bound card is only edited');
+  } finally { await controller.stop(); }
 });

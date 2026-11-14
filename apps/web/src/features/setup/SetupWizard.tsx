@@ -1,5 +1,5 @@
 import type { SetupChannelDto, SetupCheckDto, SetupGuildDto, SetupSelectionDto, SetupStatusDto } from '@tcg-live/core';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAdminData } from '../../data';
 import { Button, Field, Input, Select, Switch } from '../../ui';
 import { BrandMark } from '../shell/BrandMark';
@@ -33,26 +33,46 @@ export function SetupWizard() {
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
 
-  const refresh = async () => {
+  // Bumped by Refresh so the channel list is re-read too.
+  const [refreshCount, setRefreshCount] = useState(0);
+  // The saved selection seeds the form once; later refreshes must not overwrite in-progress choices.
+  const seeded = useRef(false);
+  const refreshAbort = useRef<AbortController | null>(null);
+
+  const refresh = useCallback(async () => {
+    refreshAbort.current?.abort();
+    const controller = new AbortController();
+    refreshAbort.current = controller;
+    const { signal } = controller;
     setError(null);
     try {
-      const next = await api.getSetupStatus();
+      const next = await api.getSetupStatus(signal);
+      if (signal.aborted) return;
       setStatus(next);
-      if (next.selection) setSelection(next.selection);
-      setCheck(next.check);
-      const available = await api.listSetupGuilds().catch(() => []);
+      // A frozen setup cannot be edited, so the saved selection always applies.
+      if (!seeded.current || next.frozen) {
+        seeded.current = true;
+        if (next.selection) setSelection(next.selection);
+        setCheck(next.check);
+      }
+      const available = await api.listSetupGuilds(signal).catch(() => []);
+      if (signal.aborted) return;
       setGuilds(available);
-    } catch (cause) { setError(errorText(cause)); }
-  };
-  useEffect(() => { void refresh(); }, [api]);
+    } catch (cause) { if (!signal.aborted) setError(errorText(cause)); }
+  }, [api]);
+  useEffect(() => {
+    void refresh();
+    return () => { refreshAbort.current?.abort(); };
+  }, [refresh]);
   useEffect(() => {
     let live = true;
+    const controller = new AbortController();
     setChannels([]);
-    if (selection.guildId) void api.listSetupChannels(selection.guildId).then(items => {
+    if (selection.guildId) void api.listSetupChannels(selection.guildId, controller.signal).then(items => {
       if (live) setChannels(items);
     }, cause => { if (live) setError(errorText(cause)); });
-    return () => { live = false; };
-  }, [api, selection.guildId]);
+    return () => { live = false; controller.abort(); };
+  }, [api, selection.guildId, refreshCount]);
 
   const set = (patch: Partial<SetupSelectionDto>) => { setSelection(current => ({ ...current, ...patch })); setCheck(null); };
   const setMatch = (slot: 'M1' | 'M2', id: string) => {
@@ -162,7 +182,7 @@ export function SetupWizard() {
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5">
           <Button variant="ghost" onClick={() => setStep(value => Math.max(0, value - 1))} disabled={step === 0 || busy || opening}>Back</Button>
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={() => void refresh()} disabled={busy || opening}>Refresh</Button>
+            <Button variant="secondary" onClick={() => { setRefreshCount(count => count + 1); void refresh(); }} disabled={busy || opening}>Refresh</Button>
             {step === 0 && <Button variant="primary" onClick={() => setStep(1)} disabled={!selection.guildId || !selection.adminId}>Next: channels</Button>}
             {step === 1 && <Button variant="primary" onClick={() => void review()} loading={busy}
               disabled={!selection.channelId || (!frozen && (!selection.matchChannels?.M1 || !selection.matchChannels?.M2))}>

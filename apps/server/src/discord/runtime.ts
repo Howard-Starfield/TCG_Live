@@ -26,6 +26,19 @@ function safeError(error: unknown): string {
   return error instanceof RuleError ? error.message : 'Private Discord operation failed.';
 }
 
+/** Per-key exponential backoff kept in memory, so a failing scheduled draft stops hammering Discord. */
+export class RetryBackoff {
+  private failures = new Map<string, { count: number; nextAt: number }>();
+  constructor(private readonly baseMs = 3_000, private readonly capMs = 5 * 60_000,
+    private readonly clock: () => number = Date.now) {}
+  ready(key: string): boolean { return (this.failures.get(key)?.nextAt ?? 0) <= this.clock(); }
+  failed(key: string): void {
+    const count = (this.failures.get(key)?.count ?? 0) + 1;
+    this.failures.set(key, { count, nextAt: this.clock() + Math.min(this.capMs, this.baseMs * 2 ** (count - 1)) });
+  }
+  succeeded(key: string): void { this.failures.delete(key); }
+}
+
 export function commandDefinition() {
   const match = { name: 'match', description: 'Practice match', type: 3, required: true,
     choices: [{ name: 'A vs B', value: 'M1' }, { name: 'C vs D', value: 'M2' }] };
@@ -530,9 +543,14 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       undefined, undefined, undefined, undefined, undefined, undefined, () => !stopping && !lease?.isLost(),
       undefined, undefined, explicit => roomSync?.trigger(explicit) ?? Promise.resolve(), undefined, provisionRound);
     admin?.attachController(controller);
-    await controller.start();
+    // A tournament may have opened in its own signup channel before the restart.
+    await controller.start(async id => {
+      ensureActive();
+      (await prepareSignupChannel!(id))();
+    });
     if (config.mode === 'signup') {
       let checking = false;
+      const draftBackoff = new RetryBackoff();
       const runTournamentSchedule = async () => {
         if (checking || stopping || lease?.isLost() || !client.isReady() || !controller) return;
         checking = true;
@@ -541,11 +559,13 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
           if (!adminConfig.commandsEnabled) return;
           for (const due of await dueSignupDrafts(Date.now())) {
             if (stopping || lease?.isLost() || !client.isReady()) break;
+            if (!draftBackoff.ready(due.eventId)) continue;
             try {
               await controller.openSignup(due.eventId, due.activeId, async game => { await artwork.selectGame(game); },
                 prepareSignupChannel, true);
+              draftBackoff.succeeded(due.eventId);
               break;
-            } catch { /* A failed channel or concurrent change can be retried on a later pass. */ }
+            } catch { draftBackoff.failed(due.eventId); /* Retried on a later pass, with backoff. */ }
           }
         } catch { /* Retry after database or schema recovery. */ }
         finally { checking = false; }

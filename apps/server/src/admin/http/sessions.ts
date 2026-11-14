@@ -6,8 +6,6 @@ export const SESSION_ABSOLUTE_MS = 12 * 60 * 60_000;
 export const LOGIN_WINDOW_MS = 60_000;
 /** Failed launch-token attempts allowed per window, across all clients. */
 export const LOGIN_MAX_FAILURES = 10;
-/** All launch-token attempts allowed per window, bounding session churn. */
-export const LOGIN_MAX_ATTEMPTS = 60;
 export const MAX_SESSIONS = 32;
 
 export interface Session {
@@ -24,7 +22,7 @@ export interface SessionStoreOptions {
   fixedLoginToken?: string | null;
   /** Guided local runtime only. Demo and direct commands retain timed sessions. */
   persistent?: boolean;
-  /** Called when a session ends by expiry or eviction (not by logout). */
+  /** Called when a session ends by expiry, eviction or link rotation (not by logout). */
   onExpire: (session: Session) => void;
 }
 
@@ -36,7 +34,8 @@ export class SessionStore {
   private launchToken: string;
   private launchDigest: Buffer;
   private readonly sessions = new Map<string, Session>();
-  private attempts: { atMs: number; failed: boolean }[] = [];
+  /** Times of failed launch-token attempts within the current window. */
+  private failures: number[] = [];
 
   constructor(private readonly options: SessionStoreOptions) {
     this.launchToken = options.fixedLoginToken || newToken();
@@ -47,22 +46,35 @@ export class SessionStore {
     return `http://127.0.0.1:${this.options.port}/#login=${this.launchToken}`;
   }
 
-  rotate(): string {
+  /**
+   * Replaces the launch token. With `revokeOthersThan` (an admin rotating from the console) every
+   * other session ends too, so a leaked link cannot leave a session behind. Server-side rotations
+   * (launcher reopen, demo launch) only spend the old link and keep signed-in tabs working.
+   */
+  rotate(revokeOthersThan?: Session): string {
     this.launchToken = newToken();
     this.launchDigest = digest(this.launchToken);
+    if (revokeOthersThan)
+      for (const session of [...this.sessions.values()]) if (session !== revokeOthersThan) this.end(session);
     return this.loginUrl();
   }
 
-  /** Exchanges the launch token for a fresh bearer token. */
+  /**
+   * Exchanges the launch token for a fresh bearer token. Only failed attempts count toward the
+   * limit, and the right token is accepted even while throttled, so no local process can lock the
+   * admin out by guessing. Session churn from repeated good sign-ins is bounded by MAX_SESSIONS.
+   */
   login(candidate: string): { token: string; session: Session } {
     const now = this.options.now();
-    this.attempts = this.attempts.filter(attempt => attempt.atMs > now - LOGIN_WINDOW_MS);
-    if (this.attempts.filter(attempt => attempt.failed).length >= LOGIN_MAX_FAILURES || this.attempts.length >= LOGIN_MAX_ATTEMPTS) {
-      throw new HttpError(429, 'too_many_requests', 'Too many sign-in attempts. Try again in a minute.', { 'Retry-After': 60 });
-    }
+    this.failures = this.failures.filter(atMs => atMs > now - LOGIN_WINDOW_MS);
     const ok = timingSafeEqual(digest(candidate), this.launchDigest);
-    this.attempts.push({ atMs: now, failed: !ok });
-    if (!ok) throw new HttpError(401, 'unauthenticated', 'The console link is invalid or has been replaced.');
+    if (!ok) {
+      if (this.failures.length >= LOGIN_MAX_FAILURES) {
+        throw new HttpError(429, 'too_many_requests', 'Too many sign-in attempts. Try again in a minute.', { 'Retry-After': 60 });
+      }
+      this.failures.push(now);
+      throw new HttpError(401, 'unauthenticated', 'The console link is invalid or has been replaced.');
+    }
     const token = newToken();
     const session: Session = { id: digest(token).toString('hex'), createdAtMs: now, lastActiveMs: now, openStreams: 0 };
     this.sessions.set(session.id, session);

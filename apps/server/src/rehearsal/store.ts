@@ -3,9 +3,9 @@ import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 import { MAX_SIGNUP_CAPACITY } from '@tcg-live/core';
 import { parseDatabaseUrl } from '../config.js';
-import { checkinsReadyToPublish, createFixture, PLAYERS, type Command, type EventState, type Outcome, RuleError, transition } from './domain.js';
-import { channelForSlot, sameIdentityMap, type PrivateDiscordConfig } from '../discord/config.js';
-import { messageId, resolvePlayers, type CardSlot, type SessionRow } from '../discord/session.js';
+import { createFixture, PLAYERS, scheduledPublishDue, type Command, type EventState, type Outcome, RuleError, transition } from './domain.js';
+import { channelForSlot, type PrivateDiscordConfig } from '../discord/config.js';
+import { assertSessionConfig, messageId, resolvePlayers, type CardSlot, type SessionRow } from '../discord/session.js';
 
 const DB_ERROR = 'Rehearsal database operation failed.';
 const TARGET_DB = 'tcg_rehearsal';
@@ -91,7 +91,8 @@ export async function withClient<T>(operation: (client: pg.Client) => Promise<T>
     return await operation(client);
   } catch (error) {
     if (error instanceof RuleError) throw error;
-    throw new Error(DB_ERROR);
+    // The fixed message keeps driver details out of replies; `cause` lets callers tell outages from bugs.
+    throw new Error(DB_ERROR, { cause: error });
   } finally {
     await Promise.race([
       client.end().catch(() => {}),
@@ -361,11 +362,7 @@ export async function runPrincipalCommand(
   // A rehearsal CLI event has no session: the console never lists it, so it is unknown there.
   if (!session && web) throw new UnknownEventError('Unknown event.');
   if (!session || session.status !== 'active') throw new RetiredSessionError('Private Discord session is retired.');
-  if (session.application_id !== context.config.applicationId ||
-      session.guild_id !== context.config.guildId || session.channel_id !== context.config.channelId ||
-      !sameIdentityMap(session.identity_map, context.config)) {
-    throw new RuleError('Private Discord configuration differs from the saved session.');
-  }
+  assertSessionConfig(session, context.config);
   const players = resolvePlayers(session, event.state);
   if (discord?.message) {
     const expectedSlot = ['checkin', 'signupJoin', 'signupWithdraw'].includes(command.type) ? 'checkin'
@@ -377,7 +374,7 @@ export async function runPrincipalCommand(
     const field = messageId(session, discord.message.slot);
     if (!field || field !== discord.message.id) throw new RuleError('This control is not on the canonical card.');
   }
-  if (event.state.matches.some(match => match.phase === 'running' && match.runnerId !== runnerId &&
+  if (command.type !== 'resolve' && event.state.matches.some(match => match.phase === 'running' && match.runnerId !== runnerId &&
       (!event.state.firstRound || ('matchId' in command && command.matchId === match.id)))) {
     throw new RuleError('Private Discord session has an interrupted running clock; stop and prepare --replace.');
   }
@@ -414,7 +411,7 @@ export async function runPrincipalCommand(
   }
   if (discord?.scheduledPublish &&
       (event.state.startsAtMs !== discord.scheduledPublish.startsAtMs || nowMs < discord.scheduledPublish.startsAtMs ||
-        !event.state.signup || !checkinsReadyToPublish(event.state)))
+        !scheduledPublishDue(event.state, nowMs)))
     return { eventId: context.eventId, version: event.version, result: 'round_not_due_or_ready', applied: false };
   const result = transition(event.state, actor, command, nowMs, runnerId);
   if (!result.outcome.applied) return result.outcome;

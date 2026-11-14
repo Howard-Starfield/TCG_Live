@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { Command, EventState, MatchId, Outcome, Player } from '../rehearsal/domain.js';
 import { isJudgeRequestCategory, MAX_JUDGE_REQUEST_LENGTH, type ArtworkGame, type OpenTournamentSignupResult } from '@tcg-live/core';
-import { checkinsReadyToPublish, RuleError, signupTournamentComplete } from '../rehearsal/domain.js';
+import { RuleError, scheduledPublishDue, signupTournamentComplete } from '../rehearsal/domain.js';
 import { applyDiscordCommand, applyWebCommand, type WebCommandContext } from '../rehearsal/store.js';
 import { parseButtonId, renderCard, renderTournamentRecap, type CardPayload, type ParsedButton } from './cards.js';
 import { channelForSlot, type PrivateDiscordConfig } from './config.js';
-import { activateSignupDraft, bindCard, claimResumeReminder, clearDeletedSessionCards, completeStickyCard, deleteActiveTournament, deletedSessionsWithCards, getSessionState, messageId, sessionSlots, NoActiveSessionError, replaceStickyCard, suspendStickyCard,
+import { activateSignupDraft, adoptSessionClocks, bindCard, claimResumeReminder, clearDeletedSessionCards, completeStickyCard, deleteActiveTournament, deletedSessionsWithCards, getSessionState, messageId, sessionSlots, NoActiveSessionError, replaceStickyCard, suspendStickyCard,
   resolvePlayers, type CardSlot, type SessionRow } from './session.js';
 
 export interface PrivateInteraction {
@@ -112,6 +112,14 @@ export class PrivateDiscordController {
   private listeners = new Set<ControllerListener>();
   private panelRevision = 0;
   private lastPending = false;
+  /** A refresh that has not started yet; later requests of the same mode join it. */
+  private queuedRefresh: { mode: RefreshMode; task: Promise<void> } | undefined;
+  /** An event whose signup card must still be posted after its activation. */
+  private signupCardPending: string | undefined;
+  /** The scheduled start (`eventId:startsAtMs`) the scheduler already decided on. */
+  private publishDecided: string | undefined;
+  /** The configured home signup channel; a draft without its own channel opens here. */
+  private readonly homeChannelId: string;
 
   constructor(
     readonly config: PrivateDiscordConfig,
@@ -129,8 +137,11 @@ export class PrivateDiscordController {
     private readonly claimReminder = claimResumeReminder,
     private readonly syncRooms?: (explicit: boolean) => Promise<void>,
     private readonly applyWeb = applyWebCommand,
-    private readonly provisionRound?: (session: SessionRow, state: EventState) => Promise<void>
-  ) {}
+    private readonly provisionRound?: (session: SessionRow, state: EventState) => Promise<void>,
+    private readonly adoptClocks = adoptSessionClocks
+  ) {
+    this.homeChannelId = config.channelId;
+  }
 
   /** Subscribers run in isolated microtasks; a throwing subscriber cannot affect replies, cards or shutdown. */
   subscribe(listener: ControllerListener): () => void {
@@ -176,9 +187,22 @@ export class PrivateDiscordController {
     return task;
   }
 
-  async start(): Promise<void> {
+  /**
+   * Adopts the active tournament's saved signup channel (`adoptChannel` switches the transport and
+   * throws when the channel is unusable) and the running clocks left by a stopped process, then arms
+   * their timers. The advisory lease guarantees the previous runner is gone.
+   */
+  async start(adoptChannel?: (channelId: string) => Promise<void>): Promise<void> {
     try {
-      const { state } = await this.read(this.config);
+      let { session, state } = await this.read(this.config);
+      if (session.channel_id !== this.config.channelId) {
+        await adoptChannel?.(session.channel_id);
+        this.config.channelId = session.channel_id;
+      }
+      if (state.matches.some(match => match.phase === 'running' && match.runnerId !== this.runnerId)) {
+        await this.adoptClocks(this.config, state.id, this.runnerId);
+        ({ session, state } = await this.read(this.config));
+      }
       this.schedule(state);
       void this.requestRefresh().catch(() => {});
     } catch (error) {
@@ -193,9 +217,17 @@ export class PrivateDiscordController {
   private requestRefresh(mode: RefreshMode = 'known'): Promise<void> {
     this.dirty++;
     this.pendingChanged();
-    const task = this.refreshTask.then(() => this.refresh(mode));
+    // A queued refresh has not read state yet, so it already covers this request.
+    if (this.queuedRefresh?.mode === mode) return this.queuedRefresh.task;
+    const entry: { mode: RefreshMode; task: Promise<void> } = { mode, task: Promise.resolve() };
+    const task = this.refreshTask.then(() => {
+      if (this.queuedRefresh === entry) this.queuedRefresh = undefined;
+      return this.refresh(mode);
+    });
+    entry.task = this.track(task);
+    this.queuedRefresh = entry;
     this.refreshTask = task.catch(() => {});
-    return this.track(task);
+    return entry.task;
   }
 
   private async refresh(mode: RefreshMode): Promise<void> {
@@ -231,24 +263,29 @@ export class PrivateDiscordController {
     let failed = false;
     let retryable = false;
     const slots: CardSlot[] = state.firstRound ? ['checkin', ...state.matches.map(match => match.id)] : SLOTS;
+    if (this.signupCardPending && (this.signupCardPending !== state.id || messageId(session, 'checkin')))
+      this.signupCardPending = undefined;
     for (const slot of slots) {
       if (!this.accepting) return;
       const id = messageId(session, slot);
+      // After an activation whose first post failed, a background retry creates the signup card.
+      const signupCard = slot === 'checkin' && this.signupCardPending === state.id;
       const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament, session.channel_id);
       const dynamicMatch = state.firstRound && slot !== 'checkin' &&
         state.matches.some(match => match.id === slot && match.phase !== 'final') && this.transport.findMatchCard;
-      const nonce = dynamicMatch ? createHash('sha256').update(`${state.id}:${slot}`).digest('hex').slice(0, 25) : undefined;
+      const nonce = dynamicMatch || signupCard ? createHash('sha256').update(`${state.id}:${slot}`).digest('hex').slice(0, 25) : undefined;
       if (!id) {
-        if (mode !== 'explicit' && !dynamicMatch) continue;
+        if (mode !== 'explicit' && !dynamicMatch && !signupCard) continue;
         let sent: string;
         try {
           sent = (dynamicMatch ? await this.transport.findMatchCard!(state.id, slot) : null)
             ?? await this.sendOnce(payload, slot, nonce);
           await this.bind(this.config, session.event_id, slot, sent);
         } catch (error) {
-          if (dynamicMatch) this.scheduleRetry();
+          if (dynamicMatch || signupCard) this.scheduleRetry();
           throw error;
         }
+        if (signupCard) this.signupCardPending = undefined;
         this.panelChanged(session.event_id);
         if (slot === 'checkin') await this.transport.pin(sent, slot);
         continue;
@@ -474,13 +511,18 @@ export class PrivateDiscordController {
       if (error instanceof NoActiveSessionError) return;
       throw error;
     }
-    if (!this.accepting || !this.canPost() || !state.signup || state.startsAtMs === undefined ||
-        this.clock() < state.startsAtMs || !checkinsReadyToPublish(state)) return;
-    const command = { type: 'publish' } as const;
+    if (!this.accepting || !this.canPost() || !state.signup || state.published || state.startsAtMs === undefined ||
+        this.clock() < state.startsAtMs) return;
     const startsAtMs = state.startsAtMs;
+    const decision = `${state.id}:${startsAtMs}`;
+    if (this.publishDecided === decision) return;
+    // One decision at the scheduled start: publish with whoever checked in, or leave it to the admin.
+    if (!scheduledPublishDue(state, this.clock())) { this.publishDecided = decision; return; }
+    const command = { type: 'publish' } as const;
     await this.track(this.commit(state.id, command, () => this.apply({
       config: this.config, eventId: state.id, principalId: 'system:scheduler', scheduledPublish: { startsAtMs }
     }, command, this.runnerId, this.clock)));
+    this.publishDecided = decision;
   }
 
   private isControlChannel(channelId: string): boolean {
@@ -598,25 +640,32 @@ export class PrivateDiscordController {
     const available = () => this.accepting && this.canPost();
     if (!available()) return Promise.reject(new ControllerUnavailableError('The Discord bot is unavailable.'));
     const task = this.refreshTask.then(async (): Promise<OpenTournamentSignupResult> => {
+      let finishCurrent: (() => Promise<void>) | undefined;
       if (this.transport.unpin) {
         const current = await this.read(this.config).catch(error => {
           if (error instanceof NoActiveSessionError) return null;
           throw error;
         });
         if (current && current.state.id !== eventId && signupTournamentComplete(current.state))
-          await this.finishTournamentCards(current.session, current.state, true);
+          finishCurrent = () => this.finishTournamentCards(current.session, current.state, true);
       }
-      const result = await activateSignupDraft(this.config, eventId, expectedActiveEventId, available, prepareChannel, scheduled);
+      // The results cleanup runs only once the activation has passed its checks.
+      const result = await activateSignupDraft(this.config, eventId, expectedActiveEventId, available, prepareChannel, scheduled,
+        { defaultChannelId: this.homeChannelId, ...(finishCurrent ? { beforeActivate: finishCurrent } : {}) });
       const removeOld = result.installChannel?.();
       this.config.channelId = result.channelId;
       if (expectedActiveEventId !== eventId) this.config.roundRooms = undefined;
       this.notify({ type: 'event', eventId });
+      this.signupCardPending = eventId;
       let panels: OpenTournamentSignupResult['panels'] = 'posted';
       try { await selectArtwork(result.game); } catch { panels = 'pending'; }
       try {
         if (!available()) throw new ControllerUnavailableError('The Discord bot is unavailable.');
         await this.refresh('explicit');
-      } catch { panels = 'pending'; }
+      } catch {
+        panels = 'pending';
+        this.scheduleRetry();
+      }
       if (available() && panels === 'posted') {
         for (const { id, slot, channelId } of result.retiredCards) {
           try { if (this.transport.remove) await this.transport.remove(id, slot, channelId); else await removeOld?.(id, slot); } catch { /* Retired card controls are invalid. */ }

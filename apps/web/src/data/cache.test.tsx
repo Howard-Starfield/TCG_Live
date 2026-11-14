@@ -162,6 +162,56 @@ describe('query hooks', () => {
     expect(result.current.hasOlder).toBe(false);
   });
 
+  it('drops an older page that a stream replace made non-contiguous while it loaded', async () => {
+    const all = entries(1, 600);
+    const { bodies, wrapper, server, data } = harness([], all);
+    const { result } = renderHook(() => useAudit(liveDispute.eventId), { wrapper });
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const tail = change(liveDispute, all.slice(400));
+    await act(async () => {
+      bodies[0]!.push(frame(hello({ activeEventId: liveDispute.eventId })) + frame(tail.event, tail.id));
+    });
+    await waitFor(() => expect(result.current.entries[0]?.sequence).toBe(401));
+    let release!: () => void;
+    server.once(`GET /events/${liveDispute.eventId}/audit`, () => new Promise<Response>(resolve => {
+      release = () => resolve(json(200, all.slice(200, 400)));
+    }));
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.fetchOlder(); });
+    await waitFor(() => expect(result.current.isFetchingOlder).toBe(true));
+    // A stream `replace` lands meanwhile with a run far past the requested page.
+    act(() => {
+      data.queryClient.setQueryData<AuditLog>(adminKeys.audit(liveDispute.eventId),
+        { entries: entries(900, 910), olderExhausted: false, hasMore: false });
+    });
+    await act(async () => { release(); await pending; });
+    expect(result.current.entries.map(entry => entry.sequence)).toEqual(entries(900, 910).map(entry => entry.sequence));
+    expect(result.current.hasOlder).toBe(true);   // the gap stays visible and loadable
+  });
+
+  it('resets paging state when the event changes', async () => {
+    const { wrapper, server } = harness(entries(1, 520));
+    server.always('GET /events/retired-2/audit', () => json(200, []));
+    const { result, rerender } = renderHook(({ id }) => useAudit(id, 100), { wrapper, initialProps: { id: 'retired-1' } });
+    await waitFor(() => expect(result.current.entries).toHaveLength(500));
+    server.once('GET /events/retired-1/audit', () => json(503, { error: { code: 'unavailable', message: 'Down' } }));
+    await act(async () => { await result.current.fetchMore(); });
+    expect(result.current.pageError?.code).toBe('unavailable');
+    let release!: () => void;
+    server.once('GET /events/retired-1/audit', () => new Promise<Response>(resolve => { release = () => resolve(json(200, [])); }));
+    act(() => { void result.current.fetchMore(); });
+    await waitFor(() => expect(result.current.isFetchingMore).toBe(true));
+    rerender({ id: 'retired-2' });
+    expect(result.current.pageError).toBeNull();
+    expect(result.current.isFetchingMore).toBe(false);
+    // The new event's paging is not blocked by the old event's request still in flight.
+    await waitFor(() => expect(server.callsTo('GET /events/retired-2/audit')).toHaveLength(1));
+    await act(async () => { await result.current.fetchMore(); });
+    expect(server.callsTo('GET /events/retired-2/audit')).toHaveLength(2);
+    await act(async () => { release(); });
+    expect(result.current.isFetchingMore).toBe(false);
+  });
+
   it('pages a retired event over HTTP with fetchMore, and fetches its snapshot', async () => {
     const all = entries(1, 520);
     const { wrapper } = harness(all);
@@ -229,6 +279,37 @@ describe('caches of events that are no longer active (Wave 2 review)', () => {
     server.always(`GET /events/${active.eventId}/snapshot`, () => json(200, retiredCopy));
     const next = change({ ...liveDispute, eventId: 'event-2', version: 1 }, []);
     await act(async () => { bodies[0]!.push(frame(next.event, next.id)); });
+    await waitFor(() => expect(result.current.data?.status).toBe('retired'));
+  });
+
+  it('releases an event that retired while disconnected when hello names no (or another) active event', () => {
+    const queryClient = createAdminQueryClient();
+    const clock = new ServerClock();
+    applyStreamEvent(queryClient, clock, change(liveDispute, auditTimeline).event, info);
+    // Database outage: "no active event" is unreliable, so the cache is kept.
+    const outage = hello({ activeEventId: null });
+    if (outage.type === 'hello') outage.status = { ...outage.status, database: 'unavailable' };
+    applyStreamEvent(queryClient, clock, outage, info);
+    expect(queryClient.getQueryData(adminKeys.snapshot(liveDispute.eventId))).toBeDefined();
+    // The same event still active: kept.
+    applyStreamEvent(queryClient, clock, hello({ activeEventId: liveDispute.eventId }), info);
+    expect(queryClient.getQueryData(adminKeys.snapshot(liveDispute.eventId))).toBeDefined();
+    // Healthy database, no active event: the stale "active" copy and its audit are released.
+    applyStreamEvent(queryClient, clock, hello({ activeEventId: null }), info);
+    expect(queryClient.getQueryData(adminKeys.snapshot(liveDispute.eventId))).toBeUndefined();
+    expect(queryClient.getQueryData(adminKeys.audit(liveDispute.eventId))).toBeUndefined();
+  });
+
+  it('refetches an observed event that retired while disconnected once hello says none is active', async () => {
+    const { bodies, wrapper, server } = harness();
+    const retiredCopy = { ...liveDispute, status: 'retired' as const, retiredAtMs: FIXTURE_NOW_MS };
+    const { result } = renderHook(() => useEventSnapshot(liveDispute.eventId), { wrapper });
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const first = change(liveDispute, []);
+    await act(async () => { bodies[0]!.push(frame(hello({ activeEventId: liveDispute.eventId })) + frame(first.event, first.id)); });
+    await waitFor(() => expect(result.current.data?.status).toBe('active'));
+    server.always(`GET /events/${liveDispute.eventId}/snapshot`, () => json(200, retiredCopy));
+    await act(async () => { bodies[0]!.push(frame(hello({ activeEventId: null }))); });
     await waitFor(() => expect(result.current.data?.status).toBe('retired'));
   });
 

@@ -12,12 +12,37 @@ type Context = { request: IncomingMessage; response: ServerResponse; query: URLS
 type Endpoint = { access: 'session'; run(context: Context): Promise<void> };
 export type TournamentRoute = { pattern: RegExp; methods: Partial<Record<string, Endpoint>> };
 
+/** Node socket failures and PostgreSQL connection, resource, shutdown, auth, database and missing-table states. */
+const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'EPIPE']);
+const SQLSTATE_UNAVAILABLE = /^(08|53|57|28|3D|40)[0-9A-Z]{3}$|^42P01$/;
+const PROGRAMMING_ERRORS = [TypeError, ReferenceError, RangeError, SyntaxError];
+
+/** Errors that mean the database is unreachable or not set up, rather than a bug. */
+export function isDatabaseUnavailable(error: unknown): boolean {
+  if (error instanceof RuleError) return true;   // store configuration and schema checks
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  if (typeof code === 'string' && (NETWORK_CODES.has(code) || SQLSTATE_UNAVAILABLE.test(code))) return true;
+  // The rehearsal store wraps every failure in this fixed message, keeping the original as `cause`.
+  if (error.message !== 'Rehearsal database operation failed.') return false;
+  const cause = error.cause;
+  if (cause === undefined) return true;
+  if (!(cause instanceof Error) || PROGRAMMING_ERRORS.some(type => cause instanceof type)) return false;
+  const causeCode = (cause as NodeJS.ErrnoException).code;
+  // Other SQLSTATEs (constraint, syntax, data errors) are bugs; uncoded driver errors such as
+  // "Connection terminated unexpectedly" are outages.
+  return typeof causeCode === 'string' || cause.message === error.message ? isDatabaseUnavailable(cause) : true;
+}
+
 function fail(error: unknown): never {
   if (error instanceof HttpError) throw error;
   if (error instanceof DirectoryInputError) throw new HttpError(400, 'bad_request', error.message);
   if (error instanceof DirectoryConflictError) throw new HttpError(409, 'conflict', error.message);
   if (error instanceof DirectoryUnavailableError) throw new HttpError(503, 'unavailable', error.message);
-  throw new HttpError(503, 'unavailable', 'Tournament directory is unavailable. Check PostgreSQL and run npm run db:directory-setup -w @tcg-live/server.');
+  if (isDatabaseUnavailable(error))
+    throw new HttpError(503, 'unavailable', 'Tournament directory is unavailable. Check PostgreSQL and run npm run db:directory-setup -w @tcg-live/server.');
+  // Anything else is unexpected: the dispatcher logs it and answers a generic 500.
+  throw error;
 }
 
 export function tournamentRoutes(directory: TournamentDirectory, defaultGame: () => ArtworkGame,

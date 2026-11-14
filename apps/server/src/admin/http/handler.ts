@@ -130,10 +130,11 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       } }
     } },
     { pattern: /^\/api\/v1\/session\/rotate-link$/, methods: {
-      POST: { access: 'session', run: async ({ request, response }) => {
+      POST: { access: 'session', run: async ({ request, response, session }) => {
         await readEmptyBody(request);
         if (closed) throw unavailable();
-        const url = sessions.rotate();
+        // Every other session ends with the old link; the admin who rotated stays signed in.
+        const url = sessions.rotate(session!);
         try { print(url); } catch { /* printing is best effort; the link is still rotated */ }
         sendNoContent(response);
       } }
@@ -209,7 +210,17 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       { pattern: /^\/api\/v1\/setup\/finish$/, methods: {
         POST: { access: 'session' as const, run: async ({ request, response }: Context) => {
           const result = await options.setup!.finish(await readJsonBody(request));
-          response.once('finish', () => { void options.setup!.handover().catch(() => {}); });
+          // Hand over once the reply is out, or once the client has gone: a dropped connection
+          // must not leave setup stuck "in progress" (handover() itself runs at most once).
+          let handedOver = false;
+          const handover = () => {
+            if (handedOver) return;
+            handedOver = true;
+            void options.setup!.handover().catch(() => {});
+          };
+          response.once('finish', handover);
+          response.once('close', handover);
+          if (response.destroyed) handover();
           sendJson(response, 200, result);
         } }
       } }

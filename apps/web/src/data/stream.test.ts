@@ -310,3 +310,60 @@ describe('StreamClient during a database outage (Wave 2 review)', () => {
     client.stop();
   });
 });
+
+describe('StreamClient resilience (bug sweep)', () => {
+  it('skips a message the cache cannot apply instead of reconnecting, and keeps later messages', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const seen: string[] = [];
+    let fail = true;
+    const { server, bodies, client } = setup({ onEvent: event => {
+      if (event.type === 'change' && fail) { fail = false; throw new Error('bad change'); }
+      seen.push(event.type);
+    } });
+    client.start();
+    await settle();
+    const first = change(liveDispute, auditTimeline);
+    const next = change({ ...liveDispute, version: 18 }, []);
+    bodies[0]!.push(frame(hello({ activeEventId: liveDispute.eventId })) + frame(first.event, first.id) + frame(next.event, next.id));
+    await settle();
+    expect(seen).toEqual(['hello', 'change']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(client.getSnapshot().state).toBe('live');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(server.callsTo('GET /stream')).toHaveLength(1);
+    client.stop();
+    warn.mockRestore();
+  });
+
+  it('does not reset the backoff on hello alone; a healthy connection resets it', async () => {
+    const { bodies, client } = setup();
+    client.start();
+    await settle();
+    // A server that says hello and immediately drops the stream keeps backing off.
+    for (let index = 0; index < 3; index += 1) {
+      bodies[index]!.push(frame(hello()));
+      await settle();
+      expect(client.getSnapshot().attempt).toBe(index);
+      bodies[index]!.end();
+      await settle();
+      expect(client.getSnapshot().attempt).toBe(index + 1);
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+    expect(bodies).toHaveLength(4);
+    bodies[3]!.push(frame(hello()));
+    await settle();
+    expect(client.getSnapshot().attempt).toBe(3);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(client.getSnapshot().attempt).toBe(0);
+
+    // A processed change after hello also proves the connection healthy.
+    bodies[3]!.end();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(bodies).toHaveLength(5);
+    const resumed = change(liveDispute, []);
+    bodies[4]!.push(frame(hello({ activeEventId: liveDispute.eventId })) + frame(resumed.event, resumed.id));
+    await settle();
+    expect(client.getSnapshot().attempt).toBe(0);
+    client.stop();
+  });
+});

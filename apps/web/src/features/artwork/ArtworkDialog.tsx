@@ -8,26 +8,17 @@ const labels: Record<ArtworkGame, string> = {
 };
 const MAX_BYTES = 4 * 1024 * 1024;
 
-async function readError(response: Response): Promise<Error> {
-  try {
-    const body = await response.json() as { error?: { message?: string } };
-    return new Error(body.error?.message || `Request failed (${response.status}).`);
-  } catch { return new Error(`Request failed (${response.status}).`); }
-}
-
-/** Binary artwork requests use the signed-in session token and never put it in a URL. */
+/**
+ * Binary artwork requests go through the API client (base URL, bearer header, 401 handling, error
+ * mapping); the session token never goes in a URL.
+ */
 function useArtworkApi() {
-  const { session } = useAdminData();
+  const { api, session } = useAdminData();
   return async (method: string, path: string, body?: BodyInit, contentType?: string, signal?: AbortSignal): Promise<Response> => {
-    const token = session.getToken();
-    if (!token) throw new Error('Sign in to edit artwork.');
-    const response = await fetch(`/api/v1/artwork${path}`, { method, body, signal, cache: 'no-store', credentials: 'omit',
-      headers: { Authorization: `Bearer ${token}`, ...(contentType ? { 'Content-Type': contentType } : {}) } });
-    if (!response.ok) {
-      if (response.status === 401) session.handleUnauthorized(token);
-      throw await readError(response);
-    }
-    return response;
+    if (!session.getToken()) throw new Error('Sign in to edit artwork.');
+    return api.requestRaw(method, `/artwork${path}`, {
+      ...(body !== undefined ? { body } : {}), ...(contentType ? { contentType } : {}), ...(signal ? { signal } : {})
+    });
   };
 }
 
