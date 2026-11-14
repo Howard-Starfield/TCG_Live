@@ -43,7 +43,7 @@ test('audit rows: commandId kept, bigint columns cast, timer rows mapped to the 
 test('command sanitizing keeps typed contract keys only', () => {
   assert.deepEqual(sanitizeCommand({ type: 'resolve', matchId: 'M2', winner: 'C', reason: 'r', extra: 'x', adminId: '1' }),
     { type: 'resolve', matchId: 'M2', winner: 'C', reason: 'r' });
-  assert.deepEqual(sanitizeCommand({ type: 'resumeConsent', matchId: 'M3', pauseGeneration: 2, revision: '1' }),
+  assert.deepEqual(sanitizeCommand({ type: 'resumeConsent', matchId: 'unknown-match', pauseGeneration: 2, revision: '1' }),
     { type: 'resumeConsent', pauseGeneration: 2 });
   assert.deepEqual(sanitizeCommand({ type: 'signupRemove', memberId: IDS.e }), { type: 'signupRemove', memberId: IDS.e });
   assert.deepEqual(sanitizeCommand({ type: 'propose', matchId: 'M1', winner: 'A', expectedRevision: 0 }),
@@ -149,7 +149,7 @@ test('judge: dispute, then a new proposal, keeps attention and reasons until a d
   m1 = snapshotOf(r).matches[0]!;
   assert.deepEqual(m1.proposal, { revision: 2, winner: 'B', reporter: 'A', decision: 'open' });
   assert.deepEqual(m1.judge, { reasons: ['dispute'], sinceMs: disputedAt, raisedBy: ['B'] });
-  assert.equal(r.state.matches[0].judgeAttention, true);
+  assert.equal(r.state.matches[0]!.judgeAttention, true);
 
   r.after(1_000, 'player:A', { type: 'callJudge', matchId: 'M1' });   // no-op: already called, not audited
   r.after(1_000, 'player:B', { type: 'confirm', matchId: 'M1', revision: 2 });
@@ -194,7 +194,7 @@ test('an expiry tripped by an ordinary command dates the wait from that command,
 
 test('judge falls back to the match audit or event creation when no raising entry is visible', () => {
   const r = Replay.legacy().published();
-  const match = { ...r.state.matches[0], judgeAttention: true, phase: 'paused' as const };
+  const match = { ...r.state.matches[0]!, judgeAttention: true, phase: 'paused' as const };
   assert.deepEqual(deriveJudge(match, [], 42), { reasons: [], sinceMs: 42, raisedBy: [] });
   assert.equal(deriveJudge({ ...match, judgeAttention: false }, [], 42), null);
 });
@@ -202,7 +202,7 @@ test('judge falls back to the match audit or event creation when no raising entr
 test('clock: a persisted running clock of another runner is interrupted; retired events are frozen', () => {
   const r = Replay.legacy().published()
     .run('player:A', { type: 'ready', matchId: 'M1' }).run('player:B', { type: 'ready', matchId: 'M1' }, { runnerId: 'old-runner' });
-  const match = r.state.matches[0];
+  const match = r.state.matches[0]!;
   assert.deepEqual(mapClock(match, 60_000, RUNNER, false),
     { durationMs: 60_000, remainingMs: 60_000, runningSinceMs: r.now, state: 'interrupted' });
   assert.equal(remainingMsAt(mapClock(match, 60_000, RUNNER, false), r.now + 10_000), 60_000, 'never counts down');
@@ -244,7 +244,7 @@ test('event admin actions follow publish and signup guards', () => {
   const ready = Replay.legacy();
   for (const seat of ['A', 'B', 'C', 'D'] as const) ready.run(`player:${seat}`, { type: 'checkin' });
   assert.deepEqual(eventAdminActions(ready.state, IDS.admin, false), ['publish'], 'legacy events publish without signup');
-  assert.deepEqual(matchAdminActions(ready.state.matches[0], false), []);
+  assert.deepEqual(matchAdminActions(ready.state.matches[0]!, false), []);
 });
 
 test('snapshot: members directory, seats, kind, cards and summaries', () => {

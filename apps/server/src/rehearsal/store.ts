@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
+import { MAX_SIGNUP_CAPACITY } from '@tcg-live/core';
 import { parseDatabaseUrl } from '../config.js';
-import { createFixture, type Command, type EventState, type Outcome, RuleError, transition } from './domain.js';
+import { checkinsReadyToPublish, createFixture, PLAYERS, type Command, type EventState, type Outcome, RuleError, transition } from './domain.js';
 import { channelForSlot, sameIdentityMap, type PrivateDiscordConfig } from '../discord/config.js';
-import { resolvePlayers, type CardSlot, type SessionRow } from '../discord/session.js';
+import { messageId, resolvePlayers, type CardSlot, type SessionRow } from '../discord/session.js';
 
 const DB_ERROR = 'Rehearsal database operation failed.';
 const TARGET_DB = 'tcg_rehearsal';
@@ -56,14 +57,25 @@ export async function verifyTarget(client: pg.Client): Promise<void> {
 
 export function verifyState(state: EventState, id: string, version: number): void {
   const signup = state.signup;
-  const signupValid = signup && Array.isArray(signup.roster) && signup.roster.length <= 4 &&
+  const capacity = signup?.capacity === undefined ? 4 : signup.capacity;
+  const signupValid = signup && Number.isInteger(capacity) && capacity >= 4 && capacity <= MAX_SIGNUP_CAPACITY &&
+    Array.isArray(signup.roster) && signup.roster.length <= capacity &&
     new Set(signup.roster).size === signup.roster.length &&
     signup.roster.every(member => typeof member === 'string' && /^[1-9]\d{14,21}$/.test(member)) &&
     (signup.status === 'open' ? !signup.assignment : signup.status === 'assigned' &&
-      signup.roster.length === 4 && !!signup.assignment &&
-      Object.keys(signup.assignment).sort().join(',') === 'A,B,C,D' &&
-      (['A', 'B', 'C', 'D'] as const).every((player, index) => signup.assignment?.[player] === signup.roster[index]));
-  if (!((state.schemaVersion === 1 && !signup) || (state.schemaVersion === 2 && signupValid)) ||
+      !!signup.assignment && (state.firstRound ? signup.roster.length >= 2 : signup.roster.length === 4) &&
+      Object.keys(signup.assignment).length === signup.roster.length &&
+      signup.roster.every((id, index) => signup.assignment?.[state.firstRound ? `P${index + 1}` as const : PLAYERS[index]!] === id));
+  if (state.firstRound) {
+    const participants = [...state.matches.flatMap(match => match.players), ...(state.firstRound.bye ? [state.firstRound.bye] : [])];
+    if (!signup || !Number.isFinite(state.firstRound.byePoints) || state.firstRound.byePoints < 0 ||
+        new Set(state.checkins).size !== state.checkins.length || state.checkins.some(seat => !signup.assignment?.[seat]) ||
+        (state.published ? participants.length !== state.checkins.length || new Set(participants).size !== participants.length ||
+          participants.some(seat => !state.checkins.includes(seat)) || state.matches.some((match, i) => match.id !== `M${i + 1}`)
+          : participants.length > 0)) throw new RuleError('Tournament round roster is inconsistent.');
+  }
+  if ((state.startsAtMs !== undefined && (!Number.isSafeInteger(state.startsAtMs) || state.startsAtMs <= 0)) ||
+      !((state.schemaVersion === 1 && !signup) || (state.schemaVersion === 2 && signupValid)) ||
       state.id !== id || state.version !== version) {
     throw new RuleError('Rehearsal aggregate schema version is incompatible.');
   }
@@ -240,7 +252,7 @@ export class PreconditionFailedError extends RuleError {}
 const WEB_COMMAND_ID = /^web:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** A console principal issues admin commands only, the same set as the /tcg-test admin subcommands. */
 const WEB_COMMAND_TYPES: ReadonlySet<string> = new Set<Command['type']>(
-  ['publish', 'signupClose', 'signupReopen', 'signupRemove', 'judgeResume', 'resolve', 'correct']);
+  ['publish', 'delayStart', 'signupClose', 'signupReopen', 'signupRemove', 'judgeResume', 'resolve', 'correct']);
 
 export interface DiscordCommandContext {
   config: PrivateDiscordConfig;
@@ -248,7 +260,8 @@ export interface DiscordCommandContext {
   principalId: string;
   interactionId?: string;
   message?: { slot: CardSlot; id: string; channelId: string };
-  timer?: { matchId: 'M1' | 'M2'; pauseGeneration: number; deadlineMs: number };
+  scheduledPublish?: { startsAtMs: number };
+  timer?: { matchId: import('./domain.js').MatchId; pauseGeneration: number; deadlineMs: number };
 }
 
 export interface WebCommandContext {
@@ -278,6 +291,14 @@ function principalCommand(context: PrincipalCommandContext, command: Command): {
     if (!WEB_COMMAND_TYPES.has(command.type)) throw new RuleError('Console principal action denied.');
     return { commandId: context.commandId,
       hash: createHash('sha256').update(JSON.stringify(['web', context.principalId, context.content])).digest('hex') };
+  }
+  if (context.scheduledPublish) {
+    const { startsAtMs } = context.scheduledPublish;
+    if (command.type !== 'publish' || context.principalId !== 'system:scheduler' ||
+        context.timer || context.interactionId || context.message || !Number.isSafeInteger(startsAtMs) || startsAtMs <= 0)
+      throw new RuleError('Invalid scheduled publication.');
+    return { commandId: `round-publish:${startsAtMs}`,
+      hash: createHash('sha256').update(JSON.stringify([context.principalId, command])).digest('hex') };
   }
   if (!context.interactionId && !context.timer) throw new RuleError('Discord command identity is required.');
   if (context.timer && (command.type !== 'clockCheck' || command.matchId !== context.timer.matchId ||
@@ -350,18 +371,19 @@ export async function runPrincipalCommand(
     const expectedSlot = ['checkin', 'signupJoin', 'signupWithdraw'].includes(command.type) ? 'checkin'
       : 'matchId' in command ? command.matchId : null;
     if (discord.message.slot !== expectedSlot) throw new RuleError('This control is on the wrong practice card.');
-    if (discord.message.channelId !== channelForSlot(context.config, discord.message.slot))
+    if (discord.message.channelId !== (discord.message.slot === 'checkin' ? session.channel_id :
+        session.identity_map.roundRooms?.[discord.message.slot] ?? channelForSlot(context.config, discord.message.slot)))
       throw new RuleError('This control is in the wrong practice channel.');
-    const field = discord.message.slot === 'checkin' ? session.checkin_message_id
-      : discord.message.slot === 'M1' ? session.m1_message_id : session.m2_message_id;
+    const field = messageId(session, discord.message.slot);
     if (!field || field !== discord.message.id) throw new RuleError('This control is not on the canonical card.');
   }
-  if (event.state.matches.some(match => match.phase === 'running' && match.runnerId !== runnerId)) {
+  if (event.state.matches.some(match => match.phase === 'running' && match.runnerId !== runnerId &&
+      (!event.state.firstRound || ('matchId' in command && command.matchId === match.id)))) {
     throw new RuleError('Private Discord session has an interrupted running clock; stop and prepare --replace.');
   }
   // A console principal is the configured admin (decision 4); timers act as the admin too.
   let actor = 'admin:fixture';
-  if (discord && !discord.timer) {
+  if (discord && !discord.timer && !discord.scheduledPublish) {
     const player = (Object.entries(players ?? {}) as Array<['A' | 'B' | 'C' | 'D', string]>)
       .find(([, id]) => id === context.principalId)?.[0];
     if (context.principalId === session.identity_map.adminId) actor = 'admin:fixture';
@@ -390,15 +412,24 @@ export async function runPrincipalCommand(
       return { eventId: context.eventId, version: event.version, result: 'obsolete_or_early_timer', applied: false };
     }
   }
+  if (discord?.scheduledPublish &&
+      (event.state.startsAtMs !== discord.scheduledPublish.startsAtMs || nowMs < discord.scheduledPublish.startsAtMs ||
+        !event.state.signup || !checkinsReadyToPublish(event.state)))
+    return { eventId: context.eventId, version: event.version, result: 'round_not_due_or_ready', applied: false };
   const result = transition(event.state, actor, command, nowMs, runnerId);
   if (!result.outcome.applied) return result.outcome;
+  if (command.type === 'delayStart') {
+    const saved = await client.query('UPDATE public.tcg_tournament_directory SET starts_at_ms = $2 WHERE id = $1',
+      [context.eventId, result.state.startsAtMs]);
+    if (!saved.rowCount) throw new RuleError('The tournament schedule could not be updated.');
+  }
   await client.query('UPDATE public.tcg_rehearsal_events SET version = $2, state = $3::jsonb WHERE id = $1',
     [context.eventId, result.state.version, JSON.stringify(result.state)]);
   await client.query(
     'INSERT INTO public.tcg_rehearsal_audit (event_id,sequence,command_id,actor_id,command_hash,action,outcome,occurred_at_ms,mode,principal_kind,principal_id,interaction_id) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12)',
     [context.eventId, result.state.version, commandId, actor, hash, JSON.stringify(command),
       JSON.stringify(result.outcome), nowMs, 'matchId' in command ? 'CAM' : null,
-      discord?.timer ? 'system' : context.kind, context.principalId, discord?.interactionId ?? null]
+      discord?.timer || discord?.scheduledPublish ? 'system' : context.kind, context.principalId, discord?.interactionId ?? null]
   );
   return result.outcome;
 }

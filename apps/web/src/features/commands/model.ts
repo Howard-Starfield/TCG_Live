@@ -61,6 +61,7 @@ export function canRemoveMember(session: Gate, snapshot: EventSnapshotDto, membe
 export function preconditionFor(snapshot: EventSnapshotDto, command: AdminCommandDto): CommandPreconditionDto {
   switch (command.type) {
     case 'publish':
+    case 'delayStart':
       return { eventVersion: snapshot.version };
     case 'signupClose':
     case 'signupReopen':
@@ -165,6 +166,7 @@ export function matchLine(snapshot: Pick<EventSnapshotDto, 'members' | 'seats'>,
 export function commandVerb(snapshot: EventSnapshotDto, command: AdminCommandDto): string {
   switch (command.type) {
     case 'publish': return 'publish the round';
+    case 'delayStart': return 'delay the tournament start';
     case 'signupClose': return 'close signup';
     case 'signupReopen': return 'reopen signup';
     case 'signupRemove': return `remove ${memberName(snapshot, command.memberId)}`;
@@ -178,6 +180,7 @@ export function commandVerb(snapshot: EventSnapshotDto, command: AdminCommandDto
 export function commandDone(snapshot: EventSnapshotDto, command: AdminCommandDto): string {
   switch (command.type) {
     case 'publish': return 'Round published';
+    case 'delayStart': return 'Tournament start delayed';
     case 'signupClose': return 'Signup closed and seats assigned';
     case 'signupReopen': return 'Signup reopened';
     case 'signupRemove': return `Removed ${memberName(snapshot, command.memberId)} from the signup`;

@@ -20,6 +20,8 @@ export interface AdminDemoOptions {
   env?: NodeJS.ProcessEnv;
   write?: (text: string) => void;
   runtime?: DemoAdminRuntimeOptions;
+  ephemeral?: boolean;
+  webDist?: string;
   createHandler?: (options: AdminHandlerOptions) => AdminHandler;
 }
 
@@ -27,23 +29,32 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
   const env = options.env ?? process.env;
   const write = options.write ?? (text => { process.stdout.write(text); });
   // Only PORT matters here; the demo never connects to PostgreSQL.
-  const { port } = readConfig({ PORT: env.PORT });
+  const requestedPort = options.ephemeral ? 0 : readConfig({ PORT: env.PORT }).port;
   const adminConfig = readAdminConfig('demo', env);
   // TCG_ADMIN_DEMO_MODE picks autoplay (default) or interactive; an explicit runtime option wins.
   const runtime = new DemoAdminRuntime({ mode: adminConfig.demoMode, ...options.runtime });
-  const handler = (options.createHandler ?? createAdminHandler)({
-    runtime, port, mode: 'demo', commandsEnabled: true, webDist: adminConfig.webDist,
-    devOrigin: adminConfig.devOrigin, fixedLoginToken: adminConfig.fixedLoginToken
-  });
-  let server: Awaited<ReturnType<typeof startServer>>;
+  let handler: AdminHandler | undefined;
+  const adapter: AdminHandler = {
+    handle: (request, response) => handler?.handle(request, response) ?? false,
+    loginUrl: () => handler?.loginUrl() ?? null,
+    rotateLoginUrl: () => handler!.rotateLoginUrl(),
+    close: async () => { await handler?.close(); }
+  };
+  let server: Awaited<ReturnType<typeof startServer>> | undefined;
   try {
-    server = await startServer({ port, database: null }, { admin: handler });
+    server = await startServer({ port: requestedPort, database: null }, { admin: adapter });
+    handler = (options.createHandler ?? createAdminHandler)({
+      runtime, port: server.port, mode: 'demo', commandsEnabled: true, webDist: options.webDist ?? adminConfig.webDist,
+      ...(options.ephemeral ? {} : { devOrigin: adminConfig.devOrigin, fixedLoginToken: adminConfig.fixedLoginToken })
+    });
+    runtime.start();
   } catch (error) {
-    await handler.close().catch(() => {});
+    await server?.stop();
     await runtime.close();
     throw error;
   }
-  runtime.start();
+  const running = server;
+  const port = running.port;
   write(`TCG Live admin demo listening on 127.0.0.1:${port} (${runtime.playMode})\n`);
   const url = handler.loginUrl();
   write(url ? `Admin console: ${url}\n` : 'Admin console link unavailable: the admin HTTP layer did not issue a launch token.\n');
@@ -54,9 +65,9 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
     port, runtime, handler,
     stop() {
       stopping ??= (async () => {
-        await handler.close().catch(() => {});
+        await adapter.close().catch(() => {});
         await runtime.close();
-        await server.stop();
+        await running.stop();
       })();
       return stopping;
     }

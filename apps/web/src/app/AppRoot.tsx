@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { AdminDataProvider, preferencesStore, type AdminData, type PreferencesStore } from '../data';
 import { ThemeProvider, ToastProvider } from '../ui';
 import { FragmentLogin } from './FragmentLogin';
@@ -14,6 +14,11 @@ export interface AppRootProps {
 
 /** Providers (data, preferences, theme, toasts) around the session gate. */
 export function AppRoot({ data, preferences = preferencesStore }: AppRootProps) {
+  useEffect(() => {
+    const suppress = (event: MouseEvent) => event.preventDefault();
+    document.addEventListener('contextmenu', suppress);
+    return () => document.removeEventListener('contextmenu', suppress);
+  }, []);
   return (
     <AdminDataProvider data={data}>
       <PreferencesScope store={preferences}>

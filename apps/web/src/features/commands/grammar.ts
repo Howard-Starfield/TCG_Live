@@ -9,7 +9,7 @@
 // Arguments are positional or named with the Discord option names (`match:M2`, `winner:C`,
 // `member-id:…`, `reason:…`). The reason is everything after the other arguments. A leading
 // `/tcg-test` is accepted, so a Discord command pasted as typed also works.
-import { SEATS, type EventAdminAction, type EventSnapshotDto, type MatchAdminAction, type MatchDto, type MatchId,
+import { isSeatId, type EventAdminAction, type EventSnapshotDto, type MatchAdminAction, type MatchDto, type MatchId,
   type Seat, type SessionDto, type Snowflake } from '@tcg-live/core';
 import { memberName } from '../../data';
 import { seatWithName } from '../shell/labels';
@@ -21,7 +21,7 @@ type ArgName = 'match' | 'winner' | 'member' | 'reason';
 export interface CommandSpec {
   /** Subcommand name as in Discord, e.g. `judge-resume`. */
   name: string;
-  kind: CommandType | 'refresh';
+  kind: Exclude<CommandType, 'delayStart'> | 'refresh';
   description: string;
   args: ArgName[];
 }
@@ -87,8 +87,8 @@ type Mention = { seat: Seat } | { memberId: Snowflake } | { error: string };
 
 /** Resolves `C`, `@C`, `@Cy_Park`, `@900…`, `<@900…>` and a bare member ID. */
 export function resolveMention(snapshot: Pick<EventSnapshotDto, 'members'>, raw: string): Mention {
-  const seat = /^@?([a-d])$/i.exec(raw);
-  if (seat) return { seat: seat[1]!.toUpperCase() as Seat };
+  const seat = raw.replace(/^@/, '').toUpperCase();
+  if (isSeatId(seat)) return { seat };
   const id = /^<@!?(\d{5,20})>$/.exec(raw) ?? /^@?(\d{5,20})$/.exec(raw);
   if (id) return { memberId: id[1]! };
   if (raw.startsWith('@') && raw.length > 1) {
@@ -202,8 +202,8 @@ function resolveWinner(snapshot: EventSnapshotDto, match: MatchDto, raw: string)
   const mention = resolveMention(snapshot, raw);
   if ('error' in mention) return reject(mention.error);
   if ('memberId' in mention) {
-    const seat = SEATS.find(item => snapshot.seats[item] === mention.memberId);
-    if (!seat) return reject(`${memberName(snapshot, mention.memberId)} has no seat.`);
+    const seat = Object.keys(snapshot.seats).find(item => isSeatId(item) && snapshot.seats[item] === mention.memberId);
+    if (!isSeatId(seat)) return reject(`${memberName(snapshot, mention.memberId)} has no seat.`);
     return match.seats.includes(seat) ? accept(seat)
       : reject(`${memberName(snapshot, mention.memberId)} (Seat ${seat}) does not play in ${match.id}.`);
   }

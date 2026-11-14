@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto';
 import type { Command, EventState, MatchId, Outcome, Player } from '../rehearsal/domain.js';
-import type { ArtworkGame, OpenTournamentSignupResult } from '@tcg-live/core';
-import { RuleError } from '../rehearsal/domain.js';
+import { isJudgeRequestCategory, MAX_JUDGE_REQUEST_LENGTH, type ArtworkGame, type OpenTournamentSignupResult } from '@tcg-live/core';
+import { checkinsReadyToPublish, RuleError, signupTournamentComplete } from '../rehearsal/domain.js';
 import { applyDiscordCommand, applyWebCommand, type WebCommandContext } from '../rehearsal/store.js';
-import { parseButtonId, renderCard, type CardPayload, type ParsedButton } from './cards.js';
+import { parseButtonId, renderCard, renderTournamentRecap, type CardPayload, type ParsedButton } from './cards.js';
 import { channelForSlot, type PrivateDiscordConfig } from './config.js';
-import { activateSignupDraft, bindCard, claimResumeReminder, completeStickyCard, getSessionState, messageId, replaceStickyCard, suspendStickyCard,
+import { activateSignupDraft, bindCard, claimResumeReminder, clearDeletedSessionCards, completeStickyCard, deleteActiveTournament, deletedSessionsWithCards, getSessionState, messageId, sessionSlots, NoActiveSessionError, replaceStickyCard, suspendStickyCard,
   resolvePlayers, type CardSlot, type SessionRow } from './session.js';
 
 export interface PrivateInteraction {
@@ -13,7 +14,9 @@ export interface PrivateInteraction {
   guildId: string | null;
   channelId: string | null;
   userId: string;
-  kind: 'button' | 'command';
+  kind: 'button' | 'command' | 'judgeRequest';
+  showJudgeRequest?(): Promise<void>;
+  judgeRequest?: { requesterId: string; category: string; description: string };
   customId?: string;
   messageId?: string;
   subcommand?: string;
@@ -22,15 +25,17 @@ export interface PrivateInteraction {
   reason?: string;
   memberId?: string;
   acknowledge(): Promise<void>;
-  reply(message: string): Promise<void>;
+  reply(message: string, attachment?: { name: string; attachment: Buffer }): Promise<void>;
 }
 
 export interface CardTransport {
-  send(payload: CardPayload, slot?: CardSlot): Promise<string>;
+  send(payload: CardPayload, slot?: CardSlot, nonce?: string): Promise<string>;
   edit(id: string, payload: CardPayload, slot?: CardSlot): Promise<void>;
   pin(id: string, slot?: CardSlot): Promise<void>;
+  findMatchCard?(eventId: string, slot: MatchId): Promise<string | null>;
+  unpin?(id: string): Promise<void>;
   resumeReminder?(slot: MatchId, waitingIds: string[]): Promise<string>;
-  remove?(id: string, slot: CardSlot): Promise<void>;
+  remove?(id: string, slot: CardSlot, channelId?: string): Promise<void>;
   /** Distinguish a confirmed deleted card from a forbidden or ambiguous response. */
   classify(error: unknown): 'missing' | 'forbidden' | 'retry';
 }
@@ -100,7 +105,9 @@ export class PrivateDiscordController {
   private timers = new Map<MatchId, NodeJS.Timeout>();
   private retry: NodeJS.Timeout | undefined;
   private pending = new Set<Promise<unknown>>();
+  private scheduledEventId: string | undefined;
   private scheduledVersion = -1;
+  private deletedCardCleanup: Promise<void> | undefined;
   private sticky = new Map<string, StickyChannel>();
   private listeners = new Set<ControllerListener>();
   private panelRevision = 0;
@@ -121,7 +128,8 @@ export class PrivateDiscordController {
     private readonly stickyDelayMs = 4_000,
     private readonly claimReminder = claimResumeReminder,
     private readonly syncRooms?: (explicit: boolean) => Promise<void>,
-    private readonly applyWeb = applyWebCommand
+    private readonly applyWeb = applyWebCommand,
+    private readonly provisionRound?: (session: SessionRow, state: EventState) => Promise<void>
   ) {}
 
   /** Subscribers run in isolated microtasks; a throwing subscriber cannot affect replies, cards or shutdown. */
@@ -169,9 +177,13 @@ export class PrivateDiscordController {
   }
 
   async start(): Promise<void> {
-    const { state } = await this.read(this.config);
-    this.schedule(state);
-    void this.requestRefresh().catch(() => {});
+    try {
+      const { state } = await this.read(this.config);
+      this.schedule(state);
+      void this.requestRefresh().catch(() => {});
+    } catch (error) {
+      if (!(error instanceof NoActiveSessionError)) throw error;
+    }
   }
 
   reconnect(): void {
@@ -191,20 +203,52 @@ export class PrivateDiscordController {
     const ticket = this.dirty;
     let snapshot: Awaited<ReturnType<typeof getSessionState>>;
     try { snapshot = await this.read(this.config); }
-    catch (error) { this.scheduleRetry(); throw error; }
+    catch (error) {
+      if (error instanceof NoActiveSessionError && mode === 'known') {
+        if (ticket === this.dirty) this.refreshed = ticket;
+        this.pendingChanged();
+        return;
+      }
+      if (!(error instanceof NoActiveSessionError)) this.scheduleRetry();
+      throw error;
+    }
     const { session, state } = snapshot;
     this.schedule(state);
+    if (signupTournamentComplete(state) && this.transport.unpin) {
+      try { await this.finishTournamentCards(session, state, mode === 'explicit'); }
+      catch (error) { this.scheduleRetry(); throw error; }
+      if (ticket === this.dirty) this.refreshed = ticket;
+      this.pendingChanged();
+      return;
+    }
+    if (state.firstRound && state.published && this.provisionRound) {
+      try {
+        await this.provisionRound(session, state);
+        if (state.matches.some(match => !session.identity_map.roundRooms?.[match.id])) await this.syncRooms?.(false);
+      }
+      catch (error) { this.scheduleRetry(); throw error; }
+    }
     let failed = false;
     let retryable = false;
-    for (const slot of SLOTS) {
+    const slots: CardSlot[] = state.firstRound ? ['checkin', ...state.matches.map(match => match.id)] : SLOTS;
+    for (const slot of slots) {
       if (!this.accepting) return;
       const id = messageId(session, slot);
-      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament);
+      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament, session.channel_id);
+      const dynamicMatch = state.firstRound && slot !== 'checkin' &&
+        state.matches.some(match => match.id === slot && match.phase !== 'final') && this.transport.findMatchCard;
+      const nonce = dynamicMatch ? createHash('sha256').update(`${state.id}:${slot}`).digest('hex').slice(0, 25) : undefined;
       if (!id) {
-        if (mode !== 'explicit') continue;
-        // Send is attempted once. An ambiguous response never triggers an automatic resend.
-        const sent = await this.sendOnce(payload, slot);
-        await this.bind(this.config, session.event_id, slot, sent);
+        if (mode !== 'explicit' && !dynamicMatch) continue;
+        let sent: string;
+        try {
+          sent = (dynamicMatch ? await this.transport.findMatchCard!(state.id, slot) : null)
+            ?? await this.sendOnce(payload, slot, nonce);
+          await this.bind(this.config, session.event_id, slot, sent);
+        } catch (error) {
+          if (dynamicMatch) this.scheduleRetry();
+          throw error;
+        }
         this.panelChanged(session.event_id);
         if (slot === 'checkin') await this.transport.pin(sent, slot);
         continue;
@@ -217,8 +261,9 @@ export class PrivateDiscordController {
         }
         if (mode === 'explicit' && slot === 'checkin') await this.transport.pin(id, slot);
       } catch (error) {
-        if (mode === 'explicit' && this.transport.classify(error) === 'missing') {
-          const sent = await this.sendOnce(payload, slot);
+        if ((mode === 'explicit' || dynamicMatch) && this.transport.classify(error) === 'missing') {
+          const sent = (dynamicMatch ? await this.transport.findMatchCard!(state.id, slot) : null)
+            ?? await this.sendOnce(payload, slot, nonce);
           await this.bind(this.config, session.event_id, slot, sent);
           this.panelChanged(session.event_id);
           if (slot === 'checkin') await this.transport.pin(sent, slot);
@@ -236,8 +281,36 @@ export class PrivateDiscordController {
     if (failed) throw new RuleError('Card update pending.');
   }
 
-  private async sendOnce(payload: CardPayload, slot: CardSlot): Promise<string> {
-    try { return await this.transport.send(payload, slot); }
+  private async finishTournamentCards(session: SessionRow, state: EventState, repair = false): Promise<void> {
+    if (!this.transport.unpin || !this.transport.remove) throw new RuleError('Discord results cleanup is unavailable.');
+    const payload = renderTournamentRecap(state, resolvePlayers(session, state), session.tournament);
+    let recapId = messageId(session, 'checkin');
+    if (recapId) {
+      try { await this.transport.edit(recapId, payload, 'checkin'); }
+      catch (error) {
+        if (this.transport.classify(error) !== 'missing') throw error;
+        recapId = null;
+      }
+    }
+    for (const slot of sessionSlots(session)) {
+      const ids = new Set([slot === 'checkin' ? null : messageId(session, slot), ...(session.identity_map.stickyPrevious?.[slot] ?? [])]);
+      for (const id of ids) {
+        if (!id || id === recapId) continue;
+        const channelId = slot === 'checkin' ? session.channel_id : session.identity_map.roundRooms?.[slot];
+        try { await this.transport.remove(id, slot, channelId); }
+        catch (error) { if (this.transport.classify(error) !== 'missing') throw error; }
+      }
+    }
+    if (!recapId) {
+      if (!repair) throw new RuleError('The signup card is missing. Use Refresh to post the results.');
+      recapId = await this.sendOnce(payload, 'checkin');
+      await this.bind(this.config, session.event_id, 'checkin', recapId);
+    }
+    await this.transport.unpin(recapId);
+  }
+
+  private async sendOnce(payload: CardPayload, slot: CardSlot, nonce?: string): Promise<string> {
+    try { return await (nonce ? this.transport.send(payload, slot, nonce) : this.transport.send(payload, slot)); }
     catch (error) {
       if (this.transport.classify(error) === 'forbidden')
         throw new RuleError('Private Discord card permission denied; fix channel permissions before refresh.');
@@ -261,7 +334,7 @@ export class PrivateDiscordController {
 
   private onHumanMessage(channelId: string, messageId: string): void {
     if (!this.accepting || !SNOWFLAKE.test(messageId) ||
-        !SLOTS.some(slot => channelId === channelForSlot(this.config, slot))) return;
+        !this.isControlChannel(channelId)) return;
     const now = Date.now();
     const prior = this.sticky.get(channelId);
     if (prior) {
@@ -301,12 +374,13 @@ export class PrivateDiscordController {
   private async bumpSticky(channelId: string, observedId: string): Promise<void> {
     if (!this.transport.remove) return;
     const { session, state } = await this.read(this.config);
-    for (const slot of SLOTS) {
+    if (signupTournamentComplete(state)) return;
+    for (const slot of sessionSlots(session)) {
       if (!this.accepting || !this.canPost()) return;
       if (channelForSlot(this.config, slot) !== channelId || session.identity_map.stickySuspended?.includes(slot)) continue;
       const oldId = messageId(session, slot);
       if (!oldId || BigInt(observedId) <= BigInt(oldId)) continue;
-      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament);
+      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament, session.channel_id);
       // Persist a reservation before POST: a crash or ambiguous response leaves
       // this slot suspended until a deliberate admin refresh.
       if (!await this.stickyStore.suspend(this.config, session.event_id, slot, oldId)) continue;
@@ -346,14 +420,15 @@ export class PrivateDiscordController {
       try { await this.transport.remove?.(oldId, slot); }
       catch (error) { if (this.transport.classify(error) !== 'missing') cleaned = false; }
       if (cleaned) {
-        await this.stickyStore.complete(this.config, session.event_id, slot, newId);
+        await this.stickyStore.complete(this.config, session.event_id, slot, newId, oldId);
         this.panelChanged(session.event_id);
       }
     }
   }
 
   private schedule(state: EventState): void {
-    if (state.version < this.scheduledVersion) return;
+    if (state.id === this.scheduledEventId && state.version < this.scheduledVersion) return;
+    this.scheduledEventId = state.id;
     this.scheduledVersion = state.version;
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
@@ -371,7 +446,7 @@ export class PrivateDiscordController {
 
   private runTimer(eventId: string, version: number, matchId: MatchId, generation: number, deadlineMs: number): void {
     void this.track(this.fireTimer(eventId, matchId, generation, deadlineMs)).catch(() => {
-      if (!this.accepting || this.scheduledVersion > version) return;
+      if (!this.accepting || this.scheduledEventId !== eventId || this.scheduledVersion > version) return;
       const alreadyArmed = this.timers.get(matchId);
       if (alreadyArmed) clearTimeout(alreadyArmed);
       this.timers.set(matchId, setTimeout(() => {
@@ -391,14 +466,54 @@ export class PrivateDiscordController {
     if (result.applied) await this.requestRefresh();
   }
 
+  async publishDueRound(): Promise<void> {
+    if (!this.accepting || !this.canPost()) return;
+    let state: EventState;
+    try { ({ state } = await this.read(this.config)); }
+    catch (error) {
+      if (error instanceof NoActiveSessionError) return;
+      throw error;
+    }
+    if (!this.accepting || !this.canPost() || !state.signup || state.startsAtMs === undefined ||
+        this.clock() < state.startsAtMs || !checkinsReadyToPublish(state)) return;
+    const command = { type: 'publish' } as const;
+    const startsAtMs = state.startsAtMs;
+    await this.track(this.commit(state.id, command, () => this.apply({
+      config: this.config, eventId: state.id, principalId: 'system:scheduler', scheduledPublish: { startsAtMs }
+    }, command, this.runnerId, this.clock)));
+  }
+
+  private isControlChannel(channelId: string): boolean {
+    return channelId === this.config.channelId || Object.values(this.config.matchChannels ?? {}).includes(channelId) ||
+      Object.values(this.config.roundRooms ?? {}).includes(channelId);
+  }
+
   async handle(interaction: PrivateInteraction): Promise<void> {
     if (!this.accepting) return;
     const scope = interaction.applicationId === this.config.applicationId &&
       interaction.guildId === this.config.guildId && interaction.channelId !== null &&
       (interaction.kind === 'command' ? interaction.channelId === this.config.channelId :
-        SLOTS.some(slot => interaction.channelId === channelForSlot(this.config, slot)));
+        this.isControlChannel(interaction.channelId));
     if (!scope) return;
     await this.track((async () => {
+      if (interaction.showJudgeRequest) {
+        try {
+          if (!this.canPost()) throw new RuleError('The Discord bot is unavailable.');
+          const { session, state } = await this.read(this.config);
+          const { command } = this.commandFor(interaction, session, state);
+          if (!this.accepting) return;
+          if (command.type !== 'callJudge' || !state.published ||
+              state.matches.find(match => match.id === command.matchId)?.phase === 'final')
+            throw new RuleError('Judge call is unavailable.');
+          await interaction.showJudgeRequest();
+        } catch (error) {
+          try {
+            await interaction.acknowledge();
+            await interaction.reply(error instanceof RuleError ? error.message : 'The judge request form could not be opened.');
+          } catch { /* Discord may already have accepted the modal. */ }
+        }
+        return;
+      }
       try { await interaction.acknowledge(); } catch { return; }
       if (!this.accepting) return;
       await this.handleAcknowledged(interaction);
@@ -427,15 +542,74 @@ export class PrivateDiscordController {
     return this.track(this.explicitRefresh());
   }
 
+  private async removeDeletedCards(session: SessionRow): Promise<boolean> {
+    let failed = false;
+    for (const slot of sessionSlots(session)) {
+      const ids = new Set([messageId(session, slot), ...(session.identity_map.stickyPrevious?.[slot] ?? [])]);
+      const channelId = slot === 'checkin' ? session.channel_id : session.identity_map.roundRooms?.[slot] ?? session.identity_map.matchChannels?.[slot] ?? session.channel_id;
+      for (const id of ids) {
+        if (!id) continue;
+        if (!this.accepting || !this.canPost() || !this.transport.remove) return false;
+        try { await this.transport.remove(id, slot, channelId); }
+        catch (error) { if (this.transport.classify(error) !== 'missing') failed = true; }
+      }
+    }
+    if (failed) return false;
+    try { await clearDeletedSessionCards(session.event_id); } catch { return false; }
+    return true;
+  }
+
+  retryDeletedCards(): Promise<void> {
+    if (!this.accepting || !this.canPost()) return Promise.resolve();
+    if (this.deletedCardCleanup) return this.deletedCardCleanup;
+    const task = this.refreshTask.then(async () => {
+      for (const session of await deletedSessionsWithCards(this.config)) {
+        if (!this.accepting || !this.canPost()) return;
+        await this.removeDeletedCards(session);
+      }
+    });
+    this.refreshTask = task.catch(() => {});
+    this.deletedCardCleanup = this.track(task.finally(() => { this.deletedCardCleanup = undefined; }));
+    return this.deletedCardCleanup;
+  }
+
+  deleteTournament(eventId: string): Promise<{ cleanupPending: boolean }> {
+    const available = () => this.accepting && this.canPost();
+    if (!available()) return Promise.reject(new ControllerUnavailableError('The Discord bot is unavailable.'));
+    const task = this.refreshTask.then(async () => {
+      const session = await deleteActiveTournament(this.config, eventId, available);
+      if (this.scheduledEventId === eventId) {
+        this.scheduledEventId = undefined;
+        for (const timer of this.timers.values()) clearTimeout(timer);
+        this.timers.clear();
+      }
+      this.notify({ type: 'event', eventId });
+      let cleanupPending = !await this.removeDeletedCards(session);
+      try { await this.syncRooms?.(true); } catch { cleanupPending = true; }
+      return { cleanupPending };
+    });
+    this.refreshTask = task.then(() => {}, () => {});
+    return this.track(task);
+  }
+
   openSignup(eventId: string, expectedActiveEventId: string | null,
     selectArtwork: (game: ArtworkGame) => Promise<void>,
-    prepareChannel?: Parameters<typeof activateSignupDraft>[4]): Promise<OpenTournamentSignupResult> {
+    prepareChannel?: Parameters<typeof activateSignupDraft>[4], scheduled = false): Promise<OpenTournamentSignupResult> {
     const available = () => this.accepting && this.canPost();
     if (!available()) return Promise.reject(new ControllerUnavailableError('The Discord bot is unavailable.'));
     const task = this.refreshTask.then(async (): Promise<OpenTournamentSignupResult> => {
-      const result = await activateSignupDraft(this.config, eventId, expectedActiveEventId, available, prepareChannel);
+      if (this.transport.unpin) {
+        const current = await this.read(this.config).catch(error => {
+          if (error instanceof NoActiveSessionError) return null;
+          throw error;
+        });
+        if (current && current.state.id !== eventId && signupTournamentComplete(current.state))
+          await this.finishTournamentCards(current.session, current.state, true);
+      }
+      const result = await activateSignupDraft(this.config, eventId, expectedActiveEventId, available, prepareChannel, scheduled);
       const removeOld = result.installChannel?.();
       this.config.channelId = result.channelId;
+      if (expectedActiveEventId !== eventId) this.config.roundRooms = undefined;
       this.notify({ type: 'event', eventId });
       let panels: OpenTournamentSignupResult['panels'] = 'posted';
       try { await selectArtwork(result.game); } catch { panels = 'pending'; }
@@ -443,9 +617,9 @@ export class PrivateDiscordController {
         if (!available()) throw new ControllerUnavailableError('The Discord bot is unavailable.');
         await this.refresh('explicit');
       } catch { panels = 'pending'; }
-      if (removeOld && available() && panels === 'posted') {
-        for (const { id, slot } of result.retiredCards) {
-          try { await removeOld(id, slot); } catch { /* Retired card controls are invalid. */ }
+      if (available() && panels === 'posted') {
+        for (const { id, slot, channelId } of result.retiredCards) {
+          try { if (this.transport.remove) await this.transport.remove(id, slot, channelId); else await removeOld?.(id, slot); } catch { /* Retired card controls are invalid. */ }
         }
       }
       try { if (available()) await this.syncRooms?.(true); } catch { panels = 'pending'; }
@@ -470,14 +644,15 @@ export class PrivateDiscordController {
     catch { return { status: 'pending', message: 'Active Discord panels could not be loaded.' }; }
     const { session, state } = snapshot;
     const players = resolvePlayers(session, state) ?? undefined;
+    if (signupTournamentComplete(state) && this.transport.unpin) return { status: 'applied' };
     let pending = false;
     let changed = false;
-    for (const slot of SLOTS) {
+    for (const slot of state.firstRound ? ['checkin' as const, ...state.matches.map(match => match.id)] : SLOTS) {
       if (!this.accepting || !this.canPost()) { pending = true; break; }
       const id = messageId(session, slot);
       if (!id || session.identity_map.stickySuspended?.includes(slot)) { pending = true; continue; }
       try {
-        await this.transport.edit(id, renderCard(state, slot, this.runnerId, players, session.tournament), slot);
+        await this.transport.edit(id, renderCard(state, slot, this.runnerId, players, session.tournament, session.channel_id), slot);
         changed = true;
       } catch { pending = true; }
     }
@@ -563,14 +738,25 @@ export class PrivateDiscordController {
       const { session, state } = await this.read(this.config);
       if (interaction.kind === 'button' && this.canonicalButton(interaction, session).action === 'signupRoster') {
         if (!state.signup) throw new RuleError('Signup roster is unavailable.');
-        const names = state.signup.roster.map((id, index) => `${index + 1}. <@${id}>`).join('\n') || 'No players have joined yet.';
-        await interaction.reply(`Signup roster (${state.signup.roster.length}/4):\n${names}`);
+        const { roster, capacity = 4 } = state.signup;
+        const title = `Signup roster (${roster.length}/${capacity}):`;
+        const names = roster.map((id, index) => `${index + 1}. <@${id}>`).join('\n') || 'No players have joined yet.';
+        const message = `${title}\n${names}`;
+        if (message.length <= 3_500) {
+          await interaction.reply(message);
+        } else {
+          const csv = ['position,discord_user_id', ...roster.map((id, index) => `${index + 1},${id}`)].join('\r\n');
+          await interaction.reply(`${title} Download the complete roster below.`, {
+            name: 'signup-roster.csv', attachment: Buffer.from(csv)
+          });
+        }
         return;
       }
       const { command, slot } = this.commandFor(interaction, session, state);
+      const cardId = slot && interaction.kind === 'judgeRequest' ? messageId(session, slot) : interaction.messageId;
       committed = await this.commit(session.event_id, command, () => this.apply({ config: this.config, eventId: session.event_id,
         principalId: interaction.userId, interactionId: interaction.id,
-        ...(slot ? { message: { slot, id: interaction.messageId!, channelId: interaction.channelId! } } : {}) }, command, this.runnerId, this.clock));
+        ...(slot && cardId ? { message: { slot, id: cardId, channelId: interaction.channelId! } } : {}) }, command, this.runnerId, this.clock));
       if (committed.degraded) {
         // A post-commit failure already scheduled the retry; one reply attempt, as before.
         try { await interaction.reply(committed.reply); } catch { /* Initial acknowledgment already succeeded. */ }
@@ -609,7 +795,7 @@ export class PrivateDiscordController {
       if (interaction.subcommand === 'signup-reopen') return { command: { type: 'signupReopen' } };
       if (interaction.subcommand === 'signup-remove' && interaction.memberId)
         return { command: { type: 'signupRemove', memberId: interaction.memberId } };
-      if (!matchId || !['M1', 'M2'].includes(matchId)) throw new RuleError('Invalid match option.');
+      if (!matchId || !state.matches.some(match => match.id === matchId)) throw new RuleError('Invalid match option.');
       if (interaction.subcommand === 'judge-resume' && reason?.trim())
         return { command: { type: 'judgeResume', matchId, reason } };
       if ((interaction.subcommand === 'resolve' || interaction.subcommand === 'correct') && winner && reason?.trim()) {
@@ -619,7 +805,14 @@ export class PrivateDiscordController {
       }
       throw new RuleError('Invalid admin command options.');
     }
-    const parsed = this.canonicalButton(interaction, session);
+    const parsed = interaction.kind === 'judgeRequest'
+      ? parseButtonId(interaction.customId ?? '')
+      : this.canonicalButton(interaction, session);
+    if (interaction.kind === 'judgeRequest' &&
+        (parsed.action !== 'judge' || parsed.eventId !== session.event_id ||
+          interaction.channelId !== channelForSlot(this.config, parsed.slot) || !messageId(session, parsed.slot) ||
+          interaction.judgeRequest?.requesterId !== interaction.userId))
+      throw new RuleError('This judge request is no longer valid. Open the form from your current match card.');
     const players = resolvePlayers(session, state);
     const player = (Object.entries(players ?? {}) as Array<[Player, string]>).find(([, id]) => id === interaction.userId)?.[0];
     const slot = parsed.slot;
@@ -635,7 +828,14 @@ export class PrivateDiscordController {
     switch (parsed.action) {
       case 'ready': return { command: { type: 'ready', matchId }, slot };
       case 'pause': return { command: { type: 'pause', matchId }, slot };
-      case 'judge': return { command: { type: 'callJudge', matchId }, slot };
+      case 'judge': {
+        if (interaction.kind !== 'judgeRequest') return { command: { type: 'callJudge', matchId }, slot };
+        const category = interaction.judgeRequest?.category;
+        const description = interaction.judgeRequest?.description.trim();
+        if (!isJudgeRequestCategory(category) || !description || description.length > MAX_JUDGE_REQUEST_LENGTH)
+          throw new RuleError('Choose a category and describe what you need help with.');
+        return { command: { type: 'callJudge', matchId, judgeRequest: { category, description } }, slot };
+      }
       case 'resume': return { command: { type: 'resumeConsent', matchId, pauseGeneration: parsed.revision! }, slot };
       case 'won': case 'lost': {
         const match = state.matches.find(item => item.id === matchId)!;

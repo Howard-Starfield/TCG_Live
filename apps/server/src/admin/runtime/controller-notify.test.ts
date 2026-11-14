@@ -150,7 +150,7 @@ test('sticky repost suspend, replace and complete each move panelRevision', asyn
   }, () => true, 5);
   const panels: ControllerChange[] = [];
   controller.subscribe(change => { if (change.type === 'panels') panels.push(change); });
-  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1, id: ids[7]!, authorBot: false });
+  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1!, id: ids[7]!, authorBot: false });
   const deadline = Date.now() + 1_000;
   while (controller.status().panelRevision < 3 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 2));
   assert.equal(controller.status().panelRevision, 3);
@@ -190,7 +190,7 @@ test('timer applications notify an event change', async () => {
   const startedAtMs = Date.now();
   let state = createFixture(eventId, 20);
   state = { ...state, version: 1, published: true,
-    matches: [{ ...state.matches[0], phase: 'running', runnerId: 'runner', startedAtMs, remainingMs: 20 }, state.matches[1]] };
+    matches: [{ ...state.matches[0]!, phase: 'running', runnerId: 'runner', startedAtMs, remainingMs: 20 }, state.matches[1]!] };
   const session: SessionRow = { event_id: eventId, application_id: config.applicationId, guild_id: config.guildId,
     channel_id: config.channelId, identity_map: { players: config.players, adminId: config.adminId }, status: 'active',
     checkin_message_id: null, m1_message_id: null, m2_message_id: null };
@@ -198,8 +198,8 @@ test('timer applications notify an event change', async () => {
     async send() { throw new Error('no send'); }, async edit() {}, async pin() {}, classify() { return 'retry'; }
   }, async () => ({ state, session }), async context => {
     assert.equal(context.principalId, 'system:timer');
-    state = { ...state, version: 2, matches: [{ ...state.matches[0], phase: 'expired', runnerId: null, startedAtMs: null,
-      remainingMs: 0, judgeAttention: true }, state.matches[1]] };
+    state = { ...state, version: 2, matches: [{ ...state.matches[0]!, phase: 'expired', runnerId: null, startedAtMs: null,
+      remainingMs: 0, judgeAttention: true }, state.matches[1]!] };
     return { eventId, version: 2, applied: true, result: 'clockCheck' };
   }, async () => {}, Date.now, 10);
   const changes: ControllerChange[] = [];

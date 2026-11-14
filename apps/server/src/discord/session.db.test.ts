@@ -133,7 +133,7 @@ test('real database: additive migration, global lease, canonical interaction and
       { type: 'resumeConsent', matchId: 'M1', pauseGeneration: 1 }, 7_000, 'new-runner');
     assert.equal(await claimResumeReminder(changed, session.event_id, 'M1', 1), null,
       'running match cannot claim a paused-player reminder');
-    const running = (await getSessionState(changed)).state.matches[0];
+    const running = (await getSessionState(changed)).state.matches[0]!;
     const deadline = running.startedAtMs! + running.remainingMs;
     const beforeTimer = (await getSessionState(changed)).state.version;
     const auditBeforeTimer = await withClient(client => client.query<{ count: number }>(
@@ -151,7 +151,7 @@ test('real database: additive migration, global lease, canonical interaction and
       principalId: 'system:timer', timer: { matchId: 'M1', pauseGeneration: 1, deadlineMs: deadline } },
       { type: 'clockCheck', matchId: 'M1' }, 'new-runner', () => deadline);
     assert.equal(expired.applied, true);
-    assert.equal((await getSessionState(changed)).state.matches[0].phase, 'expired');
+    assert.equal((await getSessionState(changed)).state.matches[0]!.phase, 'expired');
     assert.equal((await run(changed.players.A, '161010101010101010',
       { type: 'propose', matchId: 'M1', winner: 'A', expectedRevision: 0 }, deadline + 1, 'third-runner')).applied, true);
 
@@ -161,8 +161,11 @@ test('real database: additive migration, global lease, canonical interaction and
     assert.equal(await replaceStickyCard(changed, session.event_id, 'M2', ids[2]!, ids[4]!), false);
     assert.equal(await replaceStickyCard(changed, session.event_id, 'M2', ids[3]!, ids[4]!), true);
     assert.equal((await getSessionState(changed)).session.m2_message_id, ids[4]);
-    await completeStickyCard(changed, session.event_id, 'M2', ids[4]!);
-    assert.deepEqual((await getSessionState(changed)).session.identity_map.stickySuspended, []);
+    assert.deepEqual((await getSessionState(changed)).session.identity_map.stickyPrevious, { M2: [ids[3]] });
+    await completeStickyCard(changed, session.event_id, 'M2', ids[4]!, ids[3]!);
+    const completedSticky = (await getSessionState(changed)).session.identity_map;
+    assert.deepEqual(completedSticky.stickySuspended, []);
+    assert.equal(completedSticky.stickyPrevious, undefined);
 
     // Retirement under the same aggregate lock wins over an already queued click.
     await withClient(async client => {

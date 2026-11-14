@@ -209,7 +209,7 @@ export function buildEventGraph(snapshot: EventSnapshotDto, orientation: FlowOri
     }),
     stage('checkin', {
       title: 'Check-in',
-      subtitle: index === 0 ? 'after signup' : `${snapshot.checkins.length} / 4 in`,
+      subtitle: index === 0 ? 'after signup' : `${snapshot.checkins.length} / ${snapshot.dynamicRound ? signup?.roster.length ?? 0 : 4} in`,
       state: index < 1 ? 'pending' : index === 1 ? 'live' : 'done'
     }),
     stage('round', {
@@ -226,7 +226,7 @@ export function buildEventGraph(snapshot: EventSnapshotDto, orientation: FlowOri
     }),
     edge('checkin', 'right', 'round', 'left', {
       state: index < 2 ? 'pending' : 'done',
-      label: index === 0 || strip ? null : `${snapshot.checkins.length} / 4`
+      label: index === 0 || strip ? null : `${snapshot.checkins.length} / ${snapshot.dynamicRound ? signup?.roster.length ?? 0 : 4}`
     })
   ];
 
@@ -240,7 +240,9 @@ export function buildEventGraph(snapshot: EventSnapshotDto, orientation: FlowOri
       seats: [seatRow(snapshot, match, match.seats[0]), seatRow(snapshot, match, match.seats[1])]
     };
     nodes.push({
-      id: match.id, type: 'match', position: place[match.id],
+      id: match.id, type: 'match', position: position === 0 ? place.M1 : position === 1 ? place.M2 :
+        vertical ? { x: place.M1.x + position * 220, y: place.M1.y }
+          : { x: place.M1.x, y: place.M1.y + position * 126 },
       data, ...sized('match')
     });
     // Stacked matches nudge their labels apart; side by side the labels sit on the curves.

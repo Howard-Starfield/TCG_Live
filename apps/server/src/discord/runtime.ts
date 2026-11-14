@@ -2,21 +2,23 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ChannelType, ChatInputCommandInteraction, Events, MessageFlags, MessageType, PermissionFlagsBits, Routes,
+  ChannelType, ChatInputCommandInteraction, Events, LabelBuilder, MessageFlags, MessageType, ModalBuilder,
+  PermissionFlagsBits, Routes, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
   SlashCommandBuilder, type Guild, type GuildMember, type Interaction, type TextChannel, type VoiceChannel
 } from 'discord.js';
+import { JUDGE_REQUEST_CATEGORIES, MAX_JUDGE_REQUEST_LENGTH } from '@tcg-live/core';
 import { readAdminConfig, type AdminConfig } from '../admin/config.js';
 import { createDiscordAdmin, discordGateway, guildMembers, type DiscordAdmin, type DiscordAdminOptions } from '../admin/runtime/discord-wiring.js';
 import { readConfig } from '../config.js';
-import { RuleError, type MatchId, type Player } from '../rehearsal/domain.js';
+import { RuleError, type EventState, type MatchId, type Player } from '../rehearsal/domain.js';
 import { startServer } from '../server.js';
 import { setupPrivateDiscordSchema } from '../rehearsal/store.js';
-import { type CardPayload } from './cards.js';
-import { readPrivateDiscordConfig, type PrivateDiscordConfig } from './config.js';
+import { buttonId, type CardPayload } from './cards.js';
+import { readPrivateDiscordConfig, type ConfiguredRooms, type PrivateDiscordConfig } from './config.js';
 import { PrivateDiscordController, type CardTransport, type PrivateInteraction } from './controller.js';
-import { acquireAdvisoryLease, getSessionState, prepareSession, prepareSignupSession, type AdvisoryLease } from './session.js';
+import { acquireAdvisoryLease, bindRoundRoom, dueSignupDrafts, getSessionState, resolvePlayers, type SessionRow, prepareSession, prepareSignupSession, type AdvisoryLease } from './session.js';
 import { privateDiscordClient, privateDiscordRest } from './sdk.js';
-import { MatchRoomReconciler, type Room, type RoomOverwrite, type RoomTransport } from './match-rooms.js';
+import { backupRoomOverwrites, MatchRoomReconciler, roomPlan, sameOverwrites, type Room, type RoomOverwrite, type RoomTransport } from './match-rooms.js';
 import { filenameFromThumbnail, noticeEmbed, retainedVisual, setVisualArtworkStore, visualFile, visualThumbnail } from './visuals.js';
 import { defaultArtworkStore } from '../artwork/store.js';
 
@@ -67,7 +69,7 @@ export async function registerPrivateCommand(config: PrivateDiscordConfig): Prom
   else await rest.post(route, { body: commandDefinition() });
 }
 
-export function discordTransport(channel: TextChannel | (() => TextChannel), matches?: Record<MatchId, VoiceChannel>, botId?: string): CardTransport {
+export function discordTransport(channel: TextChannel | (() => TextChannel), matches?: ConfiguredRooms<VoiceChannel>, botId?: string, roundRoom?: (slot: MatchId) => VoiceChannel | undefined): CardTransport {
   const payload = (card: CardPayload) => ({ embeds: card.embeds, components: card.components,
     allowedMentions: card.allowedMentions });
   const cardFile = (card: CardPayload) => {
@@ -75,17 +77,27 @@ export function discordTransport(channel: TextChannel | (() => TextChannel), mat
     return filename ? visualFile(filename) : null;
   };
   const signup = () => typeof channel === 'function' ? channel() : channel;
-  const destination = (slot: 'checkin' | MatchId = 'checkin') => slot === 'checkin' ? signup() : matches?.[slot] ?? signup();
+  const destination = (slot: 'checkin' | MatchId = 'checkin') => slot === 'checkin' ? signup() : roundRoom?.(slot) ?? matches?.[slot] ?? signup();
   return {
-    async send(card, slot) {
+    async findMatchCard(eventId, slot) {
+      const target = destination(slot);
+      if (target.type !== ChannelType.GuildVoice) throw new RuleError('The tournament match voice room is not ready.');
+      const ids = new Set([buttonId(eventId, slot, 'ready'), buttonId(eventId, slot, 'judge')]);
+      const messages = await target.messages.fetch({ limit: 20 });
+      return messages.find(message => message.author.id === botId &&
+        message.components.some(row => 'components' in row && row.components.some(component =>
+          'customId' in component && component.customId !== null && ids.has(component.customId))))?.id ?? null;
+    },
+    async send(card, slot, nonce) {
       const file = cardFile(card);
-      return (await destination(slot).send({ ...payload(card), ...(file ? { files: [file] } : {}) })).id;
+      return (await destination(slot).send({ ...payload(card), ...(file ? { files: [file] } : {}),
+        ...(nonce ? { nonce, enforceNonce: true } : {}) })).id;
     },
     async edit(id, card, slot) {
       const target = destination(slot);
       const message = await target.messages.fetch(id);
       const file = cardFile(card);
-      if (!file) { await message.edit(payload(card)); return; }
+      if (!file) { await message.edit({ ...payload(card), attachments: [] }); return; }
       const retained = retainedVisual(message, target.id, botId ?? '', file.name);
       await message.edit(retained ? payload(card) : { ...payload(card), attachments: [], files: [file] });
     },
@@ -114,9 +126,24 @@ export function discordTransport(channel: TextChannel | (() => TextChannel), mat
         if (notice) await notice.delete();
       }
     },
-    async remove(id, slot) {
+    async unpin(id) {
+      const message = await signup().messages.fetch({ message: id, force: true });
+      if (message.pinned) await message.unpin();
+    },
+    async remove(id, slot, channelId) {
       if (!botId) throw new RuleError('Private Discord bot identity is unavailable for card cleanup.');
-      const target = destination(slot);
+      const current = destination(slot);
+      let target = current;
+      if (channelId && channelId !== current.id) {
+        const saved = await current.client.channels.fetch(channelId).catch(error => {
+          if ((error as { code?: number })?.code === 10003) return null;
+          throw error;
+        });
+        if (!saved) return;
+        if ((saved.type !== ChannelType.GuildText && saved.type !== ChannelType.GuildVoice) || saved.guildId !== current.guildId)
+          throw new RuleError('Saved Discord card channel is outside the configured server.');
+        target = saved;
+      }
       let message;
       try { message = await target.messages.fetch({ message: id, force: true }); }
       catch (error) { if ((error as { code?: number })?.code === 10008) return; throw error; }
@@ -131,14 +158,14 @@ export function discordTransport(channel: TextChannel | (() => TextChannel), mat
   };
 }
 
-export function discordRoomTransport(guild: Guild, rooms: Record<MatchId, VoiceChannel>, bot: GuildMember,
+export function discordRoomTransport(guild: Guild, rooms: ConfiguredRooms<VoiceChannel>, bot: GuildMember,
   control: TextChannel | (() => TextChannel), adminId: string): RoomTransport {
-  const current = (room: Room): RoomOverwrite[] => [...rooms[room].permissionOverwrites.cache.values()].map(overwrite => ({
+  const current = (room: Room): RoomOverwrite[] => [...rooms[room]!.permissionOverwrites.cache.values()].map(overwrite => ({
     id: overwrite.id, type: overwrite.type, allow: overwrite.allow.bitfield.toString(),
     deny: overwrite.deny.bitfield.toString()
   }));
   const assertPermissions = async (room: Room, operation: 'policy' | 'move') => {
-    const permissions = rooms[room].permissionsFor(bot);
+    const permissions = rooms[room]!.permissionsFor(bot);
     const needed = operation === 'policy' ? [
       PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.SendMessages,
       PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles,
@@ -153,14 +180,14 @@ export function discordRoomTransport(guild: Guild, rooms: Record<MatchId, VoiceC
     async current(room) { return current(room); },
     assertPermissions,
     async replace(room, overwrites) {
-      await rooms[room].permissionOverwrites.set(overwrites.map(row => ({ id: row.id, type: row.type,
+      await rooms[room]!.permissionOverwrites.set(overwrites.map(row => ({ id: row.id, type: row.type,
         allow: BigInt(row.allow), deny: BigInt(row.deny) })), 'TCG practice public match room policy');
     },
     voiceChannel(memberId) { return guild.voiceStates.cache.get(memberId)?.channelId ?? null; },
     async move(memberId, room) {
       const voice = guild.voiceStates.cache.get(memberId);
       if (!voice?.channelId) return;
-      await voice.setChannel(rooms[room], 'TCG practice match placement');
+      await voice.setChannel(rooms[room]!, 'TCG practice match placement');
     },
     async warnOrganizer(message) {
       const notice = visualThumbnail('notice');
@@ -173,18 +200,33 @@ export function discordRoomTransport(guild: Guild, rooms: Record<MatchId, VoiceC
 }
 
 export function assertPublicMatchRoomTargets(config: PrivateDiscordConfig,
-  rooms: Record<MatchId, { id: string; name: string; guildId: string; type: ChannelType }>,
+  rooms: ConfiguredRooms<{ id: string; name: string; guildId: string; type: ChannelType }>,
   afkChannelId: string | null): void {
   if (!config.publicMatchRooms) return;
   if (!config.matchChannels || rooms.M1.id === rooms.M2.id ||
-      (['M1', 'M2'] as const).some(room => rooms[room].id !== config.matchChannels?.[room] ||
-        rooms[room].type !== ChannelType.GuildVoice || rooms[room].guildId !== config.guildId ||
-        rooms[room].id === afkChannelId || !rooms[room].name.startsWith('TCG Match ')))
+      (['M1', 'M2'] as const).some(room => rooms[room]!.id !== config.matchChannels?.[room] ||
+        rooms[room]!.type !== ChannelType.GuildVoice || rooms[room]!.guildId !== config.guildId ||
+        rooms[room]!.id === afkChannelId || !rooms[room]!.name.startsWith('TCG Match ')))
     throw new RuleError('Public match rooms require two distinct dedicated TCG Match voice channels outside AFK in the configured guild.');
 }
 
+const JUDGE_MODAL_ID = /^judge:([1-9]\d{14,21}):(p1:.*)$/;
+const JUDGE_CATEGORY_FIELD = 'category';
+const JUDGE_DESCRIPTION_FIELD = 'description';
+
+function judgeModal(buttonId: string, requesterId: string) {
+  const categories = new StringSelectMenuBuilder().setCustomId(JUDGE_CATEGORY_FIELD).setRequired(true)
+    .addOptions(Object.entries(JUDGE_REQUEST_CATEGORIES).map(([value, label]) => ({ value, label })));
+  const description = new TextInputBuilder().setCustomId(JUDGE_DESCRIPTION_FIELD)
+    .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(MAX_JUDGE_REQUEST_LENGTH)
+    .setPlaceholder('Tell the organizer what happened or what you need help with.');
+  return new ModalBuilder().setCustomId(`judge:${requesterId}:${buttonId}`).setTitle('Request a judge')
+    .addLabelComponents(new LabelBuilder().setLabel('Category').setStringSelectMenuComponent(categories),
+      new LabelBuilder().setLabel('What happened?').setTextInputComponent(description));
+}
+
 export function adapt(interaction: Interaction): PrivateInteraction | null {
-  if (!interaction.isButton() && !interaction.isChatInputCommand()) return null;
+  if (!interaction.isButton() && !interaction.isChatInputCommand() && !interaction.isModalSubmit()) return null;
   if (interaction.isChatInputCommand() && interaction.commandName !== 'tcg-test') return null;
   const base = {
     id: interaction.id, applicationId: interaction.applicationId,
@@ -195,16 +237,50 @@ export function adapt(interaction: Interaction): PrivateInteraction | null {
     const timer = setTimeout(() => { void remove().catch(() => {}); }, 8_000);
     timer.unref();
   };
+  if (interaction.isModalSubmit()) {
+    const modal = JUDGE_MODAL_ID.exec(interaction.customId);
+    if (!modal) return null;
+    const requesterId = modal[1]!;
+    const customId = modal[2]!;
+    let category = '';
+    let description = '';
+    try {
+      const values = interaction.fields.getStringSelectValues(JUDGE_CATEGORY_FIELD);
+      if (values.length === 1) category = values[0] ?? '';
+      description = interaction.fields.getTextInputValue(JUDGE_DESCRIPTION_FIELD);
+    } catch { /* The controller responds with the field validation error. */ }
+    return { ...base, kind: 'judgeRequest', customId, judgeRequest: { requesterId, category, description },
+      async acknowledge() {
+        if (interaction.isFromMessage()) await interaction.deferUpdate();
+        else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      },
+      async reply(message) {
+        const saved = (message.startsWith('Saved: ') && !message.includes('pending')) || message.startsWith('No change: ');
+        if (saved) {
+          if (!interaction.isFromMessage()) await interaction.deleteReply();
+        } else if (interaction.isFromMessage()) {
+          const follow = await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral });
+          expire(() => interaction.webhook.deleteMessage(follow.id));
+        } else {
+          await interaction.editReply({ content: message });
+          expire(() => interaction.deleteReply());
+        }
+      }
+    };
+  }
   if (interaction.isButton()) return {
     ...base, kind: 'button', customId: interaction.customId, messageId: interaction.message.id,
+    ...(interaction.customId.endsWith(':J') ? {
+      async showJudgeRequest() { await interaction.showModal(judgeModal(interaction.customId, interaction.user.id)); }
+    } : {}),
     async acknowledge() { await interaction.deferUpdate(); },
-    async reply(message) {
+    async reply(message, attachment) {
       if ((message.startsWith('Saved: ') && !message.includes('pending')) || message.startsWith('No change: ')) return;
       const embed = noticeEmbed(message);
       const file = visualFile(filenameFromThumbnail(embed.thumbnail)!)!;
-      const follow = await interaction.followUp({ embeds: [embed], files: [file], flags: MessageFlags.Ephemeral,
+      const follow = await interaction.followUp({ embeds: [embed], files: attachment ? [file, attachment] : [file], flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] } });
-      expire(() => interaction.webhook.deleteMessage(follow.id));
+      if (!message.startsWith('Signup roster (')) expire(() => interaction.webhook.deleteMessage(follow.id));
     }
   };
   const command = interaction as ChatInputCommandInteraction;
@@ -277,6 +353,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   const client = privateDiscordClient(!!config.publicMatchRooms);
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
+  let deletedCardRetry: ReturnType<typeof setInterval> | undefined;
+  let signupSchedule: ReturnType<typeof setInterval> | undefined;
   let controller: PrivateDiscordController | undefined;
   let health: Awaited<ReturnType<typeof startServer>> | undefined;
   let lease: AdvisoryLease | undefined;
@@ -292,6 +370,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   async function shutdown(): Promise<void> {
     if (shutdownTask) return shutdownTask;
     stopping = true;
+    if (deletedCardRetry) clearInterval(deletedCardRetry);
+    if (signupSchedule) clearInterval(signupSchedule);
     shutdownTask = (async () => {
       const watchdog = setTimeout(() => { process.stderr.write('Private Discord shutdown deadline exceeded.\n'); process.exit(1); }, 5_000);
       try {
@@ -364,7 +444,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         (target.id === signupChannel.id || supportsSignup(target)) ? [{ id: target.id, name: target.name }] : [])
         .sort((left, right) => left.name.localeCompare(right.name));
     };
-    let matches: Record<MatchId, VoiceChannel> | undefined;
+    let matches: ConfiguredRooms<VoiceChannel> | undefined;
     if (config.matchChannels) {
       const m1 = await client.channels.fetch(config.matchChannels.M1);
       const m2 = await client.channels.fetch(config.matchChannels.M2);
@@ -400,11 +480,84 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         return async (messageId, slot) => { await previous.remove?.(messageId, slot); };
       };
     };
-    controller = new PrivateDiscordController(config, runnerId, discordTransport(() => signupChannel, matches, botId),
+    const roundRooms = new Map<MatchId, VoiceChannel>();
+    const provisionRound = async (session: SessionRow, state: EventState) => {
+      const savedRooms = { ...session.identity_map.roundRooms };
+      const players = resolvePlayers(session, state);
+      if (!players) throw new RuleError('The checked-in player assignments are unavailable.');
+      let discovered: Awaited<ReturnType<typeof guild.channels.fetch>> | undefined;
+      for (const match of state.matches) {
+        ensureActive();
+        const savedId = savedRooms[match.id];
+        const cached = roundRooms.get(match.id);
+        if (savedId && cached?.id === savedId) continue;
+        const saved = savedId ? await guild.channels.fetch(savedId).catch(error => {
+          if ((error as { code?: number }).code === 10003) return null;
+          throw error;
+        }) : null;
+        let voice = saved?.type === ChannelType.GuildVoice ? saved : config.matchChannels?.[match.id] ? matches?.[match.id] : undefined;
+        const desired = roomPlan(config.guildId, botId, config.adminId, match.players.map(player => players[player]!));
+        const permissionOverwrites = desired.map(overwrite => ({ ...overwrite, allow: BigInt(overwrite.allow), deny: BigInt(overwrite.deny) }));
+        if (!voice) {
+          const roomName = `TCG Match ${match.id} · ${config.applicationId}`;
+          discovered ??= await guild.channels.fetch();
+          const existing = discovered.find(room => room?.type === ChannelType.GuildVoice && room.name === roomName);
+          if (existing?.type === ChannelType.GuildVoice) voice = existing;
+          else {
+            if (!bot.permissions.has(PermissionFlagsBits.ManageChannels))
+              throw new RuleError(`The bot needs Manage Channels to create the ${match.id} voice room.`);
+            voice = await guild.channels.create({ name: roomName, type: ChannelType.GuildVoice, permissionOverwrites });
+          }
+        }
+        const current = [...voice.permissionOverwrites.cache.values()].map(overwrite => ({
+          id: overwrite.id, type: overwrite.type, allow: overwrite.allow.bitfield.toString(), deny: overwrite.deny.bitfield.toString()
+        }));
+        if (!sameOverwrites(current, desired)) {
+          await backupRoomOverwrites(config.guildId, voice.id, current);
+          ensureActive();
+          await voice.permissionOverwrites.set(permissionOverwrites);
+        }
+        if (voice.id !== savedId) await bindRoundRoom(config, state.id, match.id, voice.id);
+        savedRooms[match.id] = voice.id;
+        roundRooms.set(match.id, voice);
+        if (matches && match.id !== 'M1' && match.id !== 'M2') matches[match.id] = voice;
+      }
+      config.roundRooms = savedRooms;
+    };
+    controller = new PrivateDiscordController(config, runnerId,
+      discordTransport(() => signupChannel, matches, botId, slot =>
+        config.roundRooms?.[slot] === roundRooms.get(slot)?.id ? roundRooms.get(slot) : undefined),
       undefined, undefined, undefined, undefined, undefined, undefined, () => !stopping && !lease?.isLost(),
-      undefined, undefined, explicit => roomSync?.trigger(explicit) ?? Promise.resolve());
+      undefined, undefined, explicit => roomSync?.trigger(explicit) ?? Promise.resolve(), undefined, provisionRound);
     admin?.attachController(controller);
     await controller.start();
+    if (config.mode === 'signup') {
+      let checking = false;
+      const runTournamentSchedule = async () => {
+        if (checking || stopping || lease?.isLost() || !client.isReady() || !controller) return;
+        checking = true;
+        try {
+          await controller.publishDueRound();
+          if (!adminConfig.commandsEnabled) return;
+          for (const due of await dueSignupDrafts(Date.now())) {
+            if (stopping || lease?.isLost() || !client.isReady()) break;
+            try {
+              await controller.openSignup(due.eventId, due.activeId, async game => { await artwork.selectGame(game); },
+                prepareSignupChannel, true);
+              break;
+            } catch { /* A failed channel or concurrent change can be retried on a later pass. */ }
+          }
+        } catch { /* Retry after database or schema recovery. */ }
+        finally { checking = false; }
+      };
+      signupSchedule = setInterval(() => { void runTournamentSchedule(); }, 3_000);
+      signupSchedule.unref();
+      void runTournamentSchedule();
+    }
+    const cleanupDeletedCards = () => { if (client.isReady()) void controller?.retryDeletedCards().catch(() => {}); };
+    cleanupDeletedCards();
+    deletedCardRetry = setInterval(cleanupDeletedCards, 60_000);
+    deletedCardRetry.unref();
     if (initializeFresh) {
       try { await registerPrivateCommand(config); }
       catch { process.stderr.write('Initial guild command registration is pending; use the existing registration command to retry.\n'); }
@@ -434,7 +587,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       if (roomSync && config.matchChannels && Object.values(config.matchChannels).includes(after.id))
         void roomSync.trigger().catch(reportRoomFailure);
     });
-    const reconnect = () => { controller?.reconnect(); void roomSync?.trigger().catch(reportRoomFailure); };
+    const reconnect = () => { cleanupDeletedCards(); controller?.reconnect(); void roomSync?.trigger().catch(reportRoomFailure); };
     client.on('shardResume', reconnect);
     client.on('shardReady', reconnect);
     process.stdout.write(`Private Discord runtime ready; health on 127.0.0.1:${health.port}.\n`);

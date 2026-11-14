@@ -27,6 +27,8 @@ export interface AdminHandlerOptions {
   artwork?: ArtworkStore;
   applyArtwork?: () => Promise<ArtworkApplyResult>;
   tournaments?: TournamentDirectory;
+  launchDemo?: (playerCount?: number) => Promise<string>;
+  deleteTournament?: (eventId: string) => Promise<{ cleanupPending: boolean }>;
   openSignup?: (eventId: string, expectedActiveEventId: string | null) => Promise<OpenTournamentSignupResult>;
   signupChannels?: () => Promise<TournamentSignupChannelDto[]>;
   persistentSessions?: boolean;

@@ -23,7 +23,8 @@ function fail(error: unknown): never {
 export function tournamentRoutes(directory: TournamentDirectory, defaultGame: () => ArtworkGame,
   apply?: (game: ArtworkGame) => Promise<ArtworkApplyResult>,
   openSignup?: (eventId: string, expectedActiveEventId: string | null) => Promise<OpenTournamentSignupResult>,
-  signupChannels?: () => Promise<TournamentSignupChannelDto[]>): TournamentRoute[] {
+  signupChannels?: () => Promise<TournamentSignupChannelDto[]>,
+  deleteTournament?: (eventId: string) => Promise<{ cleanupPending: boolean }>): TournamentRoute[] {
   const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
   return [
     { pattern: /^\/api\/v1\/tournaments\/signup-channels$/, methods: {
@@ -42,6 +43,19 @@ export function tournamentRoutes(directory: TournamentDirectory, defaultGame: ()
             (typeof expectedActiveEventId !== 'string' || !uuid.test(expectedActiveEventId))))
           throw new HttpError(400, 'bad_request', 'Select a valid draft and confirm the active tournament.');
         try { sendJson(response, 200, await openSignup(eventId.toLowerCase(), expectedActiveEventId?.toLowerCase() ?? null)); }
+        catch (error) {
+          if (error instanceof ControllerUnavailableError) throw new HttpError(503, 'unavailable', error.message);
+          if (error instanceof RuleError) throw new HttpError(409, 'conflict', error.message);
+          fail(error);
+        }
+      } }
+    } },
+    { pattern: /^\/api\/v1\/tournaments\/([0-9a-f-]+)$/i, methods: {
+      DELETE: { access: 'session', run: async ({ response, params }) => {
+        if (!deleteTournament) throw new HttpError(403, 'forbidden', 'Tournament commands are disabled for this console.');
+        const eventId = params[0]!;
+        if (!uuid.test(eventId)) throw new HttpError(400, 'bad_request', 'Select a valid tournament.');
+        try { sendJson(response, 200, await deleteTournament(eventId.toLowerCase())); }
         catch (error) {
           if (error instanceof ControllerUnavailableError) throw new HttpError(503, 'unavailable', error.message);
           if (error instanceof RuleError) throw new HttpError(409, 'conflict', error.message);
@@ -73,6 +87,15 @@ export function tournamentRoutes(directory: TournamentDirectory, defaultGame: ()
           throw new HttpError(400, 'bad_request', 'Use one q search parameter.');
         try { sendJson(response, 200, await directory.list(query.get('q') ?? '', defaultGame())); }
         catch (error) { fail(error); }
+      } }
+    } },
+    { pattern: /^\/api\/v1\/tournaments\/drafts\/([0-9a-f-]+)$/i, methods: {
+      DELETE: { access: 'session', run: async ({ response, params }) => {
+        if (!directory.deleteDraft || !openSignup) throw new HttpError(403, 'forbidden', 'Tournament commands are disabled for this console.');
+        try {
+          await directory.deleteDraft(params[0]!.toLowerCase());
+          sendJson(response, 200, { deleted: true });
+        } catch (error) { fail(error); }
       } }
     } },
     { pattern: /^\/api\/v1\/tournaments\/drafts$/, methods: {

@@ -1,11 +1,12 @@
 // Pure mappers from the persisted rehearsal model to the admin contract (docs/ADMIN_DASHBOARD_PLAN.md, Appendix A).
+import { isJudgeRequestCategory, isSeatId, isMatchId as isCoreMatchId, MAX_JUDGE_REQUEST_LENGTH } from '@tcg-live/core';
 import type {
   ActorDto, AuditEntryDto, AuditVia, CardSlot, ClockDto, CommandDto, EventAdminAction, EventSnapshotDto, EventStage,
   EventSummaryDto, JudgeReason, MatchAdminAction, MatchDto, MatchId, MatchJudgeDto, MemberDto, Seat, Snowflake
 } from '@tcg-live/core';
-import { deriveFixture, PLAYERS, type EventState, type MatchState } from '../../rehearsal/domain.js';
+import { checkinsReadyToPublish, deriveFixture, type EventState, type MatchState } from '../../rehearsal/domain.js';
 import type { Outcome } from '../../rehearsal/domain.js';
-import type { SessionIdentity } from '../../discord/session.js';
+import { messageId, type SessionIdentity } from '../../discord/session.js';
 
 const SNOWFLAKE = /^[1-9]\d{14,21}$/;
 const SLOTS: CardSlot[] = ['checkin', 'M1', 'M2'];
@@ -45,11 +46,11 @@ function num(value: number | string | null | undefined): number {
 }
 
 function isSeat(value: unknown): value is Seat {
-  return typeof value === 'string' && (PLAYERS as readonly string[]).includes(value);
+  return isSeatId(value);
 }
 
 function isMatchId(value: unknown): value is MatchId {
-  return value === 'M1' || value === 'M2';
+  return isCoreMatchId(value);
 }
 
 function isInt(value: unknown): value is number {
@@ -60,6 +61,12 @@ function isInt(value: unknown): value is number {
 export function sanitizeCommand(raw: unknown): CommandDto {
   const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const command: CommandDto = { type: typeof source.type === 'string' ? source.type.slice(0, 64) : 'unknown' };
+  if (source.type === 'callJudge' && source.judgeRequest && typeof source.judgeRequest === 'object') {
+    const request = source.judgeRequest as Record<string, unknown>;
+    if (isJudgeRequestCategory(request.category) && typeof request.description === 'string' && request.description.trim())
+      command.judgeRequest = { category: request.category, description: request.description.trim().slice(0, MAX_JUDGE_REQUEST_LENGTH) };
+  }
+  if (source.type === 'delayStart' && isInt(source.delayMinutes)) command.delayMinutes = source.delayMinutes;
   if (isMatchId(source.matchId)) command.matchId = source.matchId;
   if (isSeat(source.winner)) command.winner = source.winner;
   if (typeof source.reason === 'string') command.reason = source.reason.slice(0, 500);
@@ -70,10 +77,10 @@ export function sanitizeCommand(raw: unknown): CommandDto {
   return command;
 }
 
-export function mapActor(actorId: string, principalKind: string | null): ActorDto {
+export function mapActor(actorId: string, principalKind: string | null, principalId?: string | null): ActorDto {
   // Timer rows carry the admin actor (store.ts:276) but principal_kind 'system' (store.ts:316).
-  if (principalKind === 'system') return { kind: 'system', source: 'timer' };
-  const player = /^player:([ABCD])$/.exec(actorId)?.[1];
+  if (principalKind === 'system') return { kind: 'system', source: principalId === 'system:scheduler' ? 'scheduler' : 'timer' };
+  const player = /^player:(.+)$/.exec(actorId)?.[1];
   if (isSeat(player)) return { kind: 'player', seat: player };
   const member = /^member:([1-9]\d{14,21})$/.exec(actorId)?.[1];
   if (member) return { kind: 'member', memberId: member };
@@ -92,7 +99,7 @@ export function mapAuditRow(row: AdminAuditRow): AuditEntryDto {
     sequence: num(row.sequence),
     commandId: row.command_id,
     occurredAtMs: num(row.occurred_at_ms),
-    actor: mapActor(row.actor_id, row.principal_kind),
+    actor: mapActor(row.actor_id, row.principal_kind, row.principal_id),
     via: mapVia(row.principal_kind),
     principalId: row.principal_id ?? null,
     command: sanitizeCommand(row.action),
@@ -144,6 +151,7 @@ export function deriveJudge(match: MatchState, audit: readonly AuditEntryDto[], 
   const since = entries.slice(start);
   const reasons = new Set<JudgeReason>();
   const raisedBy: Seat[] = [];
+  const requests: NonNullable<MatchJudgeDto['requests']> = [];
   let sinceMs: number | null = null;
   for (const entry of since) {
     let reason: JudgeReason | null = null;
@@ -154,6 +162,9 @@ export function deriveJudge(match: MatchState, audit: readonly AuditEntryDto[], 
     reasons.add(reason);
     sinceMs ??= entry.occurredAtMs;
     if (entry.actor.kind === 'player' && reason !== 'expired' && !raisedBy.includes(entry.actor.seat)) raisedBy.push(entry.actor.seat);
+    if (reason === 'called' && entry.actor.kind === 'player' && entry.command.judgeRequest) {
+      requests.push({ ...entry.command.judgeRequest, seat: entry.actor.seat, requestedAtMs: entry.occurredAtMs });
+    }
   }
   // Any command on a running match can materialize an expiry (domain.ts:117-131); the phase records it.
   if (match.phase === 'expired') {
@@ -164,7 +175,7 @@ export function deriveJudge(match: MatchState, audit: readonly AuditEntryDto[], 
   }
   sinceMs ??= since[0]?.occurredAtMs ?? entries.at(-1)?.occurredAtMs ?? fallbackMs;
   const order: JudgeReason[] = ['dispute', 'called', 'expired'];
-  return { reasons: order.filter(reason => reasons.has(reason)), sinceMs, raisedBy };
+  return { reasons: order.filter(reason => reasons.has(reason)), sinceMs, raisedBy, ...(requests.length ? { requests } : {}) };
 }
 
 /** Admin actions the domain rules would accept now (domain.ts:247-316). */
@@ -182,8 +193,8 @@ export function eventAdminActions(state: EventState, adminId: string, blocked: b
   if (blocked) return [];
   const actions: EventAdminAction[] = [];
   const signup = state.signup;
-  if ((!signup || signup.status === 'assigned') && !state.published && state.checkins.length === 4) actions.push('publish');
-  if (signup?.status === 'open' && signup.roster.length === 4 && new Set(signup.roster).size === 4 &&
+  if (checkinsReadyToPublish(state)) actions.push('publish');
+  if (signup?.status === 'open' && (state.firstRound ? signup.roster.length >= 2 : signup.roster.length === 4) && new Set(signup.roster).size === signup.roster.length &&
       !signup.roster.includes(adminId)) actions.push('signupClose');
   if (signup?.status === 'assigned' && !state.published && state.matches.every(match => match.phase === 'setup'))
     actions.push('signupReopen');
@@ -195,6 +206,7 @@ export function seatsFor(state: EventState, identity: SessionIdentity): Record<S
   const players = identity.kind === 'signup' || state.signup
     ? state.signup?.status === 'assigned' ? state.signup.assignment ?? null : null
     : identity.players ?? null;
+  if (state.firstRound && players) return Object.assign({ A: null, B: null, C: null, D: null }, players);
   return { A: players?.A ?? null, B: players?.B ?? null, C: players?.C ?? null, D: players?.D ?? null };
 }
 
@@ -243,34 +255,35 @@ export function mapSnapshot(input: SnapshotInput): EventSnapshotDto {
   const { state, session } = input;
   const identity = session.identity_map;
   const retired = session.status === 'retired';
-  const blocked = retired || state.matches.some(match => isInterrupted(match, input.runnerId));
+  const blocked = retired || (!state.firstRound && state.matches.some(match => isInterrupted(match, input.runnerId)));
   const members: Record<Snowflake, MemberDto> = {};
   for (const id of memberIdsFor(state, identity, input.audit))
     members[id] = input.members(id) ?? { id, displayName: null, avatarUrl: null };
   const suspended = identity.stickySuspended ?? [];
-  const messageIds: Record<CardSlot, string | null> = {
-    checkin: session.checkin_message_id, M1: session.m1_message_id, M2: session.m2_message_id
-  };
-  const cards = Object.fromEntries(SLOTS.map(slot =>
-    [slot, { messageId: messageIds[slot], repostSuspended: suspended.includes(slot) }])) as EventSnapshotDto['discord']['cards'];
+  const slots: CardSlot[] = state.firstRound ? ['checkin', ...state.matches.map(match => match.id)] : SLOTS;
+  const cards = Object.fromEntries(slots.map(slot =>
+    [slot, { messageId: messageId(session, slot), repostSuspended: suspended.includes(slot) }])) as EventSnapshotDto['discord']['cards'];
   return {
     eventId: state.id, version: state.version, panelRevision: retired ? 0 : input.panelRevision,
     status: session.status, kind: eventKind(identity, state),
     createdAtMs: num(session.created_at_ms),
     retiredAtMs: session.retired_at_ms === null ? null : num(session.retired_at_ms),
-    game: state.game, durationMs: state.durationMs, points: { ...state.points },
+    game: state.game, durationMs: state.durationMs,
+    ...(state.startsAtMs !== undefined ? { startsAtMs: state.startsAtMs } : {}), points: { ...state.points },
     stage: deriveStage(state),
-    signup: state.signup ? { status: state.signup.status, capacity: 4, roster: [...state.signup.roster] } : null,
+    signup: state.signup ? { status: state.signup.status, capacity: state.signup.capacity ?? 4, roster: [...state.signup.roster] } : null,
     seats: seatsFor(state, identity),
+    ...(state.firstRound ? { dynamicRound: true } : {}),
+    ...(state.firstRound?.bye ? { pairingBye: state.firstRound.bye } : {}),
     adminId: identity.adminId,
     members,
     checkins: [...state.checkins], published: state.published,
-    matches: state.matches.map(match => mapMatch(match, input, blocked)),
+    matches: state.matches.map(match => mapMatch(match, input, blocked || isInterrupted(match, input.runnerId))),
     standings: deriveFixture(state).map(row => ({ seat: row.player, points: row.points, rating: row.rating })),
     adminActions: eventAdminActions(state, identity.adminId, blocked),
     discord: {
       guildId: session.guild_id, channelId: session.channel_id,
-      matchChannels: identity.matchChannels ? { ...identity.matchChannels } : null,
+      matchChannels: identity.matchChannels || identity.roundRooms ? { ...identity.matchChannels, ...identity.roundRooms } : null,
       publicMatchRooms: !!identity.publicMatchRooms,
       cards
     }

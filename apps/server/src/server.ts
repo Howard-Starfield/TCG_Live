@@ -79,7 +79,7 @@ export async function startServer(config: AppConfig, options: ServerOptions = {}
   }
 
   return {
-    port: config.port,
+    port: (server.address() as { port: number }).port,
     stop(): Promise<void> {
       if (stopPromise) return stopPromise;
       stopping = true;

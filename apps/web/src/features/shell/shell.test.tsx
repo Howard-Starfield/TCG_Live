@@ -170,6 +170,33 @@ describe('preview dock layout', () => {
 });
 
 describe('home', () => {
+  it('orders scheduled tournaments, hides dated drafts, and fills a deleted slot with quick create', async () => {
+    const user = userEvent.setup();
+    const active = { ...summaryOf(liveDispute), name: 'Live Cup', game: 'pokemon' };
+    const base = { game: 'pokemon', status: 'draft', kind: 'signup', createdAtMs: 1, retiredAtMs: null };
+    const soon = { ...base, eventId: 'soon', name: 'Soon Cup', startsAtMs: 4096000000000, signupOpensAtMs: 4095999000000 };
+    const later = { ...base, eventId: 'later', name: 'Later Cup', startsAtMs: 4097000000000, signupOpensAtMs: 4096999000000 };
+    const draft = { ...base, eventId: 'draft', name: 'Dated draft', startsAtMs: 4095000000000 };
+    let entries = [draft, later, active, soon];
+    renderConsole({ setup: server => {
+      server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
+      server.always('GET /tournaments', () => json(200, { entries, defaultGame: 'pokemon' }));
+      server.always('DELETE /tournaments/drafts/soon', () => {
+        entries = entries.filter(entry => entry.eventId !== soon.eventId);
+        return json(200, {});
+      });
+    } });
+    const region = within(await screen.findByRole('region', { name: 'Upcoming and live' }));
+    expect((await region.findAllByRole('heading', { level: 3 })).map(node => node.textContent))
+      .toEqual(['Live Cup', 'Soon Cup', 'Later Cup']);
+    fireEvent.contextMenu(region.getByRole('button', { name: 'Open Soon Cup' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Delete draft…' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete draft' }));
+    await waitFor(() => expect(region.queryByRole('heading', { name: 'Soon Cup' })).not.toBeInTheDocument());
+    await user.click(region.getByRole('button', { name: 'Create tournament' }));
+    expect(await screen.findByRole('dialog', { name: 'Create signup tournament' })).toBeInTheDocument();
+  });
+
   it('shows live player counts and opens the match behind a judge or confirmation alert', async () => {
     const user = userEvent.setup();
     renderConsole({
@@ -198,7 +225,7 @@ describe('home', () => {
 });
 
 describe('sidebar', () => {
-  it('creates and opens signup from the form after confirming the active tournament switch', async () => {
+  it('creates a pending tournament without switching the active signup', async () => {
     const user = userEvent.setup();
     const { server } = renderConsole({ setup: server => {
       server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
@@ -210,10 +237,10 @@ describe('sidebar', () => {
         { id: '100000000000000008', name: 'previous-signups' }, { id: '100000000000000009', name: 'one-piece-signups' }
       ]));
       server.always('POST /tournaments/drafts', call => {
-        const input = call.body as { draftId: string };
+        const input = call.body as { draftId: string; startsAtMs: number };
         server.always(`POST /tournaments/${input.draftId}/open-signup`, () => json(200, { eventId: input.draftId, panels: 'posted' }));
         return json(201, { eventId: input.draftId, name: 'Grand Line Cup', game: 'one-piece', status: 'draft',
-          kind: 'signup', createdAtMs: liveDispute.createdAtMs, retiredAtMs: null });
+          kind: 'signup', createdAtMs: liveDispute.createdAtMs, retiredAtMs: null, startsAtMs: input.startsAtMs });
       });
     } });
     await screen.findByRole('list', { name: 'Player counts' });
@@ -222,10 +249,24 @@ describe('sidebar', () => {
     const title = within(dialog).getByRole('textbox', { name: 'Tournament name' });
     await user.clear(title);
     await user.type(title, 'Grand Line Cup');
+    const ruleSettings = within(dialog).getByText('Rule settings');
+    expect(ruleSettings.closest('details')).not.toHaveAttribute('open');
+    await user.click(ruleSettings);
     const timer = within(dialog).getByRole('spinbutton', { name: 'Match timer in minutes' });
     expect(timer).toHaveValue(30);
     await user.clear(timer);
     await user.type(timer, '35');
+    const capacity = within(dialog).getByRole('spinbutton', { name: 'Signup limit' });
+    expect(capacity).toHaveValue(100);
+    await user.clear(capacity);
+    await user.type(capacity, '101');
+    const bye = within(dialog).getByRole('spinbutton', { name: 'Pairing bye' });
+    expect(bye).toHaveValue(3);
+    await user.clear(bye);
+    await user.type(bye, '2');
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Match format' }), 'bo3');
+    await user.click(ruleSettings);
+    expect(ruleSettings.closest('details')).not.toHaveAttribute('open');
     await user.type(within(dialog).getByRole('textbox', { name: 'Tournament details' }), 'Bring your camera.');
     const banner = within(dialog).getByRole('combobox', { name: 'Signup banner' });
     expect(banner).toHaveValue('compact');
@@ -234,15 +275,92 @@ describe('sidebar', () => {
     const channel = within(dialog).getByRole('combobox', { name: 'Discord signup channel' });
     expect(channel).toHaveValue('100000000000000008');
     await user.selectOptions(channel, '100000000000000009');
-    await user.click(within(dialog).getByRole('button', { name: /^Create$/ }));
-    expect(server.callsTo('POST /tournaments/drafts')).toHaveLength(0);
-    await user.click(within(dialog).getByRole('button', { name: 'Create and open signup' }));
-    expect(await screen.findByText('Signup opened in Discord')).toBeInTheDocument();
-    const body = server.callsTo('POST /tournaments/drafts')[0]?.body as { draftId: string };
-    expect(body).toMatchObject({ name: 'Grand Line Cup', game: 'one-piece', matchMinutes: 35,
-      description: 'Bring your camera.', bannerStyle: 'game', signupChannelId: '100000000000000009' });
-    expect(server.callsTo(`POST /tournaments/${body.draftId}/open-signup`)[0]?.body)
-      .toEqual({ expectedActiveEventId: liveDispute.eventId });
+    const create = within(dialog).getByRole('button', { name: /^Create$/ });
+    expect(create).toBeDisabled();
+    const start = '2099-10-21T15:30';
+    fireEvent.change(within(dialog).getByLabelText('Tournament start date and time'), { target: { value: start } });
+    expect(create).toBeEnabled();
+    const signupTiming = within(dialog).getByRole('combobox', { name: 'Signup opens' });
+    expect(signupTiming).toHaveValue('immediate');
+    await user.selectOptions(signupTiming, 'scheduled');
+    expect(create).toBeDisabled();
+    await user.selectOptions(signupTiming, 'immediate');
+    await user.click(create);
+    expect(await screen.findByText('Discord signup queued')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Grand Line Cup' })).toBeInTheDocument();
+    const body = server.callsTo('POST /tournaments/drafts')[0]?.body as { draftId: string; signupOpensAtMs: number };
+    expect(body.signupOpensAtMs).toBeLessThanOrEqual(Date.now());
+    expect(body).toMatchObject({ name: 'Grand Line Cup', game: 'one-piece', matchMinutes: 35, startsAtMs: new Date(start).getTime(),
+      description: 'Bring your camera.', signupCapacity: 101, swissRules: { byePoints: 2, matchFormat: 'bo3', roundCount: 0 }, bannerStyle: 'game', signupChannelId: '100000000000000009' });
+    expect(server.callsTo(`POST /tournaments/${body.draftId}/open-signup`)).toHaveLength(0);
+  });
+
+  it('uses the dashboard context menu to confirm active tournament deletion', async () => {
+    const user = userEvent.setup();
+    const entry = { eventId: liveDispute.eventId, name: 'Active Cup', game: 'pokemon', status: 'active',
+      kind: 'signup', createdAtMs: liveDispute.createdAtMs, retiredAtMs: null };
+    let deleted = false;
+    const { server } = renderConsole({ setup: server => {
+      server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
+      server.always('GET /tournaments', () => json(200, { defaultGame: 'pokemon', entries: deleted ? [] : [entry] }));
+      server.always(`DELETE /tournaments/${entry.eventId}`, () => {
+        deleted = true;
+        return json(200, { cleanupPending: false });
+      });
+    } });
+    const sidebar = await screen.findByRole('navigation', { name: 'Active event' });
+    expect(fireEvent.contextMenu(screen.getByRole('heading', { name: 'Home' }))).toBe(false);
+    fireEvent.contextMenu(within(sidebar).getByRole('button', { name: /Active Cup/ }));
+    const menu = await screen.findByRole('menu', { name: 'Actions for Active Cup' });
+    await user.click(within(menu).getByRole('menuitem', { name: 'Delete active tournament…' }));
+    const confirm = await screen.findByRole('alertdialog', { name: 'Delete Active Cup?' });
+    await user.click(within(confirm).getByRole('button', { name: 'Delete active tournament' }));
+    expect(await screen.findByText('Active tournament deleted')).toBeInTheDocument();
+    expect(server.callsTo(`DELETE /tournaments/${entry.eventId}`)).toHaveLength(1);
+  });
+
+  it('restarts an ended event with editable settings and saves reusable templates separately', async () => {
+    const user = userEvent.setup();
+    const ended = { eventId: 'ended-cup', name: 'Grand Line Cup', game: 'one-piece', status: 'retired',
+      kind: 'signup', createdAtMs: 1, retiredAtMs: 2, completed: true, startsAtMs: 3,
+      description: 'Bring a camera.', matchMinutes: 45, signupCapacity: 80, bannerStyle: 'compact',
+      signupChannelId: '100000000000000009' };
+    const entries: unknown[] = [ended];
+    const { server } = renderConsole({ setup: server => {
+      server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', tournaments: true }));
+      server.always('GET /tournaments', () => json(200, { defaultGame: 'pokemon', entries }));
+      server.always('GET /tournaments/signup-channels', () => json(200, [{ id: ended.signupChannelId, name: 'one-piece-signups' }]));
+      server.always('POST /tournaments/drafts', call => {
+        const body = call.body as object;
+        const template = { ...body, eventId: 'saved-template', status: 'draft', kind: 'signup', createdAtMs: 4, retiredAtMs: null };
+        entries.push(template);
+        return json(200, template);
+      });
+    } });
+    const history = await screen.findByRole('navigation', { name: 'Event history' });
+    const row = within(history).getByRole('button', { name: /Grand Line Cup/ });
+    fireEvent.contextMenu(row);
+    await user.click(await screen.findByRole('menuitem', { name: 'Restart tournament…' }));
+    const restart = await screen.findByRole('dialog', { name: 'Restart tournament' });
+    expect(within(restart).getByRole('textbox', { name: 'Tournament name' })).toHaveValue(ended.name);
+    expect(within(restart).getByRole('textbox', { name: 'Tournament details' })).toHaveValue(ended.description);
+    expect(within(restart).getByLabelText('Tournament start date and time')).toHaveValue('');
+    await user.click(within(restart).getByText('Rule settings'));
+    expect(within(restart).getByRole('spinbutton', { name: 'Match timer in minutes' })).toHaveValue(45);
+    expect(within(restart).getByRole('spinbutton', { name: 'Signup limit' })).toHaveValue(80);
+    await user.click(within(restart).getByRole('button', { name: 'Cancel' }));
+    fireEvent.contextMenu(row);
+    await user.click(await screen.findByRole('menuitem', { name: 'Save as template' }));
+    expect(await screen.findByText('Template saved')).toBeInTheDocument();
+    expect(server.callsTo('POST /tournaments/drafts')[0]?.body).toMatchObject({
+      isTemplate: true, name: ended.name, description: ended.description, signupChannelId: ended.signupChannelId
+    });
+    expect(server.callsTo('POST /tournaments/drafts')[0]?.body).not.toHaveProperty('startsAtMs');
+    await user.click(screen.getByRole('button', { name: /^Drafts$/ }));
+    await user.click(await screen.findByRole('button', { name: 'Use template Grand Line Cup' }));
+    const template = await screen.findByRole('dialog', { name: 'Create from template' });
+    expect(within(template).getByRole('textbox', { name: 'Tournament details' })).toHaveValue(ended.description);
+    expect(within(template).getByLabelText('Tournament start date and time')).toHaveValue('');
   });
 
   it('shows a safe directory error and caps search to the API limit', async () => {
@@ -262,7 +380,7 @@ describe('sidebar', () => {
       server.always('GET /tournaments', call => {
         const query = new URL(call.url, 'http://localhost').searchParams.get('q') ?? '';
         return json(200, { entries: query === 'Poke' ? [{ eventId: 'draft-poke', name: 'Pokemon Cup', game: 'pokemon',
-          status: 'draft', kind: 'signup', createdAtMs: liveDispute.createdAtMs, retiredAtMs: null }] : [],
+          status: 'draft', kind: 'signup', createdAtMs: liveDispute.createdAtMs, retiredAtMs: null, startsAtMs: 4096000000000 }] : [],
         defaultGame: 'pokemon' });
       });
     } });
@@ -309,6 +427,10 @@ describe('sidebar', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Save as draft' }));
     expect(await screen.findByRole('heading', { name: 'Saturday Cup' })).toBeInTheDocument();
     expect(screen.getByText(/Draft signup is not open/)).toBeInTheDocument();
+    const draftRules = within(screen.getByRole('region', { name: 'Tournament draft' }));
+    await user.click(draftRules.getByText('Rule settings'));
+    expect(draftRules.getByText('100 players')).toBeVisible();
+    expect(draftRules.getByText('Automatic from attendance')).toBeVisible();
     expect(screen.queryByRole('group', { name: 'Previews' })).not.toBeInTheDocument();
     expect(server.callsTo(`GET /events/${entries[0]!.eventId}/snapshot`)).toHaveLength(0);
     expect(server.callsTo('POST /tournaments/drafts')).toHaveLength(1);
@@ -324,6 +446,19 @@ describe('sidebar', () => {
     expect(screen.getByRole('button', { name: 'Open Saturday Cup' })).toBeInTheDocument();
     await user.click(screen.getByText('Signup hasn’t opened', { exact: true }));
     expect(await screen.findByRole('heading', { name: 'Saturday Cup' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Drafts$/ }));
+    const draft = await screen.findByRole('button', { name: 'Open Saturday Cup' });
+    fireEvent.contextMenu(draft);
+    const menu = await screen.findByRole('menu', { name: 'Actions for Saturday Cup' });
+    await waitFor(() => expect(within(menu).getByRole('menuitem', { name: 'Open tournament' })).toBeVisible());
+    server.always(`DELETE /tournaments/drafts/${entries[0]!.eventId}`, () => {
+      entries.shift();
+      return json(200, { deleted: true });
+    });
+    await user.click(within(menu).getByRole('menuitem', { name: 'Delete draft…' }));
+    const deletion = await screen.findByRole('alertdialog', { name: 'Delete Saturday Cup?' });
+    await user.click(within(deletion).getByRole('button', { name: 'Delete draft' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Open Saturday Cup' })).not.toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: /Live Cup/ }));
     expect(await screen.findByRole('group', { name: 'Previews' })).toBeInTheDocument();
   });
@@ -333,7 +468,7 @@ describe('sidebar', () => {
     const retired = { ...final, eventId: 'retired-1', status: 'retired' as const, retiredAtMs: final.createdAtMs + 3_600_000 };
     renderConsole({ retired: [retired] });
     await ready();
-    const liveToggle = screen.getByRole('button', { name: 'Live', expanded: true });
+    const liveToggle = screen.getByRole('button', { name: 'Active', expanded: true });
     const historyToggle = screen.getByRole('button', { name: 'History', expanded: true });
     const live = screen.getByRole('navigation', { name: 'Active event' });
     expect(within(live).getByRole('button')).toHaveTextContent('Created');

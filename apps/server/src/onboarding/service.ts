@@ -267,14 +267,15 @@ export class SetupService {
     await store.save({ ...profile, completed: false });
   }
 
-  /** Only an already active, healthy frozen session may bypass the wizard. */
+  /** Resume a completed and healthy Discord configuration, including between events. */
   async readyConfig(): Promise<PrivateDiscordConfig | null> {
     const status = await this.status();
-    if (status.prerequisite || !status.activeEventId || !status.check?.valid) return null;
+    if (status.prerequisite || !status.check?.valid) return null;
     const active = await this.active();
     const profile = await (this.options.profile ?? new SetupProfileStore()).read();
-    return active && profile.completed && profile.selection &&
-      sameSelection({ ...profile.selection, channelId: active.channel_id }, selectionFromSession(active))
+    if (!profile.completed || !profile.selection) return null;
+    if (!active) return configFromSelection(profile.selection, this.discovery!.applicationId, this.options.token!);
+    return sameSelection({ ...profile.selection, channelId: active.channel_id }, selectionFromSession(active))
       ? configFromSession(active, this.options.token!) : null;
   }
 }

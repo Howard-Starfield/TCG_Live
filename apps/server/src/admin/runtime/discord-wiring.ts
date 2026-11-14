@@ -7,6 +7,8 @@ import { DiscordAdminRuntime, type AdminController, type AdminGateway, type Admi
 import type { MemberFetcher } from './identity.js';
 import type { ArtworkStore } from '../../artwork/store.js';
 import { pgTournamentDirectory, type TournamentDirectory } from '../../tournaments/directory.js';
+import { runAdminDemo, type AdminDemo } from '../demo.js';
+import { dashboardDemoScript } from './demo-runtime.js';
 import { ControllerUnavailableError } from '../../discord/controller.js';
 
 export interface DiscordAdminOptions {
@@ -46,9 +48,22 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     publicMatchRooms: options.publicMatchRooms, ...(options.lease ? { lease: options.lease } : {})
   });
   let attachedController: AdminController | undefined;
+  const demos = new Map<number | undefined, Promise<AdminDemo>>();
+  const launchDemo = async (playerCount?: number) => {
+    if (closing) throw new ControllerUnavailableError('The console is closing.');
+    let demo = demos.get(playerCount);
+    if (!demo) {
+      demo = runAdminDemo({ ephemeral: true, webDist: options.adminConfig.webDist, write: () => {},
+        runtime: playerCount === undefined ? { mode: 'interactive', script: dashboardDemoScript() }
+          : { mode: 'autoplay', playerCount } }).catch(error => { demos.delete(playerCount); throw error; });
+      demos.set(playerCount, demo);
+    }
+    return (await demo).handler.rotateLoginUrl();
+  };
   const handler = (options.createHandler ?? createAdminHandler)({
     runtime, port: options.port, mode: 'discord', commandsEnabled: options.adminConfig.commandsEnabled,
     webDist: options.adminConfig.webDist,
+    ...(options.adminConfig.commandsEnabled ? { launchDemo } : {}),
     ...(options.artwork ? { artwork: options.artwork } : {}),
     ...(options.artwork ? { applyArtwork: () => {
       if (options.lease?.isLost()) return Promise.resolve({ status: 'pending' as const, message: 'Bot ownership was lost.' });
@@ -57,7 +72,11 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     } } : {}),
     tournaments: options.tournaments ?? pgTournamentDirectory(() => !!options.lease && !options.lease.isLost()),
     ...(options.signupChannels ? { signupChannels: options.signupChannels } : {}),
-    ...(options.adminConfig.commandsEnabled ? { openSignup: async (id, expectedId) => {
+    ...(options.adminConfig.commandsEnabled ? { deleteTournament: async id => {
+      if (runtime.status().gateway !== 'ready' || !attachedController?.deleteTournament)
+        throw new ControllerUnavailableError('Discord is not ready. Retry when the bot reconnects.');
+      return attachedController.deleteTournament(id);
+    }, openSignup: async (id, expectedId) => {
       if (runtime.status().gateway !== 'ready' || !attachedController?.openSignup)
         throw new ControllerUnavailableError('Discord is not ready. Retry when the bot reconnects.');
       return attachedController.openSignup(id, expectedId, async game => { await options.artwork?.selectGame(game); },
@@ -87,6 +106,7 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     close() {
       closing ??= (async () => {
         try { await handler.close(); } catch { /* Shutdown continues. */ }
+        await Promise.allSettled([...demos.values()].map(async demo => (await demo).stop()));
         try { await runtime.close(); } catch { /* Shutdown continues. */ }
       })();
       return closing;

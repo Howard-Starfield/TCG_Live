@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { DEFAULT_TOURNAMENT_SWISS_RULES } from '@tcg-live/core';
 import { DirectoryInputError, parseDraft, parseDetails, searchQuery } from './directory.js';
 
 test('live details require an explicit game and title and bound the plain-text description', () => {
@@ -15,10 +16,25 @@ test('live details require an explicit game and title and bound the plain-text d
 test('draft inputs use a safe game default and reject paths, controls and unknown fields', () => {
   const draftId = '11111111-1111-4111-8111-111111111111';
   assert.deepEqual(parseDraft({ draftId, game: 'pokemon' }),
-    { draftId, game: 'pokemon', name: 'Pokémon Tournament', description: '', matchMinutes: 30, bannerStyle: 'game' });
+    { draftId, game: 'pokemon', name: 'Pokémon Tournament', description: '', matchMinutes: 30, bannerStyle: 'game', signupCapacity: 100,
+      isTemplate: false, swissRules: DEFAULT_TOURNAMENT_SWISS_RULES });
   assert.equal(parseDraft({ draftId, game: 'pokemon', bannerStyle: 'compact' }).bannerStyle, 'compact');
   assert.throws(() => parseDraft({ draftId, game: 'pokemon', bannerStyle: 'unknown' }), DirectoryInputError);
   assert.equal(parseDraft({ draftId, game: 'pokemon', matchMinutes: 35 }).matchMinutes, 35);
+  assert.equal(parseDraft({ draftId, game: 'pokemon', signupCapacity: 101 }).signupCapacity, 101);
+  const startsAtMs = Date.UTC(2099, 10, 21, 15, 30);
+  assert.equal(parseDraft({ draftId, game: 'pokemon', startsAtMs }).startsAtMs, startsAtMs);
+  const signupOpensAtMs = startsAtMs - 86_400_000;
+  assert.equal(parseDraft({ draftId, game: 'pokemon', startsAtMs, signupOpensAtMs }).signupOpensAtMs, signupOpensAtMs);
+  assert.throws(() => parseDraft({ draftId, game: 'pokemon', startsAtMs, signupOpensAtMs: startsAtMs }), /Signup must open before/);
+  for (const value of ['tomorrow', -1, null, Number.MAX_SAFE_INTEGER])
+    assert.throws(() => parseDraft({ draftId, game: 'pokemon', startsAtMs: value }), DirectoryInputError);
+  const customRules = parseDraft({ draftId, game: 'pokemon', swissRules: { byePoints: 2.5, matchFormat: 'bo3' } }).swissRules;
+  assert.deepEqual(customRules, { ...DEFAULT_TOURNAMENT_SWISS_RULES, byePoints: 2.5, matchFormat: 'bo3' });
+  for (const swissRules of [null, { byePoints: '3' }, { byePoints: -1 }, { roundCount: 2.5 }, { roundRelease: 'none' }, { unknown: 0 }])
+    assert.throws(() => parseDraft({ draftId, game: 'pokemon', swissRules }), DirectoryInputError);
+  for (const signupCapacity of [3, 100.5, 1001, '100', null])
+    assert.throws(() => parseDraft({ draftId, game: 'pokemon', signupCapacity }), DirectoryInputError);
   assert.throws(() => parseDraft({ draftId, game: 'pokemon', matchMinutes: 181 }), DirectoryInputError);
   assert.equal(parseDraft({ draftId, game: 'one-piece', name: '  Grand Line  ' }).name, 'Grand Line');
   assert.throws(() => parseDraft({ draftId, game: 'unknown' }), DirectoryInputError);

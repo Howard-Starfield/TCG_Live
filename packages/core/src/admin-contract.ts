@@ -5,9 +5,15 @@ export const ADMIN_API_VERSION = 1 as const;
 
 export type Snowflake = string;               // Discord IDs never become numbers
 export const SEATS = ['A', 'B', 'C', 'D'] as const;
-export type Seat = typeof SEATS[number];
+export type Seat = typeof SEATS[number] | `P${number}`;
+export function isSeatId(value: unknown): value is Seat {
+  return typeof value === 'string' && /^(?:[ABCD]|P[1-9]\d*)$/.test(value);
+}
 export const MATCH_IDS = ['M1', 'M2'] as const;
-export type MatchId = typeof MATCH_IDS[number];
+export type MatchId = `M${number}`;
+export function isMatchId(value: unknown): value is MatchId {
+  return typeof value === 'string' && /^M[1-9]\d*$/.test(value);
+}
 export type CardSlot = 'checkin' | MatchId;
 export type MatchPhase = 'setup' | 'running' | 'paused' | 'expired' | 'final';
 
@@ -21,6 +27,7 @@ export interface SessionDto {
   /** Null only for guided sessions that last until logout, eviction or process stop. */
   expiresAtMs: number | null; idleExpiresAtMs: number | null;
   mode: 'discord' | 'demo'; commandsEnabled: boolean;
+  demoAvailable?: boolean;
   /** Guided local runtime only; valid until logout, eviction or process stop. */
   persistent?: true;
   /** Guided first-start mode; setup actions are not match-command capabilities. */
@@ -35,7 +42,7 @@ export interface SessionGrantDto { token: string; session: SessionDto }   // bea
 export interface SetupSelectionDto {
   guildId: Snowflake; channelId: Snowflake;
   /** Null only for a frozen legacy event that uses the signup channel for match chat. */
-  matchChannels: Record<MatchId, Snowflake> | null;
+  matchChannels: Record<'M1' | 'M2', Snowflake> | null;
   adminId: Snowflake; publicMatchRooms: boolean;
 }
 export interface SetupGuildDto { id: Snowflake; name: string; ownerId: Snowflake }
@@ -78,6 +85,20 @@ export interface EventSummaryDto {            // session-backed events only; CLI
 export interface MemberDto { id: Snowflake; displayName: string | null; avatarUrl: string | null }
 
 export type JudgeReason = 'dispute' | 'called' | 'expired';
+export const JUDGE_REQUEST_CATEGORIES = {
+  rules: 'Rules or card interaction',
+  game_state: 'Game state or scoring',
+  technical: 'Camera, audio or connection',
+  opponent: 'Opponent or conduct',
+  timing: 'Timer or extra time',
+  other: 'Other'
+} as const;
+export type JudgeRequestCategory = keyof typeof JUDGE_REQUEST_CATEGORIES;
+export interface JudgeRequestInput { category: JudgeRequestCategory; description: string }
+export const MAX_JUDGE_REQUEST_LENGTH = 500;
+export function isJudgeRequestCategory(value: unknown): value is JudgeRequestCategory {
+  return typeof value === 'string' && Object.hasOwn(JUDGE_REQUEST_CATEGORIES, value);
+}
 export type MatchAdminAction = 'resolve' | 'correct' | 'judgeResume';
 export type EventAdminAction = 'publish' | 'signupClose' | 'signupReopen' | 'signupRemove';
 
@@ -86,7 +107,12 @@ export interface ClockDto {
   state: 'running' | 'frozen' | 'interrupted';  // interrupted: persisted running clock owned by another process
 }
 
-export interface MatchJudgeDto { reasons: JudgeReason[]; sinceMs: number; raisedBy: Seat[] }
+export interface MatchJudgeDto {
+  reasons: JudgeReason[];
+  sinceMs: number;
+  raisedBy: Seat[];
+  requests?: Array<JudgeRequestInput & { seat: Seat; requestedAtMs: number }>;
+}
 
 export interface ProposalDto { revision: number; winner: Seat; reporter: Seat; decision: 'open' | 'disputed' }
 
@@ -112,10 +138,12 @@ export interface EventSnapshotDto {
   eventId: string; version: number; panelRevision: number;
   status: 'active' | 'retired'; kind: 'legacy' | 'signup';
   createdAtMs: number; retiredAtMs: number | null;
-  game: string; durationMs: number; points: { win: number; loss: number };
+  game: string; durationMs: number; startsAtMs?: number; points: { win: number; loss: number };
   stage: EventStage;
-  signup: null | { status: 'open' | 'assigned'; capacity: 4; roster: Snowflake[] };
+  signup: null | { status: 'open' | 'assigned'; capacity: number; roster: Snowflake[] };
   seats: Record<Seat, Snowflake | null>;
+  pairingBye?: Seat;
+  dynamicRound?: boolean;
   adminId: Snowflake;
   members: Record<Snowflake, MemberDto>;       // roster, seats, admin, and members named in the audit
   checkins: Seat[]; published: boolean;
@@ -124,7 +152,7 @@ export interface EventSnapshotDto {
   adminActions: EventAdminAction[];
   discord: {
     guildId: Snowflake; channelId: Snowflake;
-    matchChannels: Record<MatchId, Snowflake> | null; publicMatchRooms: boolean;
+    matchChannels: Partial<Record<MatchId, Snowflake>> | null; publicMatchRooms: boolean;
     cards: Record<CardSlot, DiscordCardDto>;
   };
 }
@@ -133,9 +161,12 @@ export type ActorDto =
   | { kind: 'player'; seat: Seat }
   | { kind: 'member'; memberId: Snowflake }
   | { kind: 'admin' }
-  | { kind: 'system'; source: 'timer' };      // mapped from principal_kind = 'system'
+  | { kind: 'system'; source: 'timer' | 'scheduler' };      // mapped from principal_kind = 'system'
 
-export interface CommandDto {                  // sanitized copy of the stored domain command
+// Sanitized copy of the stored domain command.
+export interface CommandDto {
+  judgeRequest?: JudgeRequestInput;
+  delayMinutes?: number;
   type: string; matchId?: MatchId; winner?: Seat; reason?: string; memberId?: Snowflake;
   revision?: number; expectedRevision?: number; pauseGeneration?: number;
 }
@@ -184,6 +215,7 @@ export function parseStreamId(raw: string | null | undefined): StreamCursor | nu
 // Wave 3
 export type AdminCommandDto =
   | { type: 'publish' }
+  | { type: 'delayStart'; delayMinutes: number }
   | { type: 'signupClose' }
   | { type: 'signupReopen' }
   | { type: 'signupRemove'; memberId: Snowflake }
@@ -211,7 +243,7 @@ export interface PanelRefreshResultDto { cards: 'refreshed' | 'pending'; roomWar
 export const ADMIN_REASON_MAX_LENGTH = 500;                    // after trimming; at least 1 character
 
 export const COMMAND_CAPABILITY: Record<AdminCommandDto['type'], Capability> = {
-  publish: 'event.publish', signupClose: 'signup.manage', signupReopen: 'signup.manage',
+  publish: 'event.publish', delayStart: 'event.publish', signupClose: 'signup.manage', signupReopen: 'signup.manage',
   signupRemove: 'signup.manage', judgeResume: 'match.judge', resolve: 'match.judge',
   correct: 'match.correct'
 };

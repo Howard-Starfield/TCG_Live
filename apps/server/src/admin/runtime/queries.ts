@@ -48,6 +48,7 @@ export function pgAdminStore(): AdminStore {
            e.state->>'schemaVersion' AS schema_version, s.created_at_ms::float8 AS created_at_ms,
            s.retired_at_ms::float8 AS retired_at_ms, e.version
          FROM public.tcg_rehearsal_sessions s JOIN public.tcg_rehearsal_events e ON e.id = s.event_id
+         WHERE to_jsonb(s)->>'deleted_at_ms' IS NULL
          ORDER BY s.created_at_ms DESC, s.event_id DESC`);
       return result.rows;
     }),
@@ -61,7 +62,7 @@ export function pgAdminStore(): AdminStore {
       await requireDiscordSchema(client);
       return readOnly(client, async () => {
         const session = await client.query<AdminSessionRow>(
-          `SELECT ${SESSION_COLUMNS} FROM public.tcg_rehearsal_sessions s WHERE s.event_id = $1`, [eventId]);
+          `SELECT ${SESSION_COLUMNS} FROM public.tcg_rehearsal_sessions s WHERE s.event_id = $1 AND to_jsonb(s)->>'deleted_at_ms' IS NULL`, [eventId]);
         if (!session.rows[0]) return null;
         // Retired events are read here directly, never through getSessionState (active-only, config-bound).
         const event = await client.query<{ state: EventState; version: number }>(
@@ -76,7 +77,7 @@ export function pgAdminStore(): AdminStore {
     readAudit: (eventId, afterSequence, limit) => withClient(async client => {
       await requireDiscordSchema(client);
       return readOnly(client, async () => {
-        const session = await client.query('SELECT 1 FROM public.tcg_rehearsal_sessions WHERE event_id = $1', [eventId]);
+        const session = await client.query("SELECT 1 FROM public.tcg_rehearsal_sessions s WHERE event_id = $1 AND to_jsonb(s)->>'deleted_at_ms' IS NULL", [eventId]);
         if (!session.rows[0]) return null;
         const audit = await client.query<AdminAuditRow>(
           `SELECT ${AUDIT_COLUMNS} FROM public.tcg_rehearsal_audit WHERE event_id = $1 AND sequence > $2

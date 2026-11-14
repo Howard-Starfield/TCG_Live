@@ -55,7 +55,7 @@ function fixture(initial = assigned()) {
   let onRead: ((count: number) => void) | undefined;
   let onCurrent: (() => Promise<void> | void) | undefined;
   const transport: RoomTransport = {
-    async current(room) { await onCurrent?.(); return policy[room]; },
+    async current(room) { await onCurrent?.(); return policy[room]!; },
     async assertPermissions(room, operation) {
       if (!allowed) throw new Error(`missing ${operation} permission in ${room}`);
     },
@@ -68,13 +68,13 @@ function fixture(initial = assigned()) {
     async move(member, room) {
       moves.push({ member, room });
       if (failMove) throw new Error('ambiguous move');
-      voice.set(member, config.matchChannels![room]);
+      voice.set(member, config.matchChannels![room]!);
     },
     async warnOrganizer(message) { warnings.push(message); }
   };
   const reconciler = new MatchRoomReconciler(config, botId, ids[11]!, transport,
     async () => { onRead?.(++readCount); return { session, state }; }, () => allowed, () => now,
-    async (_guild, roomId) => { backups.push(roomId === config.matchChannels!.M1 ? 'M1' : 'M2'); });
+    async (_guild, roomId) => { backups.push(roomId === config.matchChannels!.M1! ? 'M1' : 'M2'); });
   return { reconciler, transport, policy, voice, writes, moves, warnings, backups,
     get state() { return state; }, set state(value: EventState) { state = value; },
     set allowed(value: boolean) { allowed = value; }, set failPolicy(value: boolean) { failPolicy = value; },
@@ -99,9 +99,9 @@ test('public config is explicit, paired, and frozen; voice intent is conditional
 });
 
 test('public target validation rejects duplicate, wrong-guild, AFK and general voice rooms', () => {
-  const rooms = { M1: { id: config.matchChannels!.M1, name: 'TCG Match Alpha',
+  const rooms = { M1: { id: config.matchChannels!.M1!, name: 'TCG Match Alpha',
     guildId: config.guildId, type: ChannelType.GuildVoice },
-  M2: { id: config.matchChannels!.M2, name: 'TCG Match Beta',
+  M2: { id: config.matchChannels!.M2!, name: 'TCG Match Beta',
     guildId: config.guildId, type: ChannelType.GuildVoice } };
   assert.doesNotThrow(() => assertPublicMatchRoomTargets(config, rooms, null));
   assert.throws(() => assertPublicMatchRoomTargets(config, { ...rooms, M2: { ...rooms.M2, id: rooms.M1.id } }, null), /two distinct/);
@@ -131,10 +131,10 @@ test('policy gives everyone public entry, only pair/admin/bot posting, and bot m
 test('first overwrite backup is exclusive and never replaced by a later plan', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'tcg-room-backup-'));
   const original = roomPlan(config.guildId, botId, config.adminId, []);
-  const path = join(directory, `${config.guildId}-${config.matchChannels!.M1}.json`);
+  const path = join(directory, `${config.guildId}-${config.matchChannels!.M1!}.json`);
   try {
-    await backupRoomOverwrites(config.guildId, config.matchChannels!.M1, original, directory);
-    await backupRoomOverwrites(config.guildId, config.matchChannels!.M1, [], directory);
+    await backupRoomOverwrites(config.guildId, config.matchChannels!.M1!, original, directory);
+    await backupRoomOverwrites(config.guildId, config.matchChannels!.M1!, [], directory);
     const saved = JSON.parse(await readFile(path, 'utf8')) as { overwrites: RoomOverwrite[] };
     assert.deepEqual(saved.overwrites, original);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -145,16 +145,16 @@ test('roster close/reopen updates complete policies and unchanged policy is not 
   await f.reconciler.trigger();
   assert.deepEqual(f.writes, ['M1', 'M2']);
   assert.deepEqual(f.backups, ['M1', 'M2']);
-  assert.equal(f.policy.M1.length, 3);
+  assert.equal(f.policy.M1!.length, 3);
   await f.reconciler.trigger();
   assert.equal(f.writes.length, 2);
   f.state = assigned();
   await f.reconciler.trigger();
-  assert.equal(f.policy.M1.length, 5);
+  assert.equal(f.policy.M1!.length, 5);
   f.state = apply(f.state, 'admin:fixture', { type: 'signupReopen' });
   await f.reconciler.trigger();
-  assert.equal(f.policy.M1.length, 3);
-  f.policy.M1 = [];
+  assert.equal(f.policy.M1!.length, 3);
+  f.policy.M1! = [];
   await f.reconciler.trigger();
   assert.equal(f.writes.at(-1), 'M1', 'manual drift is repaired from current SDK state');
   await f.reconciler.stop();
@@ -170,7 +170,7 @@ test('failed policy plan is suppressed until Refresh or plan/current change', as
   await assert.rejects(f.reconciler.trigger(true), /policy update failed/);
   assert.equal(f.writes.length, 2);
   f.failPolicy = false;
-  f.policy.M1 = roomPlan(config.guildId, botId, config.adminId, []);
+  f.policy.M1! = roomPlan(config.guildId, botId, config.adminId, []);
   await f.reconciler.trigger();
   assert.ok(f.writes.length >= 3);
   await f.reconciler.stop();
@@ -179,7 +179,7 @@ test('failed policy plan is suppressed until Refresh or plan/current change', as
 test('publication moves only connected wrong-room unfinished members; cap counts failed moves', async () => {
   const f = fixture(assigned(true));
   f.voice.set(members[0]!, ids[2]!);
-  f.voice.set(members[1]!, config.matchChannels!.M1);
+  f.voice.set(members[1]!, config.matchChannels!.M1!);
   f.voice.set(members[2]!, ids[11]!); // AFK
   f.voice.set(config.adminId, ids[2]!);
   f.voice.set(ids[0]!, ids[2]!); // spectator
@@ -194,7 +194,7 @@ test('publication moves only connected wrong-room unfinished members; cap counts
   const count = f.moves.length;
   await f.reconciler.trigger();
   assert.equal(f.moves.length, count, 'bot-generated correct-channel event is a no-op');
-  f.state = { ...f.state, matches: [{ ...f.state.matches[0], phase: 'final' }, f.state.matches[1]] };
+  f.state = { ...f.state, matches: [{ ...f.state.matches[0]!, phase: 'final' }, f.state.matches[1]!] };
   f.voice.set(members[0]!, ids[2]!);
   await f.reconciler.trigger();
   assert.equal(f.moves.length, count, 'finished pair is not redirected');
@@ -215,11 +215,11 @@ test('unpublished and stopped passes do not move players', async () => {
 test('a changed aggregate before a move abandons the old destination', async () => {
   const f = fixture(assigned(true));
   f.voice.set(members[0]!, ids[2]!);
-  f.policy.M1 = roomPlan(config.guildId, botId, config.adminId, members.slice(0, 2));
+  f.policy.M1! = roomPlan(config.guildId, botId, config.adminId, members.slice(0, 2));
   f.policy.M2 = roomPlan(config.guildId, botId, config.adminId, members.slice(2));
   f.onRead = count => {
     if (count === 2) f.state = { ...f.state, version: f.state.version + 1,
-      matches: [{ ...f.state.matches[0], phase: 'final' }, f.state.matches[1]] };
+      matches: [{ ...f.state.matches[0]!, phase: 'final' }, f.state.matches[1]!] };
   };
   await f.reconciler.trigger();
   assert.equal(f.moves.length, 0);

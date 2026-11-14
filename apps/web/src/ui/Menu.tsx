@@ -1,6 +1,6 @@
 import { Check } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode, type RefCallback } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode, type RefCallback } from 'react';
 import { cx, focusableWithin } from './cx';
 import { useDismiss, useFloating, type Placement } from './floating';
 import { Kbd } from './Kbd';
@@ -11,6 +11,7 @@ export interface TriggerProps {
   ref: RefCallback<HTMLElement>;
   onClick: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
+  onContextMenu?: (event: MouseEvent<HTMLElement>) => void;
   'aria-haspopup': 'menu' | 'dialog';
   'aria-expanded': boolean;
   'aria-controls': string | undefined;
@@ -57,6 +58,7 @@ export interface MenuProps {
   placement?: Placement;
   /** Initially open (gallery and screenshots). */
   defaultOpen?: boolean;
+  openOnContext?: boolean;
   className?: string;
 }
 
@@ -64,7 +66,7 @@ export interface MenuProps {
  * Dropdown menu: arrow keys, Home/End and typeahead move between items; Enter or Space selects; Escape
  * closes and returns focus to the trigger; clicking outside closes.
  */
-export function Menu({ label, items, trigger, placement = 'bottom-start', defaultOpen = false, className }: MenuProps) {
+export function Menu({ label, items, trigger, placement = 'bottom-start', defaultOpen = false, openOnContext = false, className }: MenuProps) {
   const menuId = useId();
   const { open, setOpen, anchorRef, setAnchor, close } = useAnchoredOpen(defaultOpen);
   const { floatingRef, setFloating, position } = useFloating(anchorRef, open, placement);
@@ -127,7 +129,16 @@ export function Menu({ label, items, trigger, placement = 'bottom-start', defaul
   const triggerProps: TriggerProps = {
     ref: setAnchor,
     onClick: () => (open ? close(false) : openAt('first')),
+    ...(openOnContext ? { onContextMenu: (event: MouseEvent<HTMLElement>) => {
+      event.preventDefault();
+      openAt('first');
+    } } : {}),
     onKeyDown: event => {
+      if (openOnContext && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+        event.preventDefault();
+        openAt('first');
+        return;
+      }
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
         openAt(event.key === 'ArrowDown' ? 'first' : 'last');
@@ -184,6 +195,7 @@ export interface PopoverProps {
   children: ReactNode | ((close: () => void) => ReactNode);
   placement?: Placement;
   defaultOpen?: boolean;
+  openOnContext?: boolean;
   className?: string;
 }
 

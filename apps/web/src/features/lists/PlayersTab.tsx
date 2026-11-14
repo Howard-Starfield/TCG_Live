@@ -22,7 +22,8 @@ type OptionalColumn = keyof typeof PLAYER_COLUMN_MIN_WIDTH;
 
 function summary(snapshot: EventSnapshotDto): string {
   const signup = snapshot.signup;
-  if (signup?.status === 'open') return `Signup open · ${signup.roster.length} of ${signup.capacity} joined · seats are assigned when signup closes`;
+  if (signup?.status === 'open') return `Signup open · ${signup.roster.length} of ${signup.capacity} joined · ${!snapshot.dynamicRound && signup.roster.length > 4
+    ? 'the rehearsal round supports exactly four players' : 'seats are assigned when signup closes'}`;
   const seated = Object.values(snapshot.seats).filter(Boolean).length;
   return `${seated} seated · ${snapshot.checkins.length} checked in${snapshot.published ? ' · round published' : ''}`;
 }

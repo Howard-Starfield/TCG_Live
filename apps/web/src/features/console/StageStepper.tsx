@@ -37,7 +37,7 @@ export function stepModel(snapshot: EventSnapshotDto): StepModel[] {
 
   return [
     { id: 'signup', label: 'Signup', detail: `${roster}/${capacity} joined`, state: state(0), attention: false },
-    { id: 'checkin', label: 'Check-in', detail: `${snapshot.checkins.length}/4 in`, state: state(1), attention: false },
+    { id: 'checkin', label: 'Check-in', detail: `${snapshot.checkins.length}/${snapshot.dynamicRound ? snapshot.signup?.roster.length ?? 0 : 4} in`, state: state(1), attention: false },
     { id: 'live', label: 'Round 1', detail: roundDetail.join(' · '), state: state(2), attention: snapshot.stage === 'live' && judges > 0 },
     { id: 'complete', label: 'Standings', detail: snapshot.stage === 'complete' ? 'Final' : 'Waiting', state: state(3), attention: false }
   ];

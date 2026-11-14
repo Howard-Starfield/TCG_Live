@@ -104,6 +104,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       ...sessions.expiry(session),
       mode: options.mode,
       commandsEnabled: options.commandsEnabled,
+      ...(options.launchDemo ? { demoAvailable: true } : {}),
       ...(options.persistentSessions && options.mode === 'discord' ? { persistent: true as const } : {}),
       ...(options.setup ? { setup: true as const } : {}),
       ...(options.artwork ? { artwork: true as const } : {}),
@@ -156,6 +157,19 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
           ...(loginUrl ? { loginUrl } : {}) });
       } } }
     } satisfies Route] : []),
+    ...(options.launchDemo ? [{ pattern: /^\/api\/v1\/demo\/launch$/, methods: {
+      POST: { access: 'session' as const, run: async ({ request, response, query }: Context) => {
+        await readEmptyBody(request);
+        if (closed) throw unavailable();
+        const sample = query.get('players');
+        if ([...query.keys()].some(key => key !== 'players') || query.getAll('players').length > 1 ||
+            (sample !== null && !['5', '8', '9', '100'].includes(sample))) throw badRequest('Invalid demo roster size.');
+        let url: string;
+        try { url = await options.launchDemo!(sample === null ? undefined : Number(sample)); }
+        catch { throw new HttpError(503, 'unavailable', 'The tournament demo could not be started.'); }
+        sendJson(response, 200, { url });
+      } }
+    } } satisfies Route] : []),
     { pattern: /^\/api\/v1\/status$/, methods: {
       GET: { access: 'dashboard.read', run: async ({ response }) => sendJson(response, 200, runtime.status()) }
     } },
@@ -205,7 +219,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       () => options.artwork?.describe().activeGame ?? 'one-piece', async game => {
         await options.artwork?.selectGame(game);
         return await options.applyArtwork?.() ?? { status: 'pending', message: 'Existing Discord panels are not available yet.' };
-      }, options.openSignup, options.signupChannels) : []),
+      }, options.openSignup, options.signupChannels, options.deleteTournament) : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 

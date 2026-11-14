@@ -69,7 +69,7 @@ test('real database: schema marker, command races, audit rollback, and refused w
   assert.equal(proposals.filter(item => item.status === 'fulfilled').length, 1);
   assert.equal(proposals.filter(item => item.status === 'rejected').length, 1);
   const afterRace = await getRehearsalEvent(id);
-  assert.equal(afterRace.matches[0].proposal?.revision, 1);
+  assert.equal(afterRace.matches[0]!.proposal?.revision, 1);
   assert.equal((await getRehearsalAudit(id)).length, afterRace.version);
 
   const setupClient = rehearsalClient();

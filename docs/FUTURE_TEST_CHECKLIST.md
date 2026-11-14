@@ -52,3 +52,7 @@ Requested 14 October 2026. Implementation passed 65 offline tests and both nativ
 - [ ] Temporarily remove Move Members or permission-overwrite management from a task-owned room, then restore it. The bot reports the missing capability and does not claim successful routing or chat restriction. Admin Refresh reconciles after restoration.
 
 The signup implementation is limited to four practice slots with a separate admin. Multiple rounds, tournament pairing, and an admin dashboard remain later work. Real four-player testing remains pending until those accounts are available.
+
+## Queued dashboard update
+
+- [ ] Replace the stage footer's event version and panel revision (for example, “v5 · panels r1”) with Discord sync status. When updates are pending, show “Discord cards update pending. Changes are saved. The cards will catch up after the next successful refresh.”

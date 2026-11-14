@@ -75,7 +75,7 @@ test('a console command reaches the controller as the web principal with its sto
   assert.equal(sent.content, JSON.stringify([EVENT_ID, resolve.command, resolve.precondition]));
   const fixture = createFixture(EVENT_ID);
   assert.equal(sent.precondition(fixture), false, 'M1 is in setup, not running');
-  fixture.matches[0] = { ...fixture.matches[0], phase: 'running' };
+  fixture.matches[0] = { ...fixture.matches[0]!, phase: 'running' };
   assert.equal(sent.precondition(fixture), true);
 
   await admin.applyAdminCommand({ ...resolve, command: { type: 'signupClose' }, precondition: { signup: { status: 'open', rosterSize: 4 } } }, LOCAL_ADMIN);

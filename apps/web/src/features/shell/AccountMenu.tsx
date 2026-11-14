@@ -1,6 +1,6 @@
-import { Images, Laptop, Link2, LogOut, Moon, Sun } from 'lucide-react';
+import { FlaskConical, Images, Laptop, Link2, LogOut, Moon, Sun } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import { useSession } from '../../data';
+import { useAdminData, useSession } from '../../data';
 import { ConfirmDialog, Menu, useToast, type MenuEntry, type Placement, type TriggerProps } from '../../ui';
 import { useConsolePreferences } from '../../app/preferences';
 import { ArtworkDialog } from '../artwork/ArtworkDialog';
@@ -13,6 +13,7 @@ export interface AccountMenuProps {
 /** Theme choice, rotate console link, sign out. */
 export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuProps) {
   const session = useSession();
+  const { api } = useAdminData();
   const toast = useToast();
   const [preferences, update] = useConsolePreferences();
   const [confirming, setConfirming] = useState(false);
@@ -38,6 +39,19 @@ export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuPr
     }
   };
 
+  const launchDemo = async (playerCount?: number) => {
+    const tab = window.open('about:blank', '_blank');
+    if (tab) tab.opener = null;
+    try {
+      const { url } = await api.request<{ url: string }>('POST', playerCount ? `/demo/launch?players=${playerCount}` : '/demo/launch', { body: {} });
+      if (tab) tab.location.replace(url);
+      else window.location.assign(url);
+    } catch (error) {
+      tab?.close();
+      toast.show({ title: 'Could not start tournament demo', description: error instanceof Error ? error.message : undefined, tone: 'danger' });
+    }
+  };
+
   const items: MenuEntry[] = [
     { type: 'label', id: 'theme-label', label: 'Theme' },
     { id: 'theme-light', label: 'Light', checked: preferences.theme === 'light', onSelect: () => update({ theme: 'light' }) },
@@ -46,6 +60,10 @@ export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuPr
     { type: 'separator', id: 'sep-1' },
     ...(hasArtwork ? [{ id: 'artwork', label: 'Game artwork…', textValue: 'Game artwork', icon: <Images />,
       onSelect: () => setArtworkOpen(true) }] : []),
+    ...(session.session?.demoAvailable ? [{ id: 'demo', label: 'Run tournament demo', icon: <FlaskConical />,
+      onSelect: () => { void launchDemo(); } },
+      ...[5, 8, 9, 100].map(size => ({ id: `demo-${size}`, label: `Demo · ${size} players`, icon: <FlaskConical />,
+        onSelect: () => { void launchDemo(size); } }))] : []),
     { id: 'rotate', label: 'Rotate console link…', textValue: 'Rotate console link', icon: <Link2 />, onSelect: () => setConfirming(true) },
     { type: 'separator', id: 'sep-2' },
     { id: 'sign-out', label: 'Sign out', icon: <LogOut />, onSelect: () => { void session.logout(); } }

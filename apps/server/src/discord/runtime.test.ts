@@ -122,6 +122,32 @@ test('resume reminder uses exact waiting-user mention permission in the assigned
   assert.equal(sends[0]?.files[0]?.name, 'tcg-reminder-v1.gif');
 });
 
+test('Call judge serializes a category and description modal and reads the private submission', async () => {
+  const userId = '444444444444444444';
+  const control = 'p1:11111111-1111-4111-8111-111111111111:M1:J';
+  let modal: { custom_id: string; components: Array<{ component: { custom_id: string; type: number } }> } | undefined;
+  const shared = { id: 'interaction', applicationId: 'application', guildId: 'guild', channelId: 'channel',
+    user: { id: userId }, isChatInputCommand: () => false };
+  const button = adapt({ ...shared, isButton: () => true, isModalSubmit: () => false, customId: control,
+    message: { id: 'sticky' }, async showModal(builder: { toJSON(): typeof modal }) { modal = builder.toJSON(); }
+  } as unknown as Interaction)!;
+  await button.showJudgeRequest!();
+  assert.equal(modal?.custom_id, `judge:${userId}:${control}`);
+  assert.deepEqual(modal?.components.map(({ component }) => [component.custom_id, component.type]),
+    [['category', 3], ['description', 4]]);
+  const calls: string[] = [];
+  const submission = adapt({ ...shared, isButton: () => false, isModalSubmit: () => true, isFromMessage: () => true,
+    customId: modal!.custom_id, fields: { getStringSelectValues: () => ['technical'], getTextInputValue: () => 'My camera froze.' },
+    async deferUpdate() { calls.push('acknowledged'); }
+  } as unknown as Interaction)!;
+  assert.equal(submission.kind, 'judgeRequest');
+  assert.equal(submission.customId, control);
+  assert.deepEqual(submission.judgeRequest, { requesterId: userId, category: 'technical', description: 'My camera froze.' });
+  await submission.acknowledge();
+  await submission.reply('Saved: callJudge.');
+  assert.deepEqual(calls, ['acknowledged']);
+});
+
 test('button ACK updates its panel silently on success and deletes only a private error follow-up', async () => {
   const calls: string[] = [];
   let expiry: (() => void) | undefined;
@@ -133,7 +159,7 @@ test('button ACK updates its panel silently on success and deletes only a privat
   }) as typeof setTimeout;
   try {
     const interaction = {
-      isButton: () => true, isChatInputCommand: () => false,
+      isButton: () => true, isChatInputCommand: () => false, isModalSubmit: () => false,
       id: 'interaction', applicationId: 'application', guildId: 'guild', channelId: 'channel',
       user: { id: 'user' }, customId: 'control', message: { id: 'shared-panel' },
       async deferUpdate() { calls.push('deferUpdate'); },
@@ -172,7 +198,7 @@ test('slash command keeps a private acknowledgment and expires only its original
   }) as typeof setTimeout;
   try {
     const command = {
-      isButton: () => false, isChatInputCommand: () => true, commandName: 'tcg-test',
+      isButton: () => false, isChatInputCommand: () => true, isModalSubmit: () => false, commandName: 'tcg-test',
       id: 'interaction', applicationId: 'application', guildId: 'guild', channelId: 'channel',
       user: { id: 'admin' }, options: { getSubcommand: () => 'refresh', getString: () => null },
       async deferReply(options: { flags: number }) { calls.push(`defer:${options.flags}`); },
@@ -206,7 +232,7 @@ test('slow private visual upload starts after button ACK and deletes only its fo
     return { unref() {} } as NodeJS.Timeout;
   }) as typeof setTimeout;
   try {
-    const interaction = { isButton: () => true, isChatInputCommand: () => false,
+    const interaction = { isButton: () => true, isChatInputCommand: () => false, isModalSubmit: () => false,
       id: 'interaction', applicationId: 'application', guildId: 'guild', channelId: 'channel',
       user: { id: 'user' }, customId: 'control', message: { id: 'shared-panel' },
       async deferUpdate() { calls.push('ack'); },

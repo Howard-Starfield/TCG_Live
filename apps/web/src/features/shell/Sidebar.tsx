@@ -10,16 +10,19 @@ import { eventLabel, shortDate, streamLabel } from './labels';
 import { useShell } from './model';
 import { CreateTournamentDialog } from '../tournaments/CreateTournamentDialog';
 import { useTournamentDirectory } from '../tournaments/directory';
+import { useTournamentMenu } from '../tournaments/useTournamentMenu';
 
 /** Events (active first, retired as history), stream status and the account. */
 export function Sidebar() {
   const shell = useShell();
+  const tournamentMenu = useTournamentMenu();
   const [preferences, update] = useConsolePreferences();
   const collapsed = preferences.sidebarCollapsed;
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [liveOpen, setLiveOpen] = useState(true);
+  const [pendingOpen, setPendingOpen] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(true);
   const { events, viewed } = shell;
   const directoryEnabled = !!shell.session.tournaments;
@@ -35,7 +38,9 @@ export function Sidebar() {
     : events.map(event => ({ ...event, name: eventLabel(event), game: null }));
   const matchesQuery = (event: TournamentDirectoryEntryDto) => collapsed || directoryEnabled ||
     `${event.name} ${event.kind} ${shortDate(event.createdAtMs)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-  const active = entries.filter(event => (event.status === 'active' || (!collapsed && !!query.trim() && event.status === 'draft')) && matchesQuery(event));
+  const active = entries.filter(event => event.status === 'active' && matchesQuery(event));
+  const pending = entries.filter(event => event.status === 'draft' && event.startsAtMs !== undefined && matchesQuery(event))
+    .sort((a, b) => (a.startsAtMs ?? Infinity) - (b.startsAtMs ?? Infinity));
   const retired = entries.filter(event => event.status === 'retired' && matchesQuery(event));
   const listState = directoryEnabled ? pendingSearch || directory.isPending ? 'loading' : directory.isError ? 'error' : 'ready'
     : shell.eventsState;
@@ -45,12 +50,22 @@ export function Sidebar() {
     else shell.selectEvent(eventId);
   };
 
+  const menuItems = (id: string) => {
+    const event = entries.find(entry => entry.eventId === id);
+    return directoryEnabled && event ? tournamentMenu.items(event, () => select(id)) : [];
+  };
+
   const activeItems: SidebarItem[] = active.map(event => ({
     id: event.eventId,
     label: event.name,
-    meta: event.status === 'draft' ? `Draft · Created ${shortDate(event.createdAtMs)}` : `Created ${shortDate(event.createdAtMs)}`,
-    live: event.status === 'active',
-    active: !shell.home && (event.status === 'draft' ? shell.draft?.eventId === event.eventId : viewed.eventId === event.eventId)
+    meta: event.startsAtMs !== undefined ? `Starts ${shortDate(event.startsAtMs)}` : `Created ${shortDate(event.createdAtMs)}`,
+    live: true,
+    active: !shell.home && viewed.eventId === event.eventId
+  }));
+  const pendingItems: SidebarItem[] = pending.map(event => ({
+    id: event.eventId, label: event.name, icon: <FileClock />,
+    meta: event.startsAtMs !== undefined ? `Starts ${shortDate(event.startsAtMs)}` : 'Draft',
+    active: !shell.home && shell.draft?.eventId === event.eventId
   }));
   const retiredItems: SidebarItem[] = retired.map(event => ({
     id: event.eventId,
@@ -108,22 +123,33 @@ export function Sidebar() {
           <>
             {!collapsed && <button type="button" className="shell-sidebar-section-toggle" aria-expanded={liveOpen}
               aria-controls="sidebar-live" onClick={() => setLiveOpen(!liveOpen)}>
-              <ChevronRight aria-hidden /> Live
+              <ChevronRight aria-hidden /> Active
             </button>}
             {(collapsed || liveOpen) && <div id="sidebar-live">
               {activeItems.length > 0
-                ? <SidebarList label="Active event" collapsed={collapsed} items={activeItems} onSelect={select} />
+                ? <SidebarList label="Active event" collapsed={collapsed} items={activeItems} onSelect={select} menuItems={menuItems} />
                 : !collapsed && <p className="px-2 pb-2 text-xs text-fg-subtle">
                   {query ? 'No matching live tournaments.' : 'No active event right now.'}
                 </p>}
             </div>}
+            {directoryEnabled && <>
+              {!collapsed && <button type="button" className="shell-sidebar-section-toggle mt-3" aria-expanded={pendingOpen}
+                aria-controls="sidebar-pending" onClick={() => setPendingOpen(!pendingOpen)}>
+                <ChevronRight aria-hidden /> Pending
+              </button>}
+              {(collapsed || pendingOpen) && <div id="sidebar-pending">
+                {pendingItems.length > 0
+                  ? <SidebarList label="Pending tournaments" collapsed={collapsed} items={pendingItems} onSelect={select} menuItems={menuItems} />
+                  : !collapsed && <p className="px-2 pb-2 text-xs text-fg-subtle">No pending tournaments.</p>}
+              </div>}
+            </>}
             {!collapsed && <button type="button" className="shell-sidebar-section-toggle mt-3" aria-expanded={historyOpen}
               aria-controls="sidebar-history" onClick={() => setHistoryOpen(!historyOpen)}>
               <ChevronRight aria-hidden /> History
             </button>}
             {(collapsed || historyOpen) && <div id="sidebar-history">
               {retiredItems.length > 0
-                ? <SidebarList label="Event history" collapsed={collapsed} items={retiredItems} onSelect={select} />
+                ? <SidebarList label="Event history" collapsed={collapsed} items={retiredItems} onSelect={select} menuItems={menuItems} />
                 : !collapsed && query && <p className="px-2 pb-2 text-xs text-fg-subtle">No matching history.</p>}
             </div>}
           </>
@@ -131,11 +157,10 @@ export function Sidebar() {
       </div>
       {directoryEnabled && <CreateTournamentDialog open={createOpen} defaultGame={shell.directory?.defaultGame ?? 'one-piece'}
         onClose={() => setCreateOpen(false)} onSaved={entry => {
-          setCreateOpen(false); setQuery(''); setDebouncedQuery(''); setLiveOpen(true); shell.selectDraft(entry);
-        }} onCreated={eventId => {
-          setCreateOpen(false); setQuery(''); setDebouncedQuery(''); setLiveOpen(true); shell.selectEvent(eventId);
+          setCreateOpen(false); setQuery(''); setDebouncedQuery(''); setPendingOpen(true); shell.selectDraft(entry);
         }} />}
 
+      {tournamentMenu.confirmation}
       <div className="shell-sidebar-bottom">
         <StreamStatus collapsed={collapsed} />
         <AccountMenu placement="top-start" trigger={props => (

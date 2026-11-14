@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Menu, type MenuEntry } from './Menu';
 import { cx } from './cx';
 import { StatusDot } from './Status';
 
@@ -22,13 +23,14 @@ export interface SidebarListProps {
   heading?: ReactNode;
   items: SidebarItem[];
   onSelect?: (id: string) => void;
+  menuItems?: (id: string) => MenuEntry[];
   /** Icon-only rail: labels stay available to assistive tech and as tooltips. */
   collapsed?: boolean;
   className?: string;
 }
 
 /** Sidebar navigation list (events, sections); the active item carries `aria-current="page"`. */
-export function SidebarList({ label, heading, items, onSelect, collapsed = false, className }: SidebarListProps) {
+export function SidebarList({ label, heading, items, onSelect, menuItems, collapsed = false, className }: SidebarListProps) {
   return (
     <nav aria-label={label} className={cx('flex min-w-0 flex-col gap-0.5', className)}>
       {heading && !collapsed && <div className="px-2 pb-1 pt-1 text-2xs font-semibold tracking-wide text-fg-subtle">{heading}</div>}
@@ -48,11 +50,16 @@ export function SidebarList({ label, heading, items, onSelect, collapsed = false
           const classes = cx('flex min-w-0 items-center rounded-[9px] text-fg transition-[background-color,box-shadow] duration-150',
             collapsed ? 'mx-auto size-8 justify-center' : 'w-full gap-2.5 px-2 py-[7px]',
             item.active ? 'bg-raised shadow-raised' : 'hover:bg-line-faint');
+          const actions = menuItems?.(item.id);
           return (
             <li key={item.id}>
               {item.href ? (
                 <a href={item.href} aria-current={item.active ? 'page' : undefined} title={collapsed ? item.label : undefined}
                   onClick={() => onSelect?.(item.id)} className={classes}>{content}</a>
+              ) : actions?.length ? (
+                <Menu label={`Actions for ${item.label}`} items={actions} openOnContext trigger={props =>
+                  <button {...props} type="button" aria-current={item.active ? 'page' : undefined}
+                    title={collapsed ? item.label : undefined} onClick={() => onSelect?.(item.id)} className={classes}>{content}</button>} />
               ) : (
                 <button type="button" aria-current={item.active ? 'page' : undefined} title={collapsed ? item.label : undefined}
                   onClick={() => onSelect?.(item.id)} className={classes}>{content}</button>

@@ -57,7 +57,7 @@ async function rehearse(): Promise<void> {
   const audit = await getRehearsalAudit(id);
   const after = await countRehearsalEvents();
   if (after !== before + 1 || final.version !== audit.length || final.version !== 19 ||
-      final.matches[0].finalWinner !== 'A' || final.matches[1].finalWinner !== 'C') {
+      final.matches[0]!.finalWinner !== 'A' || final.matches[1]!.finalWinner !== 'C') {
     throw new RuleError('Rehearsal verification failed.');
   }
   const resolveEntry = audit.find(entry => entry.command_id === 'M1-resolve-B');

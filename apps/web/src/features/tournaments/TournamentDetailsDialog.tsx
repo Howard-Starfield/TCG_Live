@@ -3,12 +3,15 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useAdminData } from '../../data';
 import { Button, Dialog, Field, Input, Select, Textarea } from '../../ui';
 import { tournamentDirectoryKey } from './directory';
+import { useShell } from '../shell/model';
+import { TournamentRuleSummary } from './TournamentRuleSummary';
 import { gameLabel } from './CreateTournamentDialog';
 
-export function TournamentDetailsDialog({ open, eventId, onClose }: {
-  open: boolean; eventId: string; onClose(): void;
+export function TournamentDetailsDialog({ open, eventId, capacity, onClose }: {
+  open: boolean; eventId: string; capacity?: number; onClose(): void;
 }) {
   const { api, queryClient } = useAdminData();
+  const tournament = useShell().directory?.entries.find(entry => entry.eventId === eventId);
   const [name, setName] = useState('');
   const [game, setGame] = useState<ArtworkGame>('pokemon');
   const [description, setDescription] = useState('');
@@ -63,7 +66,7 @@ export function TournamentDetailsDialog({ open, eventId, onClose }: {
         <Textarea value={description} maxLength={500} rows={4} disabled={busy || !loaded}
           onChange={event => setDescription(event.target.value)} />
       </Field>
-      <p className="text-xs text-fg-muted">Current test format: four players, best of one, camera play.</p>
+      <TournamentRuleSummary capacity={capacity} matchMinutes={tournament?.matchMinutes} swissRules={tournament?.swissRules} />
       {message && <p role="status" className="text-sm text-fg-muted">{message}</p>}
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
     </form>

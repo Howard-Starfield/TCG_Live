@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type pg from 'pg';
-import { ARTWORK_GAMES, DEFAULT_MATCH_MINUTES, MAX_MATCH_MINUTES, type ArtworkGame, type CreateTournamentDraftDto, type TournamentDetailsDto, type SaveTournamentDetailsDto,
-  type SignupBannerStyle, type TournamentDirectoryDto, type TournamentDirectoryEntryDto } from '@tcg-live/core';
+import { ARTWORK_GAMES, DEFAULT_MATCH_MINUTES, DEFAULT_SIGNUP_CAPACITY, DEFAULT_TOURNAMENT_SWISS_RULES, MAX_MATCH_MINUTES, MAX_SIGNUP_CAPACITY, type ArtworkGame, type CreateTournamentDraftDto, type TournamentDetailsDto, type SaveTournamentDetailsDto,
+  type SignupBannerStyle, type TournamentDirectoryDto, type TournamentDirectoryEntryDto, type TournamentSwissRules } from '@tcg-live/core';
 import { RuleError } from '../rehearsal/domain.js';
 import { transaction, withClient } from '../rehearsal/store.js';
 import { requireDiscordSchema } from '../discord/session.js';
@@ -20,6 +20,7 @@ export class DirectoryUnavailableError extends RuleError {}
 
 export interface TournamentDirectory {
   list(query: string, defaultGame: ArtworkGame): Promise<TournamentDirectoryDto>;
+  deleteDraft?(eventId: string): Promise<void>;
   createDraft(input: unknown): Promise<TournamentDirectoryEntryDto>;
   getDetails?(eventId: string): Promise<TournamentDetailsDto>;
   saveDetails?(eventId: string, input: unknown): Promise<TournamentDetailsDto>;
@@ -50,10 +51,35 @@ export function searchQuery(input: string): string | null {
   return words.map(word => `${word}:*`).join(' & ');
 }
 
-export function parseDraft(input: unknown): Required<Omit<CreateTournamentDraftDto, 'signupChannelId'>> & Pick<CreateTournamentDraftDto, 'signupChannelId'> {
+function parseSwissRules(input: unknown): TournamentSwissRules {
+  const defaults = DEFAULT_TOURNAMENT_SWISS_RULES;
+  if (input === undefined) return { ...defaults };
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new DirectoryInputError('Choose valid Swiss rules.');
+  const value = input as Record<string, unknown>;
+  if (Object.keys(value).some(key => !Object.hasOwn(defaults, key))) throw new DirectoryInputError('Swiss rules contain unknown settings.');
+  const rules = { ...defaults, ...value };
+  if ((rules.matchFormat !== 'bo1' && rules.matchFormat !== 'bo3') ||
+      (rules.finish !== 'standings' && rules.finish !== 'playoffs') ||
+      (rules.roundRelease !== 'automatic' && rules.roundRelease !== 'manual'))
+    throw new DirectoryInputError('Choose a supported Swiss format, finish and release mode.');
+  if (!Number.isInteger(rules.roundCount) || rules.roundCount < 0 || rules.roundCount > 30)
+    throw new DirectoryInputError('Swiss rounds must be 0 (automatic) or 1–30.');
+  const scoring = [rules.winPoints, rules.drawPoints, rules.lossPoints, rules.gameWinPoints, rules.gameTiePoints, rules.byePoints];
+  if (scoring.some(points => !Number.isFinite(points) || points < 0 || points > 100))
+    throw new DirectoryInputError('Swiss scores must be between 0 and 100 points.');
+  return rules;
+}
+
+function sameSwissRules(saved: TournamentSwissRules | null, requested: TournamentSwissRules): boolean {
+  const effective = saved ?? DEFAULT_TOURNAMENT_SWISS_RULES;
+  return (Object.keys(DEFAULT_TOURNAMENT_SWISS_RULES) as (keyof TournamentSwissRules)[])
+    .every(key => effective[key] === requested[key]);
+}
+
+export function parseDraft(input: unknown): Required<Omit<CreateTournamentDraftDto, 'signupChannelId' | 'startsAtMs' | 'signupOpensAtMs'>> & Pick<CreateTournamentDraftDto, 'signupChannelId' | 'startsAtMs' | 'signupOpensAtMs'> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new DirectoryInputError('Draft details must be an object.');
   const draft = input as Record<string, unknown>;
-  if (Object.keys(draft).some(key => !['draftId', 'name', 'game', 'description', 'matchMinutes', 'bannerStyle', 'signupChannelId'].includes(key)))
+  if (Object.keys(draft).some(key => !['draftId', 'name', 'game', 'description', 'matchMinutes', 'bannerStyle', 'signupChannelId', 'signupCapacity', 'swissRules', 'startsAtMs', 'signupOpensAtMs', 'isTemplate'].includes(key)))
     throw new DirectoryInputError('Draft details contain unknown fields.');
   if (typeof draft.draftId !== 'string' || !UUID.test(draft.draftId)) throw new DirectoryInputError('Choose a valid draft ID.');
   if (typeof draft.game !== 'string' || !games.has(draft.game)) throw new DirectoryInputError('Choose a supported game.');
@@ -72,11 +98,27 @@ export function parseDraft(input: unknown): Required<Omit<CreateTournamentDraftD
     throw new DirectoryInputError(`Match timer must be 1–${MAX_MATCH_MINUTES} whole minutes.`);
   const bannerStyle = draft.bannerStyle === undefined ? 'game' : draft.bannerStyle;
   if (bannerStyle !== 'game' && bannerStyle !== 'compact') throw new DirectoryInputError('Choose a signup banner style.');
+  const signupCapacity = draft.signupCapacity === undefined ? DEFAULT_SIGNUP_CAPACITY : draft.signupCapacity;
+  if (typeof signupCapacity !== 'number' || !Number.isInteger(signupCapacity) ||
+      signupCapacity < 4 || signupCapacity > MAX_SIGNUP_CAPACITY)
+    throw new DirectoryInputError(`Signup limit must be 4–${MAX_SIGNUP_CAPACITY} whole players.`);
+  const startsAtMs = draft.startsAtMs;
+  if (startsAtMs !== undefined && (typeof startsAtMs !== 'number' || !Number.isSafeInteger(startsAtMs) ||
+      startsAtMs <= 0 || startsAtMs > 8_640_000_000_000_000))
+    throw new DirectoryInputError('Choose a valid tournament start date and time.');
+  const signupOpensAtMs = draft.signupOpensAtMs;
+  if (signupOpensAtMs !== undefined && (typeof signupOpensAtMs !== 'number' || !Number.isSafeInteger(signupOpensAtMs) ||
+      signupOpensAtMs <= 0 || startsAtMs === undefined || signupOpensAtMs >= startsAtMs))
+    throw new DirectoryInputError('Signup must open before the tournament start time.');
+  const isTemplate = draft.isTemplate === undefined ? false : draft.isTemplate;
+  if (typeof isTemplate !== 'boolean' || (isTemplate && (startsAtMs !== undefined || signupOpensAtMs !== undefined)))
+    throw new DirectoryInputError('Templates cannot have a signup or start date.');
   const signupChannelId = draft.signupChannelId;
   if (signupChannelId !== undefined && (typeof signupChannelId !== 'string' || !/^[1-9]\d{14,21}$/.test(signupChannelId)))
     throw new DirectoryInputError('Choose a valid Discord signup channel.');
-  return { draftId: draft.draftId.toLowerCase(), game, name, description: description.trim(), matchMinutes, bannerStyle,
-    ...(signupChannelId ? { signupChannelId } : {}) };
+  return { draftId: draft.draftId.toLowerCase(), game, name, description: description.trim(), matchMinutes, bannerStyle, signupCapacity,
+    isTemplate, swissRules: parseSwissRules(draft.swissRules), ...(startsAtMs !== undefined ? { startsAtMs } : {}),
+    ...(signupOpensAtMs !== undefined ? { signupOpensAtMs } : {}), ...(signupChannelId ? { signupChannelId } : {}) };
 }
 
 function searchText(name: string, game: ArtworkGame): string {
@@ -97,16 +139,20 @@ export async function requireDirectorySchema(client: pg.Client): Promise<void> {
 interface DirectoryRow {
   event_id: string; name: string | null; game: ArtworkGame | null;
   status: 'active' | 'retired' | null; kind: string | null;
-  description: string | null; match_minutes: number | null; banner_style: SignupBannerStyle | null; signup_channel_id: string | null;
-  created_at_ms: number; retired_at_ms: number | null;
+  description: string | null; match_minutes: number | null; banner_style: SignupBannerStyle | null; signup_channel_id: string | null; signup_capacity: number | null; swiss_rules: TournamentSwissRules | null;
+  is_template?: boolean; completed?: boolean; starts_at_ms: string | null; signup_opens_at_ms: string | null; created_at_ms: number; retired_at_ms: number | null;
 }
 function entry(row: DirectoryRow): TournamentDirectoryEntryDto {
   const kind = row.kind === 'signup' || (!row.status && row.name) ? 'signup' : 'legacy';
   return { eventId: row.event_id,
     name: row.name ?? (kind === 'signup' ? 'Signup tournament' : 'Practice tournament'),
-    game: row.game, ...(row.description !== null ? { description: row.description } : {}),
+    game: row.game, ...(row.is_template ? { isTemplate: true } : {}), ...(row.completed ? { completed: true } : {}), ...(row.description !== null ? { description: row.description } : {}),
     ...(row.match_minutes !== null ? { matchMinutes: row.match_minutes } : {}),
     ...(row.banner_style !== null ? { bannerStyle: row.banner_style } : {}),
+    ...(row.starts_at_ms != null ? { startsAtMs: Number(row.starts_at_ms) } : {}),
+    ...(row.signup_opens_at_ms != null ? { signupOpensAtMs: Number(row.signup_opens_at_ms) } : {}),
+    ...(row.swiss_rules ? { swissRules: row.swiss_rules } : {}),
+    ...(row.signup_capacity != null ? { signupCapacity: row.signup_capacity } : {}),
     ...(row.signup_channel_id ? { signupChannelId: row.signup_channel_id } : {}), status: row.status ?? 'draft', kind,
     createdAtMs: Number(row.created_at_ms), retiredAtMs: row.retired_at_ms === null ? null : Number(row.retired_at_ms) };
 }
@@ -118,14 +164,16 @@ export function pgTournamentDirectory(canWrite: () => boolean = () => false,
       if (!UUID.test(eventId)) throw new DirectoryInputError('Choose a valid event ID.');
       return withClient(async client => {
         await requireDirectorySchema(client);
-        const result = await client.query<{ name: string | null; game: ArtworkGame | null; description: string | null; banner_style: SignupBannerStyle | null }>(
-          `SELECT d.name, d.game, d.description, d.banner_style
+        const result = await client.query<{ name: string | null; game: ArtworkGame | null; description: string | null; banner_style: SignupBannerStyle | null; starts_at_ms: string | null; signup_opens_at_ms: string | null }>(
+          `SELECT d.name, d.game, d.description, d.banner_style, d.starts_at_ms, d.signup_opens_at_ms
            FROM public.tcg_rehearsal_sessions s LEFT JOIN public.tcg_tournament_directory d ON d.id = s.event_id
-           WHERE s.event_id = $1`, [eventId]);
+           WHERE s.event_id = $1 AND s.deleted_at_ms IS NULL`, [eventId]);
         const row = result.rows[0];
         if (!row) throw new DirectoryConflictError('This tournament session does not exist.');
         return { eventId, name: row.name ?? 'Signup tournament', game: row.game,
-          description: row.description ?? '', bannerStyle: row.banner_style ?? 'game', configured: row.name !== null };
+          description: row.description ?? '', bannerStyle: row.banner_style ?? 'game', configured: row.name !== null,
+          ...(row.starts_at_ms != null ? { startsAtMs: Number(row.starts_at_ms) } : {}),
+          ...(row.signup_opens_at_ms != null ? { signupOpensAtMs: Number(row.signup_opens_at_ms) } : {}) };
       });
     },
     async saveDetails(eventId, input) {
@@ -153,29 +201,53 @@ export function pgTournamentDirectory(canWrite: () => boolean = () => false,
         await requireDirectorySchema(client);
         const result = await client.query<DirectoryRow>(
           `WITH hits AS (
-             SELECT d.id::text AS event_id, d.name, d.game, d.description, d.match_minutes, d.banner_style, d.signup_channel_id, NULL::text AS status,
+             SELECT d.id::text AS event_id, d.name, d.game, d.description, d.match_minutes, d.banner_style, d.signup_channel_id, d.signup_capacity, d.swiss_rules, d.starts_at_ms, d.signup_opens_at_ms, d.is_template, false AS completed, NULL::text AS status,
                'signup'::text AS kind, d.created_at_ms::float8 AS created_at_ms,
                NULL::float8 AS retired_at_ms
              FROM public.tcg_tournament_directory d
              WHERE NOT EXISTS (SELECT 1 FROM public.tcg_rehearsal_sessions s WHERE s.event_id = d.id)
                AND ($1::text IS NULL OR d.search_vector @@ to_tsquery('simple', $1))
              UNION ALL
-             SELECT s.event_id::text AS event_id, d.name, d.game, d.description, d.match_minutes, d.banner_style, s.channel_id AS signup_channel_id, s.status,
+             SELECT s.event_id::text AS event_id, d.name, d.game, d.description,
+               COALESCE(d.match_minutes, GREATEST(1, (e.state->>'durationMs')::integer / 60000)) AS match_minutes,
+               d.banner_style, s.channel_id AS signup_channel_id,
+               COALESCE(d.signup_capacity, (e.state->'signup'->>'capacity')::integer,
+                 CASE WHEN e.state ? 'signup' THEN 4 END) AS signup_capacity,
+               d.swiss_rules, d.starts_at_ms, d.signup_opens_at_ms, false AS is_template,
+               (e.state->>'published' = 'true' AND jsonb_array_length(e.state->'matches') > 0
+                 AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(e.state->'matches') AS match WHERE match->>'phase' <> 'final')) AS completed,
+               s.status,
                s.identity_map->>'kind' AS kind,
                COALESCE(d.created_at_ms, s.created_at_ms)::float8 AS created_at_ms,
                s.retired_at_ms::float8 AS retired_at_ms
              FROM public.tcg_rehearsal_sessions s
+             JOIN public.tcg_rehearsal_events e ON e.id = s.event_id
              LEFT JOIN public.tcg_tournament_directory d ON d.id = s.event_id
-             WHERE $1::text IS NULL OR
+             WHERE s.deleted_at_ms IS NULL AND ($1::text IS NULL OR
                to_tsvector('simple', COALESCE(d.search_text,
                  CASE WHEN s.identity_map->>'kind' = 'signup' THEN 'signup tournament'
                       ELSE 'practice tournament' END) || ' ' || s.status || ' ' ||
-                 COALESCE(s.identity_map->>'kind', 'legacy')) @@ to_tsquery('simple', $1)
+                 COALESCE(s.identity_map->>'kind', 'legacy')) @@ to_tsquery('simple', $1))
            )
            SELECT * FROM hits ORDER BY created_at_ms DESC, event_id DESC`, [tsquery]);
         return result.rows.map(entry);
       });
       return { entries, defaultGame };
+    },
+    async deleteDraft(eventId) {
+      if (!UUID.test(eventId)) throw new DirectoryInputError('Choose a valid draft ID.');
+      if (!canWrite()) throw new DirectoryUnavailableError('The active bot no longer owns tournament changes.');
+      await withClient(async client => {
+        await requireDirectorySchema(client);
+        await transaction(client, async () => {
+          const draft = await client.query('SELECT id FROM public.tcg_tournament_directory WHERE id = $1 FOR UPDATE', [eventId]);
+          if (!draft.rowCount) return;
+          const session = await client.query('SELECT 1 FROM public.tcg_rehearsal_sessions WHERE event_id = $1', [eventId]);
+          if (session.rowCount) throw new DirectoryConflictError('Only drafts can be deleted. This tournament has Discord session history.');
+          if (!canWrite()) throw new DirectoryUnavailableError('The active bot no longer owns tournament changes.');
+          await client.query('DELETE FROM public.tcg_tournament_directory WHERE id = $1', [eventId]);
+        });
+      });
     },
     async createDraft(input) {
       const draft = parseDraft(input);
@@ -185,7 +257,7 @@ export function pgTournamentDirectory(canWrite: () => boolean = () => false,
         return transaction(client, async () => {
           if (!canWrite()) throw new DirectoryUnavailableError('The active bot no longer owns tournament changes.');
           const existing = await client.query<DirectoryRow>(
-            `SELECT d.id::text AS event_id, d.name, d.game, d.description, d.match_minutes, d.banner_style, d.signup_channel_id, s.status, s.identity_map->>'kind' AS kind,
+            `SELECT d.id::text AS event_id, d.name, d.game, d.description, d.match_minutes, d.banner_style, d.signup_channel_id, d.signup_capacity, d.swiss_rules, d.starts_at_ms, d.signup_opens_at_ms, d.is_template, s.status, s.identity_map->>'kind' AS kind,
                d.created_at_ms::float8 AS created_at_ms, s.retired_at_ms::float8 AS retired_at_ms
              FROM public.tcg_tournament_directory d
              LEFT JOIN public.tcg_rehearsal_sessions s ON s.event_id = d.id WHERE d.id = $1 FOR UPDATE OF d`,
@@ -193,7 +265,11 @@ export function pgTournamentDirectory(canWrite: () => boolean = () => false,
           if (existing.rows[0]) {
             const row = existing.rows[0];
             if (row.name !== draft.name || row.game !== draft.game ||
-                row.description !== draft.description || row.match_minutes !== draft.matchMinutes || row.banner_style !== draft.bannerStyle || row.signup_channel_id !== (draft.signupChannelId ?? null) || row.status !== null)
+                row.description !== draft.description || row.match_minutes !== draft.matchMinutes || row.banner_style !== draft.bannerStyle || row.signup_channel_id !== (draft.signupChannelId ?? null) ||
+                (row.signup_capacity ?? DEFAULT_SIGNUP_CAPACITY) !== draft.signupCapacity ||
+                (row.starts_at_ms == null ? undefined : Number(row.starts_at_ms)) !== draft.startsAtMs ||
+                (row.signup_opens_at_ms == null ? undefined : Number(row.signup_opens_at_ms)) !== draft.signupOpensAtMs ||
+                row.is_template !== draft.isTemplate || !sameSwissRules(row.swiss_rules, draft.swissRules) || row.status !== null)
               throw new DirectoryConflictError('This draft ID already belongs to a different tournament.');
             return entry(row);
           }
@@ -201,20 +277,24 @@ export function pgTournamentDirectory(canWrite: () => boolean = () => false,
           if (session.rows.length) throw new DirectoryConflictError('This draft ID already belongs to an event.');
           const createdAtMs = now();
           const inserted = await client.query<DirectoryRow>(
-            `INSERT INTO public.tcg_tournament_directory (id, name, game, created_at_ms, search_text, description, match_minutes, banner_style, signup_channel_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            `INSERT INTO public.tcg_tournament_directory (id, name, game, created_at_ms, search_text, description, match_minutes, banner_style, signup_channel_id, signup_capacity, swiss_rules, starts_at_ms, signup_opens_at_ms, is_template)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              ON CONFLICT (id) DO NOTHING
-             RETURNING id::text AS event_id, name, game, description, match_minutes, banner_style, signup_channel_id, NULL::text AS status, 'signup'::text AS kind,
+             RETURNING id::text AS event_id, name, game, description, match_minutes, banner_style, signup_channel_id, signup_capacity, swiss_rules, starts_at_ms, signup_opens_at_ms, is_template, NULL::text AS status, 'signup'::text AS kind,
                created_at_ms::float8 AS created_at_ms, NULL::float8 AS retired_at_ms`,
-            [draft.draftId, draft.name, draft.game, createdAtMs, searchText(draft.name, draft.game), draft.description, draft.matchMinutes, draft.bannerStyle, draft.signupChannelId ?? null]);
+            [draft.draftId, draft.name, draft.game, createdAtMs, (draft.isTemplate ? `${searchText(draft.name, draft.game)} template` : searchText(draft.name, draft.game)), draft.description, draft.matchMinutes, draft.bannerStyle, draft.signupChannelId ?? null, draft.signupCapacity, draft.swissRules, draft.startsAtMs ?? null, draft.signupOpensAtMs ?? null, draft.isTemplate]);
           if (inserted.rows[0]) return entry(inserted.rows[0]);
           const raced = await client.query<DirectoryRow>(
-            `SELECT id::text AS event_id, name, game, description, match_minutes, banner_style, signup_channel_id, NULL::text AS status, 'signup'::text AS kind,
+            `SELECT id::text AS event_id, name, game, description, match_minutes, banner_style, signup_channel_id, signup_capacity, swiss_rules, starts_at_ms, signup_opens_at_ms, is_template, NULL::text AS status, 'signup'::text AS kind,
                created_at_ms::float8 AS created_at_ms, NULL::float8 AS retired_at_ms
              FROM public.tcg_tournament_directory WHERE id = $1`, [draft.draftId]);
           const row = raced.rows[0];
           if (!row || row.name !== draft.name || row.game !== draft.game ||
-                row.description !== draft.description || row.match_minutes !== draft.matchMinutes || row.banner_style !== draft.bannerStyle || row.signup_channel_id !== (draft.signupChannelId ?? null))
+                row.description !== draft.description || row.match_minutes !== draft.matchMinutes || row.banner_style !== draft.bannerStyle || row.signup_channel_id !== (draft.signupChannelId ?? null) ||
+                (row.signup_capacity ?? DEFAULT_SIGNUP_CAPACITY) !== draft.signupCapacity ||
+                (row.starts_at_ms == null ? undefined : Number(row.starts_at_ms)) !== draft.startsAtMs ||
+                (row.signup_opens_at_ms == null ? undefined : Number(row.signup_opens_at_ms)) !== draft.signupOpensAtMs ||
+                row.is_template !== draft.isTemplate || !sameSwissRules(row.swiss_rules, draft.swissRules))
             throw new DirectoryConflictError('This draft ID already belongs to a different tournament.');
           return entry(row);
         });
@@ -234,7 +314,7 @@ export async function setupTournamentDirectory(): Promise<'created' | 'already_r
     const base = 'tcg_rehearsal_audit,tcg_rehearsal_events,tcg_rehearsal_meta,tcg_rehearsal_sessions';
     const exists = names === `${base},tcg_tournament_directory`;
     if (!exists && names !== base) throw new DirectoryUnavailableError('Tournament directory setup refused: unexpected public schema.');
-    const migrations = ['003_tournament_directory.sql', '004_tournament_description.sql', '005_tournament_match_timer.sql', '006_tournament_signup_banner.sql'];
+    const migrations = ['003_tournament_directory.sql', '004_tournament_description.sql', '005_tournament_match_timer.sql', '006_tournament_signup_banner.sql', '007_tournament_signup_capacity.sql', '008_tournament_start.sql', '009_tournament_delete.sql', '010_signup_opening.sql', '011_tournament_templates.sql'];
     for (const file of exists ? migrations.slice(1) : migrations) {
       await client.query(await readFile(new URL(`../../../../database/migrations/${file}`, import.meta.url), 'utf8'));
     }

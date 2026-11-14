@@ -18,6 +18,7 @@ function valid(): Record<AdminCommandDto['type'], Record<string, unknown>> {
   const signup = { signup: { status: 'open', rosterSize: 4 } };
   return {
     publish: { ...base, command: { type: 'publish' }, precondition: { eventVersion: 4 } },
+    delayStart: { ...base, command: { type: 'delayStart', delayMinutes: 15 }, precondition: { eventVersion: 4 } },
     signupClose: { ...base, command: { type: 'signupClose' }, precondition: signup },
     signupReopen: { ...base, command: { type: 'signupReopen' }, precondition: { signup: { status: 'assigned', rosterSize: 4 } } },
     signupRemove: { ...base, command: { type: 'signupRemove', memberId: MEMBER }, precondition: signup },
@@ -87,7 +88,7 @@ test('every malformed request is a 400 bad_request', () => {
     [{ ...v.publish, command: { type: 'publish', matchId: 'M1' } }, /unknown fields/, 'extra command field'],
     [{ ...v.signupClose, command: { type: 'signupClose', adminId: MEMBER } }, /unknown fields/, 'signupClose with adminId'],
     [withCommand({ type: 'resolve', matchId: 'M1', reason: 'x' }), /missing winner/, 'resolve without winner'],
-    [withCommand({ type: 'resolve', matchId: 'M3', winner: 'A', reason: 'x' }), /M1 or M2/, 'bad matchId'],
+    [withCommand({ type: 'resolve', matchId: 'table 3', winner: 'A', reason: 'x' }), /match ID/, 'bad matchId'],
     [withCommand({ type: 'resolve', matchId: 'M1', winner: 'E', reason: 'x' }), /seat/, 'bad seat'],
     [withCommand({ type: 'resolve', matchId: 'M1', winner: 'a', reason: 'x' }), /seat/, 'lowercase seat'],
     [withCommand({ type: 'resolve', matchId: 'M1', winner: 'A' }), /missing reason/, 'missing reason'],
@@ -117,7 +118,7 @@ test('every malformed request is a 400 bad_request', () => {
     [withPrecondition(v.signupClose, { eventVersion: 2 }), /signupClose needs precondition.signup/, 'signup command without signup'],
     [withPrecondition(v.signupRemove, {}), /signupRemove needs precondition.signup/, 'remove without signup'],
     [withPrecondition(v.signupClose, { signup: { status: 'closed', rosterSize: 4 } }), /status/, 'bad signup status'],
-    [withPrecondition(v.signupClose, { signup: { status: 'open', rosterSize: 5 } }), /rosterSize/, 'roster too large'],
+    [withPrecondition(v.signupClose, { signup: { status: 'open', rosterSize: 1001 } }), /rosterSize/, 'roster too large'],
     [withPrecondition(v.signupClose, { signup: { status: 'open' } }), /missing rosterSize/, 'signup missing size']
   ];
   for (const [body, pattern, label] of cases) rejects(body, pattern, label);
@@ -176,13 +177,13 @@ test('preconditions compare every part the admin sent with the aggregate', () =>
   assert.equal(preconditionHolds(createFixture(EVENT), { signup: { status: 'open', rosterSize: 0 } }), false, 'legacy event has no signup');
 
   const live = createFixture(EVENT);
-  live.matches[0] = { ...live.matches[0], phase: 'paused', pauseGeneration: 1 };
+  live.matches[0] = { ...live.matches[0]!, phase: 'paused', pauseGeneration: 1 };
   const match = { matchId: 'M1' as const, phase: 'paused' as const, proposalRevision: null, finalWinner: null, pauseGeneration: 1 };
   assert.equal(preconditionHolds(live, { match }), true);
   assert.equal(preconditionHolds(live, { match: { ...match, phase: 'running' } }), false);
   assert.equal(preconditionHolds(live, { match: { ...match, pauseGeneration: 2 } }), false);
   assert.equal(preconditionHolds(live, { match: { ...match, proposalRevision: 1 } }), false);
   assert.equal(preconditionHolds(live, { match: { ...match, finalWinner: 'A' } }), false);
-  live.matches[0].proposal = { revision: 1, winner: 'A', reporter: 'A', decision: 'disputed' };
+  live.matches[0]!.proposal = { revision: 1, winner: 'A', reporter: 'A', decision: 'disputed' };
   assert.equal(preconditionHolds(live, { match: { ...match, proposalRevision: 1 } }), true);
 });

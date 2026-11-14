@@ -2,11 +2,40 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { test } from 'node:test';
 import { auditTimeline, FIXTURE_EVENT_ID, liveDispute } from '@tcg-live/core/fixtures';
+import { runAdminDemo, type AdminDemo } from '../demo.js';
 import { AdminUnavailableError } from '../runtime-types.js';
 import { LOGIN_MAX_FAILURES, SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from './sessions.js';
 import { call, login, openStream, startHarness } from './test-support.js';
 
 const HOUR = 3_600_000;
+
+test('authenticated demo launch opens an isolated loopback console', async () => {
+  let demo: AdminDemo | undefined;
+  const harness = await startHarness({ mode: 'discord', launchDemo: async () => {
+    demo = await runAdminDemo({ ephemeral: true, write: () => {}, runtime: { mode: 'interactive' } });
+    return demo.handler.rotateLoginUrl();
+  } });
+  try {
+    const path = '/api/v1/demo/launch';
+    assert.equal((await call(harness.port, path, { method: 'POST' })).status, 401);
+    const token = await login(harness);
+    const live = await call(harness.port, '/api/v1/session', { token });
+    assert.equal(live.json().demoAvailable, true);
+    const launched = await call(harness.port, path, { method: 'POST', token, body: '{}' });
+    assert.equal(launched.status, 200);
+    const url = new URL(launched.json().url);
+    assert.equal(url.hostname, '127.0.0.1');
+    assert.equal(url.port, String(demo!.port));
+    assert.notEqual(demo!.port, harness.port);
+    assert.equal((await call(demo!.port, '/api/v1/session', { token })).status, 401);
+    const grant = await call(demo!.port, '/api/v1/session', {
+      method: 'POST', body: JSON.stringify({ token: url.hash.slice('#login='.length) })
+    });
+    assert.equal(grant.status, 200);
+    assert.equal(grant.json().session.mode, 'demo');
+    assert.equal(demo!.runtime.playMode, 'interactive');
+  } finally { await demo?.stop(); await harness.stop(); }
+});
 
 test('initial and repeated browser opens share one claim; a live stream blocks later opens', async () => {
   let now = 5_000;

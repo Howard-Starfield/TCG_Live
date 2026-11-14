@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createFixture, transition, type Command, type EventState, type Outcome } from '../rehearsal/domain.js';
+import { createFixture, createSignupFixture, transition, type Command, type EventState, type Outcome } from '../rehearsal/domain.js';
 import { buttonId, parseButtonId, renderCard, type CardPayload } from './cards.js';
 import { PrivateDiscordController, type CardTransport, type PrivateInteraction } from './controller.js';
 import type { PrivateDiscordConfig } from './config.js';
@@ -56,6 +56,41 @@ function fixture() {
     set failReadAfterApply(value: boolean) { failReadAfterApply = value; }, set failPin(value: boolean) { failPin = value; },
     set editFailure(value: 'missing' | 'forbidden' | 'retry' | undefined) { editFailure = value; } };
 }
+
+test('final signup results unpin the recap, remove tracked match cards, and do not create another recap on refresh', async () => {
+  const players = config.players;
+  const state = createSignupFixture(eventId);
+  state.published = true;
+  state.signup = { status: 'assigned', roster: Object.values(players), assignment: players };
+  for (const match of state.matches) {
+    match.phase = 'final';
+    match.finalWinner = match.players[0];
+  }
+  const session: SessionRow = { event_id: eventId, application_id: config.applicationId,
+    guild_id: config.guildId, channel_id: config.channelId, status: 'active',
+    identity_map: { kind: 'signup', adminId: config.adminId, stickyPrevious: { M1: [ids[3]!] } },
+    checkin_message_id: ids[0]!, m1_message_id: ids[1]!, m2_message_id: ids[2]! };
+  const removed = new Set<string>();
+  const recaps: CardPayload[] = [];
+  const unpinned: string[] = [];
+  const controller = new PrivateDiscordController(config, 'runner', {
+    async send() { throw Error('recap must reuse the signup card'); },
+    async pin() { throw Error('recap must not be pinned'); },
+    async edit(id, card) { assert.equal(id, ids[0]); recaps.push(card); },
+    async unpin(id) { unpinned.push(id); },
+    async remove(id) { removed.add(id); },
+    classify() { return 'retry'; }
+  }, async () => ({ session, state }));
+  try {
+    assert.equal((await controller.refreshExplicit()).cards, 'refreshed');
+    assert.equal((await controller.refreshExplicit()).cards, 'refreshed');
+    assert.deepEqual(unpinned, [ids[0], ids[0]]);
+    assert.deepEqual(removed, new Set([ids[1], ids[2], ids[3]]));
+    assert.deepEqual(recaps[0]?.components, []);
+    assert.match(recaps[0]?.embeds[0]?.description ?? '', new RegExp(players.A));
+    assert.match(recaps[0]?.embeds[0]?.description ?? '', new RegExp(players.C));
+  } finally { await controller.stop(); }
+});
 
 function button(f: ReturnType<typeof fixture>, action: 'checkin' | 'won' = 'checkin', revision?: number): {
   interaction: PrivateInteraction; replies: string[]; set ack(value: boolean);
@@ -265,7 +300,7 @@ test('timer retries transient apply failure and post-commit read failure, then s
     const startedAtMs = Date.now();
     let state = createFixture(eventId, 30);
     state = { ...state, version: 1, published: true,
-      matches: [{ ...state.matches[0], phase: 'running', runnerId: 'runner', startedAtMs, remainingMs: 30 }, state.matches[1]] };
+      matches: [{ ...state.matches[0]!, phase: 'running', runnerId: 'runner', startedAtMs, remainingMs: 30 }, state.matches[1]!] };
     const session: SessionRow = { event_id: eventId, application_id: config.applicationId,
       guild_id: config.guildId, channel_id: config.channelId,
       identity_map: { players: config.players, adminId: config.adminId }, status: 'active',
@@ -283,10 +318,10 @@ test('timer retries transient apply failure and post-commit read failure, then s
     }, async () => {
       applyCalls++;
       if (failure === 'apply' && applyCalls === 1) throw new Error('transient apply');
-      if (state.matches[0].phase === 'running') {
+      if (state.matches[0]!.phase === 'running') {
         state = { ...state, version: 2,
-          matches: [{ ...state.matches[0], phase: 'expired', runnerId: null, startedAtMs: null,
-            remainingMs: 0, judgeAttention: true }, state.matches[1]] };
+          matches: [{ ...state.matches[0]!, phase: 'expired', runnerId: null, startedAtMs: null,
+            remainingMs: 0, judgeAttention: true }, state.matches[1]!] };
         if (failure === 'read') failNextRead = true;
       }
       return { eventId, version: state.version, result: 'clockCheck', applied: true };
@@ -297,7 +332,7 @@ test('timer retries transient apply failure and post-commit read failure, then s
       while (!edits.some(value => /State: expired/.test(value)) && Date.now() < limit)
         await new Promise(resolve => setTimeout(resolve, 10));
       assert.ok(edits.some(value => /State: expired/.test(value)), `${failure} must converge to expired card`);
-      assert.equal(state.matches[0].finalWinner, null);
+      assert.equal(state.matches[0]!.finalWinner, null);
       assert.ok(applyCalls >= 2);
     } finally { await controller.stop(); }
   }
@@ -307,8 +342,8 @@ test('setup, paused and expired startup/reconnect edit exactly three saved cards
   for (const phase of ['setup', 'paused', 'expired'] as const) {
     let state = createFixture(eventId);
     if (phase !== 'setup') state = { ...state, published: true, version: 1,
-      matches: [{ ...state.matches[0], phase, remainingMs: phase === 'expired' ? 0 : 5_000,
-        pauseGeneration: 1, judgeAttention: phase === 'expired' }, state.matches[1]] };
+      matches: [{ ...state.matches[0]!, phase, remainingMs: phase === 'expired' ? 0 : 5_000,
+        pauseGeneration: 1, judgeAttention: phase === 'expired' }, state.matches[1]!] };
     const session: SessionRow = { event_id: eventId, application_id: config.applicationId,
       guild_id: config.guildId, channel_id: config.channelId,
       identity_map: { players: config.players, adminId: config.adminId }, status: 'active',
@@ -402,11 +437,11 @@ test('slot-aware routing sends match cards to their channels and rejects copied 
     acknowledge: async () => {}, reply: async text => { replies.push(text); } };
   await controller.handle(won);
   assert.equal(actions.length, 0, 'a copied match control in the control channel is inert');
-  await controller.handle({ ...won, channelId: routed.matchChannels!.M2 });
+  await controller.handle({ ...won, channelId: routed.matchChannels!.M2! });
   assert.equal(actions.length, 0, 'a copied M1 control in M2 is inert');
-  await controller.handle({ ...won, channelId: routed.matchChannels!.M1 });
+  await controller.handle({ ...won, channelId: routed.matchChannels!.M1! });
   assert.equal(actions.length, 1);
-  await controller.handle({ ...admin, channelId: routed.matchChannels!.M1 });
+  await controller.handle({ ...admin, channelId: routed.matchChannels!.M1! });
   assert.deepEqual(sends, ['checkin', 'M1', 'M2'], 'admin commands remain in the control channel');
   await controller.stop();
 });
@@ -415,7 +450,7 @@ test('match card controls show pause/resume availability without reviving expire
   const base = createFixture(eventId);
   const controls = (phase: 'running' | 'paused' | 'expired') => {
     const state = { ...base, published: true,
-      matches: [{ ...base.matches[0], phase }, base.matches[1]] } as EventState;
+      matches: [{ ...base.matches[0]!, phase }, base.matches[1]!] } as EventState;
     const card = renderCard(state, 'M1');
     return { description: card.embeds[0]!.description,
       buttons: card.components.flatMap(row => row.components) };
@@ -435,8 +470,8 @@ test('match card controls show pause/resume availability without reviving expire
 test('paused match highlights the waiting player; final card shows winner without stale clock or proposal', () => {
   const base = createFixture(eventId);
   const paused: EventState = { ...base, published: true,
-    matches: [{ ...base.matches[0], phase: 'paused', resumeConsents: ['A'], pauseGeneration: 2 },
-      base.matches[1]] };
+    matches: [{ ...base.matches[0]!, phase: 'paused', resumeConsents: ['A'], pauseGeneration: 2 },
+      base.matches[1]!] };
   const waiting = renderCard(paused, 'M1', undefined, config.players);
   assert.equal(waiting.embeds[0]?.color, 0xef4444);
   assert.match(waiting.embeds[0]!.description, new RegExp(`Resume agreed: <@${config.players.A}>`));
@@ -444,11 +479,11 @@ test('paused match highlights the waiting player; final card shows winner withou
   assert.match(waiting.embeds[0]!.description, new RegExp(`Waiting to resume: <@${config.players.B}>`));
   assert.deepEqual(waiting.allowedMentions, { parse: [] });
   const bothWaiting = renderCard({ ...paused,
-    matches: [{ ...paused.matches[0], resumeConsents: [] }, paused.matches[1]] }, 'M1', undefined, config.players);
+    matches: [{ ...paused.matches[0]!, resumeConsents: [] }, paused.matches[1]!] }, 'M1', undefined, config.players);
   assert.match(bothWaiting.embeds[0]!.description, new RegExp(`<@${config.players.A}>.*<@${config.players.B}>`));
   const finished = renderCard({ ...paused,
-    matches: [{ ...paused.matches[0], phase: 'final', finalWinner: 'A', confirmedBy: 'B',
-      proposal: { revision: 2, winner: 'B', reporter: 'B', decision: 'open' } }, paused.matches[1]] },
+    matches: [{ ...paused.matches[0]!, phase: 'final', finalWinner: 'A', confirmedBy: 'B',
+      proposal: { revision: 2, winner: 'B', reporter: 'B', decision: 'open' } }, paused.matches[1]!] },
   'M1', undefined, config.players);
   assert.equal(finished.embeds[0]?.color, 0x22c55e);
   assert.match(finished.embeds[0]!.description, /Finished — A wins/);
@@ -456,15 +491,15 @@ test('paused match highlights the waiting player; final card shows winner withou
   assert.doesNotMatch(finished.embeds[0]!.description, /Remaining|Proposal/);
   assert.equal(finished.components.length, 0);
   assert.equal(renderCard(base, 'M1').embeds[0]?.color, 0xf59e0b);
-  const legacy = renderCard({ ...paused, matches: [{ ...paused.matches[0], phase: 'final', finalWinner: 'A' },
-    paused.matches[1]] }, 'M1', undefined, config.players);
+  const legacy = renderCard({ ...paused, matches: [{ ...paused.matches[0]!, phase: 'final', finalWinner: 'A' },
+    paused.matches[1]!] }, 'M1', undefined, config.players);
   assert.doesNotMatch(legacy.embeds[0]!.description, /Agreed by/);
 });
 
-test('result controls show I won then opponent Agree/Dispute; a dispute permits a corrected proposal', () => {
+test('result controls show I won then opponent Agree/Disagree; a dispute permits a corrected proposal', () => {
   const base = createFixture(eventId);
   const running: EventState = { ...base, published: true,
-    matches: [{ ...base.matches[0], phase: 'running', ready: ['A', 'B'] }, base.matches[1]] };
+    matches: [{ ...base.matches[0]!, phase: 'running', ready: ['A', 'B'] }, base.matches[1]!] };
   const buttons = (state: EventState) => renderCard(state, 'M1', undefined, config.players)
     .components.flatMap(row => row.components);
   const initial = buttons(running);
@@ -475,23 +510,98 @@ test('result controls show I won then opponent Agree/Dispute; a dispute permits 
   assert.match(renderCard(running, 'M1', undefined, config.players).embeds[0]!.description,
     new RegExp(`Ready: <@${config.players.A}>, <@${config.players.B}>`));
   const proposed: EventState = { ...running,
-    matches: [{ ...running.matches[0], proposal: {
-      revision: 1, reporter: 'A', winner: 'A', decision: 'open' } }, running.matches[1]] };
+    matches: [{ ...running.matches[0]!, proposal: {
+      revision: 1, reporter: 'A', winner: 'A', decision: 'open' } }, running.matches[1]!] };
   const pending = buttons(proposed);
-  assert.equal(pending.find(button => button.label === 'I won')?.disabled, true);
+  assert.equal(pending.find(button => button.label === 'I won'), undefined);
   assert.equal(pending.find(button => button.label === 'Agree')?.style, 3);
-  assert.equal(pending.find(button => button.label === 'Dispute')?.style, 4);
-  assert.equal(pending.find(button => button.label === 'Dispute')?.disabled, undefined);
+  assert.equal(pending.find(button => button.label === 'Disagree')?.style, 4);
+  assert.equal(pending.find(button => button.label === 'Disagree')?.disabled, undefined);
   assert.match(renderCard(proposed, 'M1', undefined, config.players).embeds[0]!.description,
-    new RegExp(`Waiting for <@${config.players.B}> to Agree or Dispute`));
+    new RegExp(`Waiting for <@${config.players.B}> to Agree or Disagree`));
   const disputed: EventState = { ...proposed,
-    matches: [{ ...proposed.matches[0], proposal: { ...proposed.matches[0].proposal!, decision: 'disputed' } },
-      proposed.matches[1]] };
+    matches: [{ ...proposed.matches[0]!, proposal: { ...proposed.matches[0]!.proposal!, decision: 'disputed' } },
+      proposed.matches[1]!] };
   assert.equal(buttons(disputed).find(button => button.label === 'I won')?.disabled, undefined);
-  assert.equal(buttons(disputed).find(button => button.label === 'Dispute')?.disabled, true);
+  assert.equal(buttons(disputed).find(button => button.label === 'Disagree'), undefined);
   assert.equal(buttons(disputed).find(button => button.label === 'Agree')?.disabled, undefined);
   assert.equal(parseButtonId(buttonId(eventId, 'M1', 'lost', 0)).action, 'lost',
     'legacy I lost controls remain parseable');
+});
+
+test('a judge modal saves only on submit and follows a sticky that moved while the player was typing', async () => {
+  const f = fixture();
+  f.state.published = true;
+  f.session.m1_message_id = ids[1]!;
+  const calls: string[] = [];
+  const base = { id: ids[0]!, applicationId: config.applicationId, guildId: config.guildId, channelId: config.channelId,
+    customId: buttonId(eventId, 'M1', 'judge'), userId: config.players.A,
+    async acknowledge() { calls.push('acknowledged'); }, async reply(message: string) { calls.push(message); } };
+  try {
+    await f.controller.handle({ ...base, kind: 'button', messageId: ids[1]!,
+      async showJudgeRequest() { calls.push('modal'); } });
+    assert.deepEqual(calls, ['modal']);
+    assert.equal(f.actions.length, 0);
+    f.session.m1_message_id = ids[2]!;
+    const judgeRequest = { requesterId: config.players.A, category: 'rules', description: '  Which effect resolves first?  ' };
+    await f.controller.handle({ ...base, userId: config.players.B, kind: 'judgeRequest', judgeRequest });
+    assert.equal(f.actions.length, 0);
+    await f.controller.handle({ ...base, kind: 'judgeRequest', judgeRequest });
+    assert.deepEqual(f.actions, [{
+      command: { type: 'callJudge', matchId: 'M1', judgeRequest: { category: 'rules', description: 'Which effect resolves first?' } },
+      principal: config.players.A, message: ids[2]
+    }]);
+  } finally { await f.controller.stop(); }
+});
+
+test('the canonical voice-chat sticky handles a player report and only the opponent decides the result', async () => {
+  const routed = { ...config, matchChannels: { M1: '999999999999999999', M2: '101010101010101010' } };
+  const session: SessionRow = { event_id: eventId, application_id: routed.applicationId,
+    guild_id: routed.guildId, channel_id: routed.channelId,
+    identity_map: { players: routed.players, adminId: routed.adminId, matchChannels: routed.matchChannels },
+    status: 'active', checkin_message_id: null, m1_message_id: ids[1]!, m2_message_id: null };
+  let state = createFixture(eventId);
+  state.published = true;
+  Object.assign(state.matches[0]!, { phase: 'running', startedAtMs: 1_000, runnerId: 'runner', ready: ['A', 'B'] });
+  const edits: Array<{ card: CardPayload; slot: string | undefined }> = [];
+  const replies: string[] = [];
+  const controller = new PrivateDiscordController(routed, 'runner', {
+    async send() { throw Error('the existing sticky must be edited'); },
+    async edit(id, card, slot) { assert.equal(id, session.m1_message_id); edits.push({ card, slot }); },
+    async pin() {}, classify() { return 'retry'; }
+  }, async () => ({ session, state }), async (context, command) => {
+    const seat = Object.entries(routed.players).find(([, id]) => id === context.principalId)?.[0];
+    const result = transition(state, `player:${seat}`, command, 2_000, 'runner');
+    state = result.state;
+    return result.outcome;
+  }, undefined, () => 2_000);
+  const press = (userId: string, action: 'won' | 'confirm' | 'dispute', revision: number, channelId = routed.matchChannels.M1!) =>
+    controller.handle({ kind: 'button', id: ids[0]!, applicationId: routed.applicationId, guildId: routed.guildId,
+      channelId, messageId: session.m1_message_id!, customId: buttonId(eventId, 'M1', action, revision), userId,
+      async acknowledge() {}, async reply(message) { replies.push(message); } });
+
+  try {
+    await press(routed.players.A, 'won', 0, routed.channelId);
+    assert.equal(state.matches[0]!.proposal, null);
+    await press(routed.players.A, 'won', 0);
+    const pending = edits.at(-1);
+    assert.equal(pending?.slot, 'M1');
+    assert.deepEqual(pending?.card.components[0]?.components.map(item => item.label),
+      ['🟠 Pause', 'Resume', 'Agree', 'Disagree', 'Call judge']);
+    assert.match(pending?.card.embeds[0]?.description ?? '', new RegExp(`Waiting for <@${routed.players.B}>`));
+    assert.equal(state.matches[0]!.judgeAttention, false);
+    await press(routed.players.A, 'confirm', 1);
+    assert.match(replies.at(-1) ?? '', /Reporter cannot/);
+    await press(routed.players.C, 'confirm', 1);
+    assert.match(replies.at(-1) ?? '', /participant action denied/);
+    await press(routed.players.B, 'confirm', 1);
+    const finished = edits.at(-1)?.card;
+    assert.equal(state.matches[0]!.finalWinner, 'A');
+    assert.equal(state.matches[0]!.judgeAttention, false);
+    assert.equal(finished?.embeds[0]?.color, 0x22c55e);
+    assert.match(finished?.embeds[0]?.description ?? '', /A wins/);
+    assert.deepEqual(finished?.components, []);
+  } finally { await controller.stop(); }
 });
 
 test('human burst bumps only its match; lost CAS reply preserves the committed new canonical card', async () => {
@@ -529,15 +639,15 @@ test('human burst bumps only its match; lost CAS reply preserves the committed n
         session = { ...session, identity_map: { ...session.identity_map, stickySuspended: [] } };
       }
     }, () => true, 5);
-  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1,
+  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1!,
     id: ids[6]!, authorBot: true });
-  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1,
+  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1!,
     id: ids[6]!, authorBot: false, webhookId: ids[5]! });
-  controller.onMessage({ guildId: ids[6]!, channelId: routed.matchChannels!.M1,
+  controller.onMessage({ guildId: ids[6]!, channelId: routed.matchChannels!.M1!,
     id: ids[6]!, authorBot: false });
-  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1,
+  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1!,
     id: ids[6]!, authorBot: false });
-  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1,
+  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1!,
     id: ids[7]!, authorBot: false });
   const deadline = Date.now() + 500;
   while (!calls.includes('complete:M1') && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 2));
@@ -606,8 +716,8 @@ test('blocked sticky send converges to a concurrently committed result on the ne
   }, async () => ({ session, state }), async (_context, command) => {
     assert.equal(command.type, 'propose');
     state = { ...state, version: state.version + 1,
-      matches: [{ ...state.matches[0], proposal: { revision: 1, reporter: 'A', winner: 'A', decision: 'open' } },
-        state.matches[1]] };
+      matches: [{ ...state.matches[0]!, proposal: { revision: 1, reporter: 'A', winner: 'A', decision: 'open' } },
+        state.matches[1]!] };
     applied();
     return { eventId, version: state.version, applied: true, result: 'proposal' };
   }, async () => {}, Date.now, 5, {
@@ -623,11 +733,11 @@ test('blocked sticky send converges to a concurrently committed result on the ne
     },
     async complete() { session = { ...session, identity_map: { ...session.identity_map, stickySuspended: [] } }; }
   }, () => true, 5);
-  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1,
+  controller.onMessage({ guildId: routed.guildId, channelId: routed.matchChannels!.M1!,
     id: ids[7]!, authorBot: false });
   await sending;
   const action = controller.handle({ id: ids[6]!, applicationId: routed.applicationId,
-    guildId: routed.guildId, channelId: routed.matchChannels!.M1, userId: routed.players.A,
+    guildId: routed.guildId, channelId: routed.matchChannels!.M1!, userId: routed.players.A,
     kind: 'button', customId: buttonId(eventId, 'M1', 'won', 0), messageId: ids[1]!,
     acknowledge: async () => {}, reply: async () => {} });
   await committed;
@@ -643,7 +753,7 @@ test('blocked sticky send converges to a concurrently committed result on the ne
 test('first resume consent claims one targeted reminder and leaves ordinary card mentions disabled', async () => {
   const base = createFixture(eventId);
   let state: EventState = { ...base, published: true,
-    matches: [{ ...base.matches[0], phase: 'paused', pauseGeneration: 1 }, base.matches[1]] };
+    matches: [{ ...base.matches[0]!, phase: 'paused', pauseGeneration: 1 }, base.matches[1]!] };
   const session: SessionRow = { event_id: eventId, application_id: config.applicationId,
     guild_id: config.guildId, channel_id: config.channelId,
     identity_map: { players: config.players, adminId: config.adminId }, status: 'active',
@@ -664,7 +774,7 @@ test('first resume consent claims one targeted reminder and leaves ordinary card
     classify() { return 'retry'; }
   }, async () => ({ session, state }), async () => {
     state = { ...state, version: 1,
-      matches: [{ ...state.matches[0], resumeConsents: ['A'] }, state.matches[1]] };
+      matches: [{ ...state.matches[0]!, resumeConsents: ['A'] }, state.matches[1]!] };
     return { eventId, version: 1, applied: true, result: 'resume_consent' };
   }, async () => {}, Date.now, 5, undefined, () => true, 5,
   async (_config, _event, matchId, generation) => {
@@ -678,7 +788,7 @@ test('first resume consent claims one targeted reminder and leaves ordinary card
     acknowledge: async () => {}, reply: async text => { replies.push(text); } });
   assert.equal(claims, 1);
   assert.deepEqual(reminders, [{ slot: 'M1', ids: [config.players.B] }]);
-  state = { ...state, matches: [{ ...state.matches[0], pauseGeneration: 2, resumeConsents: [] }, state.matches[1]] };
+  state = { ...state, matches: [{ ...state.matches[0]!, pauseGeneration: 2, resumeConsents: [] }, state.matches[1]!] };
   failReminder = true;
   await controller.handle({ id: ids[7]!, applicationId: config.applicationId,
     guildId: config.guildId, channelId: config.channelId, userId: config.players.A,

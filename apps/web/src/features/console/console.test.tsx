@@ -151,10 +151,39 @@ describe('judge cards after a resume and in history (Wave 2 review)', () => {
     renderConsole({ snapshot: resumed });
     await ready();
     expect(judgeCardMode(judgeMatches(resumed)[0]!, false)).toBe('resumed');
-    const card = screen.getByRole('article', { name: 'M2 · play resumed' });
-    expect(card).toHaveTextContent('Play resumed · judge attention stays until the result is confirmed or resolved.');
+    const card = screen.getByRole('article', { name: 'M2 · result disputed' });
+    expect(card).toHaveTextContent('The players can still agree on the result, or a judge can make a ruling.');
     expect(card).not.toHaveTextContent(/waiting/);
     expect(card).toHaveTextContent(/since \d\d:\d\d:\d\d/);
+  });
+
+  it('a resumed help request does not ask the organizer to pick a winner', async () => {
+    const help = {
+      ...resumed,
+      matches: resumed.matches.map(match => match.id === 'M2' ? {
+        ...match, proposal: null, judge: { ...match.judge!, reasons: ['called' as const],
+          requests: [
+            { seat: 'D' as const, category: 'technical' as const, description: 'My camera froze.', requestedAtMs: match.judge!.sinceMs },
+            { seat: 'D' as const, category: 'technical' as const, description: 'My  camera froze.', requestedAtMs: match.judge!.sinceMs + 1 },
+            { seat: 'C' as const, category: 'technical' as const, description: 'My camera froze.', requestedAtMs: match.judge!.sinceMs + 2 },
+            { seat: 'C' as const, category: 'rules' as const, description: 'Which effect resolves first?', requestedAtMs: match.judge!.sinceMs + 3 }
+          ] }
+      } : match)
+    };
+    renderConsole({ snapshot: help });
+    await ready();
+    const card = screen.getByRole('article', { name: 'M2 · play resumed' });
+    expect(card).toHaveTextContent('The players can report and agree on the result.');
+    const messages = within(card).getByRole('list', { name: 'Player messages' });
+    const [camera, rules] = within(messages).getAllByRole('listitem');
+    expect(within(messages).getAllByRole('listitem')).toHaveLength(2);
+    expect(camera).toHaveTextContent('My camera froze.');
+    expect(camera).toHaveTextContent('Camera, audio or connection');
+    expect(camera).toHaveTextContent('Dee Ross and Cy Park');
+    expect(rules).toHaveTextContent('Which effect resolves first?');
+    expect(rules).toHaveTextContent('Rules or card interaction');
+    expect(card).not.toHaveTextContent('Judge called');
+    expect(within(card).queryByRole('button', { name: /resolve/i })).not.toBeInTheDocument();
   });
 
   it('a retired event shows judge attention as frozen history', async () => {

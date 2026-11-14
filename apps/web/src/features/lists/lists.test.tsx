@@ -272,7 +272,7 @@ describe('Discord panels tab', () => {
       rooms: { enabled: true, warning: 'Missing Manage Channels permission' } } });
     expect(screen.getByText(liveDispute.discord.guildId)).toBeInTheDocument();
     expect(screen.getByText(liveDispute.discord.channelId)).toBeInTheDocument();
-    expect(screen.getByText(liveDispute.discord.matchChannels!.M2)).toBeInTheDocument();
+    expect(screen.getByText(liveDispute.discord.matchChannels!.M2!)).toBeInTheDocument();
     expect(screen.getByText('Private')).toBeInTheDocument();
     const rows = bodyRows('Discord cards');
     expect(within(rows[1]!).getByText('900000000000000202')).toBeInTheDocument();

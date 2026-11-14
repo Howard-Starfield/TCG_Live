@@ -26,10 +26,12 @@ const run = (state: EventState, actor: string, command: Parameters<typeof transi
 test('signup banner shows saved tournament details and counts while roster names stay private', () => {
   const state = run(createSignupFixture(eventId), `member:${ids[3]}`, { type: 'signupJoin' }).state;
   const card = renderCard(state, 'checkin', undefined, undefined, { eventId, name: 'Autumn Cup', game: 'pokemon',
-    description: 'Camera required.\nCheck in after signup closes.', configured: true });
-  assert.equal(card.embeds[0]!.title, 'Autumn Cup');
-  assert.match(card.embeds[0]!.description, /Game: Pokémon/);
+    description: 'Camera required.\nCheck in after signup closes.', startsAtMs: 4_096_000_000_000, configured: true }, config.channelId);
+  assert.equal(card.embeds[0]!.title, '🌟 Autumn Cup');
+  assert.match(card.embeds[0]!.description, /Game:\*\* Pokémon/);
   assert.match(card.embeds[0]!.description, /Camera required/);
+  assert.ok(card.embeds[0]!.description.includes(`📍 **Signup channel:** <#${config.channelId}>`));
+  assert.match(card.embeds[0]!.description, /Scheduled start:\*\* <t:4096000000:F>/);
   assert.match(card.embeds[0]!.description, /1\/4 joined/);
   assert.doesNotMatch(card.embeds[0]!.description, new RegExp(ids[3]!));
   assert.deepEqual(card.components[0]!.components.map(button => button.label), ['Join', 'Withdraw', 'View roster']);
@@ -38,23 +40,49 @@ test('signup banner shows saved tournament details and counts while roster names
 });
 
 test('roster view is canonical, available to a spectator and does not mutate signup', async () => {
-  const state = run(createSignupFixture(eventId), `member:${ids[3]}`, { type: 'signupJoin' }).state;
+  let state = run(createSignupFixture(eventId), `member:${ids[3]}`, { type: 'signupJoin' }).state;
   const bound = { ...session, checkin_message_id: ids[0]! };
   let applies = 0;
   const replies: string[] = [];
+  const attachments: Buffer[] = [];
   const controller = new PrivateDiscordController(config, 'runner', {
     async send() { throw Error('no sends'); }, async edit() { throw Error('no edits'); }, async pin() {}, classify() { return 'retry'; }
   }, async () => ({ session: bound, state }), async () => { applies++; throw Error('no mutation'); });
   const interaction: PrivateInteraction = { id: ids[1]!, applicationId: config.applicationId, guildId: config.guildId,
     channelId: config.channelId, userId: ids[6]!, kind: 'button', messageId: ids[0]!,
-    customId: buttonId(eventId, 'checkin', 'signupRoster'), async acknowledge() {}, async reply(value) { replies.push(value); } };
+    customId: buttonId(eventId, 'checkin', 'signupRoster'), async acknowledge() {}, async reply(value, attachment) {
+      replies.push(value);
+      if (attachment) attachments.push(attachment.attachment);
+    } };
   await controller.handle(interaction);
   assert.match(replies[0]!, new RegExp(`1. <@${ids[3]}>`));
   assert.equal(applies, 0);
   await controller.handle({ ...interaction, messageId: ids[2]! });
   assert.match(replies[1]!, /not on the canonical card/);
   assert.equal(applies, 0);
+  state = createSignupFixture(eventId, 60_000, 150);
+  for (let index = 0; index < 150; index++) {
+    const id = String(100000000000000000n + BigInt(index));
+    state = run(state, `member:${id}`, { type: 'signupJoin' }).state;
+  }
+  await controller.handle(interaction);
+  assert.match(replies[2]!, /Signup roster \(150\/150\): Download the complete roster/);
+  assert.equal(attachments[0]?.toString().split('\r\n').length, 151);
+  assert.match(attachments[0]?.toString() ?? '', /150,100000000000000149$/);
   await controller.stop();
+});
+
+test('a larger signup accepts 100 unique members and still guards the fixed rehearsal round', () => {
+  let state = createSignupFixture(eventId, 60_000, 100);
+  const member = (index: number) => `member:100000000000000${String(index).padStart(3, '0')}`;
+  for (let index = 0; index < 100; index++) state = run(state, member(index), { type: 'signupJoin' }).state;
+  verifyState(state, eventId, state.version);
+  assert.match(renderCard(state, 'checkin').embeds[0]!.description, /100\/100 joined/);
+  assert.equal(run(state, member(0), { type: 'signupJoin' }).outcome.applied, false);
+  assert.throws(() => run(state, member(100), { type: 'signupJoin' }), /full/);
+  state = run(state, member(0), { type: 'signupWithdraw' }).state;
+  assert.throws(() => run(state, 'admin:fixture', { type: 'signupClose', adminId: config.adminId }), /exactly four/);
+  assert.equal(run(state, member(100), { type: 'signupJoin' }).state.signup?.roster.length, 100);
 });
 
 test('signup config excludes preset IDs and accepts player-free setup', () => {
@@ -121,7 +149,7 @@ test('schema v2 and frozen identity reject rollback and admin-in-roster corrupti
 test('signup cards use distinct actions and do not mention players on unassigned matches', () => {
   let state = createSignupFixture(eventId);
   const signupCard = renderCard(state, 'checkin');
-  assert.match(signupCard.embeds[0]!.description, /Signup: open/);
+  assert.match(signupCard.embeds[0]!.description, /Signup:\*\* open/);
   assert.deepEqual(signupCard.components[0]!.components.map(button => parseButtonId(button.custom_id).action),
     ['signupJoin', 'signupWithdraw', 'signupRoster']);
   assert.equal(signupCard.allowedMentions.parse.length, 0);

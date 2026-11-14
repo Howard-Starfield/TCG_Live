@@ -3,13 +3,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PermissionFlagsBits, type OverwriteType } from 'discord.js';
 import { RuleError, type MatchId, type Player } from '../rehearsal/domain.js';
-import { resolvePlayers, type SessionRow } from './session.js';
+import { NoActiveSessionError, resolvePlayers, type SessionRow } from './session.js';
 import type { EventState } from '../rehearsal/domain.js';
-import type { PrivateDiscordConfig } from './config.js';
+import { channelForSlot, type PrivateDiscordConfig } from './config.js';
 
 export type RoomOverwrite = { id: string; type: OverwriteType; allow: string; deny: string };
 export type Room = MatchId;
-const roomIds: Room[] = ['M1', 'M2'];
+const roomIds = ['M1', 'M2'] as const;
 const flags = PermissionFlagsBits;
 const everyoneAllow = flags.ViewChannel | flags.Connect | flags.ReadMessageHistory;
 const everyoneDeny = flags.SendMessages | flags.AddReactions | flags.UseApplicationCommands;
@@ -110,7 +110,25 @@ export class MatchRoomReconciler {
 
   private async pass(explicit: boolean): Promise<void> {
     this.requireActive();
-    const { session, state } = await this.read();
+    const snapshot = await this.read().catch(error => {
+      if (error instanceof NoActiveSessionError) return null;
+      throw error;
+    });
+    if (!snapshot) {
+      const desired = roomPlan(this.config.guildId, this.botId, this.config.adminId, []);
+      for (const room of roomIds) {
+        const current = await this.transport.current(room);
+        if (sameOverwrites(current, desired)) continue;
+        this.requireActive();
+        await this.transport.assertPermissions(room, 'policy');
+        await this.backup(this.config.guildId, channelForSlot(this.config, room), current);
+        this.requireActive();
+        await this.transport.replace(room, desired);
+      }
+      return;
+    }
+    const { session, state } = snapshot;
+    if (state.firstRound && (!state.published || state.matches.some(match => !this.config.roundRooms?.[match.id]))) return;
     const players = resolvePlayers(session, state);
     const assignedIds = players ? Object.values(players) : [];
     for (const id of this.attempts.keys()) if (!assignedIds.includes(id)) {
@@ -119,7 +137,7 @@ export class MatchRoomReconciler {
       this.failedMoves.delete(id);
       this.loggedMoves.delete(id);
     }
-    for (const room of roomIds) {
+    for (const room of state.firstRound ? state.matches.map(match => match.id) : roomIds) {
       this.requireActive();
       const pair = state.matches.find(match => match.id === room)!.players.map(player => players?.[player]).filter((id): id is string => !!id);
       const desired = roomPlan(this.config.guildId, this.botId, session.identity_map.adminId, pair);
@@ -131,7 +149,7 @@ export class MatchRoomReconciler {
         this.requireActive();
         await this.transport.assertPermissions(room, 'policy');
         this.requireActive();
-        await this.backup(this.config.guildId, this.config.matchChannels![room], current);
+        await this.backup(this.config.guildId, channelForSlot(this.config, room), current);
         const latest = await this.read();
         if (latest.session.event_id !== session.event_id || latest.state.version !== state.version) {
           this.dirty = true;
@@ -149,13 +167,13 @@ export class MatchRoomReconciler {
     if (!state.published || !players) return;
     const active = new Map<string, Room>();
     for (const match of state.matches) if (match.phase !== 'final')
-      for (const player of match.players) active.set(players[player], match.id);
+      for (const player of match.players) active.set(players[player]!, match.id);
     for (const id of assignedIds) {
       const room = active.get(id);
       if (!room || id === session.identity_map.adminId || id === this.botId ||
           this.moving.has(id) || this.failedMoves.has(id)) continue;
       const source = this.transport.voiceChannel(id);
-      if (!source || source === this.afkId || source === this.config.matchChannels![room]) continue;
+      if (!source || source === this.afkId || source === channelForSlot(this.config, room)) continue;
       const recent = (this.attempts.get(id) ?? []).filter(at => this.now() - at < 60_000);
       if (recent.length >= 3) {
         if (!this.warned.has(id)) {
@@ -178,7 +196,7 @@ export class MatchRoomReconciler {
         const currentMatch = latest.state.matches.find(match => match.id === room);
         if (!currentMatch || currentMatch.phase === 'final') { this.dirty = true; return; }
         const latestSource = this.transport.voiceChannel(id);
-        if (!latestSource || latestSource === this.afkId || latestSource === this.config.matchChannels![room]) continue;
+        if (!latestSource || latestSource === this.afkId || latestSource === channelForSlot(this.config, room)) continue;
         this.requireActive();
         await this.transport.assertPermissions(room, 'move');
         this.requireActive();

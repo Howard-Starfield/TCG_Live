@@ -1,10 +1,13 @@
 import { RuleError, type MatchId, type Player } from '../rehearsal/domain.js';
 
+export type ConfiguredRooms<T> = Record<'M1' | 'M2', T> & Partial<Record<MatchId, T>>;
+
 interface BaseDiscordConfig {
   applicationId: string;
   guildId: string;
   channelId: string;
-  matchChannels?: Record<MatchId, string>;
+  matchChannels?: ConfiguredRooms<string>;
+  roundRooms?: Partial<Record<MatchId, string>>;
   publicMatchRooms?: boolean;
   adminId: string;
   token?: string;
@@ -69,16 +72,16 @@ export function publicConfig(config: PrivateDiscordConfig): Omit<PrivateDiscordC
 
 export function sameIdentityMap(
   saved: { kind?: 'legacy' | 'signup'; players?: Record<Player, string>; adminId: string;
-    matchChannels?: Record<MatchId, string>; publicMatchRooms?: boolean }, config: PrivateDiscordConfig
+    matchChannels?: ConfiguredRooms<string>; publicMatchRooms?: boolean }, config: PrivateDiscordConfig
 ): boolean {
   const savedKind = saved.kind ?? 'legacy';
   return savedKind === (config.mode ?? 'legacy') && saved.adminId === config.adminId &&
     !!saved.publicMatchRooms === !!config.publicMatchRooms &&
     (savedKind === 'signup' || (['A', 'B', 'C', 'D'] as const).every(player => saved.players?.[player] === config.players?.[player])) &&
     (['M1', 'M2'] as const).every(slot =>
-      (saved.matchChannels?.[slot] ?? config.channelId) === channelForSlot(config, slot));
+      (saved.matchChannels?.[slot] ?? config.channelId) === (config.matchChannels?.[slot] ?? config.channelId));
 }
 
 export function channelForSlot(config: PrivateDiscordConfig, slot: 'checkin' | MatchId): string {
-  return slot === 'checkin' ? config.channelId : config.matchChannels?.[slot] ?? config.channelId;
+  return slot === 'checkin' ? config.channelId : config.roundRooms?.[slot] ?? config.matchChannels?.[slot] ?? config.channelId;
 }

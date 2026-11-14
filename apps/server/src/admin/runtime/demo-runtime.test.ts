@@ -6,7 +6,7 @@ import { remainingMsAt, type EventSnapshotDto } from '@tcg-live/core';
 import { runAdminDemo } from '../demo.js';
 import type { AdminHandler } from '../mount.js';
 import { AdminNotFoundError, type AdminRuntimeChange } from '../runtime-types.js';
-import { DEMO_ADMIN_ID, DemoAdminRuntime, type DemoClock } from './demo-runtime.js';
+import { dashboardDemoScript, DEMO_ADMIN_ID, DemoAdminRuntime, type DemoClock } from './demo-runtime.js';
 
 class FakeClock implements DemoClock {
   timers = new Map<number, { at: number; callback: () => void }>();
@@ -127,6 +127,52 @@ test('the scripted scenario walks every stage, judge state and final source with
   await assert.rejects(runtime.snapshot('missing'), AdminNotFoundError);
   await runtime.close();
 });
+
+test('dashboard demo finishes the agreement before any judge decision, then demonstrates a dispute', async () => {
+  const clock = new FakeClock();
+  const runtime = new DemoAdminRuntime({ clock, script: dashboardDemoScript() });
+  try {
+    runtime.start();
+    const snapshots = await play(runtime, clock, 80_000);
+    const awaiting = snapshots.find(s => s.matches[0]?.proposal?.decision === 'open' && s.matches[0]?.phase === 'running');
+    assert.ok(awaiting);
+    assert.equal(awaiting.matches[0]?.judge, null);
+    const agreed = snapshots.find(s => s.matches[0]?.finalSource === 'agreed');
+    assert.ok(agreed);
+    assert.equal(agreed.matches[0]?.finalWinner, 'A');
+    assert.equal(agreed.matches[0]?.judge, null);
+    assert.equal(agreed.matches[1]?.judge, null);
+    assert.ok(snapshots.some(s => s.matches[1]?.proposal?.decision === 'disputed' && s.matches[1]?.judge));
+    const request = snapshots.find(s => s.matches[1]?.judge?.requests?.length)?.matches[1]?.judge?.requests?.[0];
+    assert.equal(request?.category, 'rules');
+    assert.equal(request?.description, 'We need help deciding which effect resolves first.');
+    assert.equal(request?.seat, 'D');
+  } finally { await runtime.close(); }
+});
+
+for (const size of [5, 8, 9, 100]) {
+  test(`large-roster demo pairs ${size} checked-in players once`, async () => {
+    const clock = new FakeClock();
+    const runtime = new DemoAdminRuntime({ clock, playerCount: size });
+    try {
+      runtime.start();
+      clock.advance(12_000);
+      const snapshot = await runtime.snapshot();
+      assert.equal(snapshot.checkins.length, size);
+      assert.equal(snapshot.matches.length, Math.floor(size / 2));
+      assert.equal(new Set(snapshot.matches.flatMap(match => match.seats)).size, size - size % 2);
+      assert.equal(Boolean(snapshot.pairingBye), size % 2 === 1);
+      if (snapshot.pairingBye) {
+        const standing = snapshot.standings.find(row => row.seat === snapshot.pairingBye);
+        assert.deepEqual(standing, { seat: snapshot.pairingBye, points: 3, rating: 1200 });
+      }
+      assert.equal(new Set(Object.values(snapshot.discord.matchChannels ?? {})).size, snapshot.matches.length);
+      assert.ok(snapshot.matches.every(match => match.phase === 'setup'));
+      const audit = await runtime.audit(snapshot.eventId, 0, 500);
+      assert.equal(audit.filter(row => row.command.type === 'publish').length, 1);
+    } finally { await runtime.close(); }
+  });
+}
 
 test('an early timer is re-armed until the real deadline, and the history is capped', async () => {
   const clock = new FakeClock(1_800_000_000_000, 7);

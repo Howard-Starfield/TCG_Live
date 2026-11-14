@@ -28,7 +28,7 @@ export interface PlayerRow {
 /** True once the event has seats (signup closed, or a legacy event). */
 export function hasSeats(snapshot: EventSnapshotDto): boolean {
   if (snapshot.signup?.status === 'open') return false;
-  return SEATS.some(seat => snapshot.seats[seat] !== null) || snapshot.signup === null;
+  return Object.values(snapshot.seats).some(member => member !== null) || snapshot.signup === null;
 }
 
 export function matchOfSeat(snapshot: EventSnapshotDto, seat: Seat): MatchDto | null {
@@ -41,7 +41,7 @@ export function playerStatus(snapshot: EventSnapshotDto, seat: Seat, match: Matc
       ? { label: 'Checked in', tone: 'success' }
       : { label: 'Not checked in', tone: 'warning' };
   }
-  if (!match) return { label: 'No match', tone: 'neutral' };
+  if (!match) return seat === snapshot.pairingBye ? { label: 'Bye', tone: 'success' } : { label: 'No match', tone: 'neutral' };
   if (match.phase === 'final') {
     return match.finalWinner === seat ? { label: 'Won', tone: 'success' } : { label: 'Lost', tone: 'neutral' };
   }
@@ -68,8 +68,9 @@ export function playerRows(snapshot: EventSnapshotDto): PlayerRow[] {
       checkedIn: null, match: null, standing: null, status: { label: 'Joined', tone: 'neutral' as const }
     }));
   }
-  return SEATS.map(seat => {
-    const memberId = snapshot.seats[seat];
+  const seats = snapshot.dynamicRound ? (Object.keys(snapshot.seats) as Seat[]).filter(seat => snapshot.seats[seat]) : SEATS;
+  return seats.map(seat => {
+    const memberId = snapshot.seats[seat] ?? null;
     const match = matchOfSeat(snapshot, seat);
     return {
       key: `seat-${seat}`, seat, memberId, rosterPosition: position(memberId),

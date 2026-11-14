@@ -1,6 +1,6 @@
 // Wave 3 admin console commands: strict request validation, capabilities, preconditions, and the mapping
 // from the contract's AdminCommandDto to the domain command the store applies. Shared by both runtimes.
-import { ADMIN_REASON_MAX_LENGTH, CAPABILITIES, COMMAND_CAPABILITY, MATCH_IDS, SEATS, type AdminCommandDto,
+import { ADMIN_REASON_MAX_LENGTH, CAPABILITIES, COMMAND_CAPABILITY, MAX_SIGNUP_CAPACITY, isMatchId, isSeatId, type AdminCommandDto,
   type AdminCommandRequestDto, type Capability, type CommandPreconditionDto, type MatchId, type MatchPhase,
   type PanelRefreshRequestDto, type Seat } from '@tcg-live/core';
 import { createFixture, RuleError, type Command, type EventState } from '../rehearsal/domain.js';
@@ -39,7 +39,7 @@ const ANY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
 const PHASES: readonly MatchPhase[] = ['setup', 'running', 'paused', 'expired', 'final'];
 /** Fields each command type carries besides `type`, in contract order. */
 const COMMAND_FIELDS: Record<AdminCommandDto['type'], readonly string[]> = {
-  publish: [], signupClose: [], signupReopen: [], signupRemove: ['memberId'],
+  publish: [], delayStart: ['delayMinutes'], signupClose: [], signupReopen: [], signupRemove: ['memberId'],
   judgeResume: ['matchId', 'reason'], resolve: ['matchId', 'winner', 'reason'], correct: ['matchId', 'winner', 'reason']
 };
 /** The fixture's fixed pairings (domain.ts createFixture): M1 is A v B, M2 is C v D. */
@@ -60,13 +60,13 @@ function fields(value: unknown, name: string, required: readonly string[], optio
 }
 
 function matchId(value: unknown, name: string): MatchId {
-  if (typeof value !== 'string' || !(MATCH_IDS as readonly string[]).includes(value)) throw bad(`${name} must be M1 or M2.`);
-  return value as MatchId;
+  if (!isMatchId(value)) throw bad(`${name} must be a match ID.`);
+  return value;
 }
 
 function seat(value: unknown, name: string): Seat {
-  if (typeof value !== 'string' || !(SEATS as readonly string[]).includes(value)) throw bad(`${name} must be a seat A to D.`);
-  return value as Seat;
+  if (!isSeatId(value)) throw bad(`${name} must be a valid player seat.`);
+  return value;
 }
 
 function integer(value: unknown, name: string, min: number, max = Number.MAX_SAFE_INTEGER): number {
@@ -94,6 +94,7 @@ function parseCommand(value: unknown): AdminCommandDto {
   const kind = type as AdminCommandDto['type'];
   const source = fields(value, 'command', ['type', ...COMMAND_FIELDS[kind]]);
   switch (kind) {
+    case 'delayStart': return { type: kind, delayMinutes: integer(source.delayMinutes, 'command.delayMinutes', 1) };
     case 'publish': case 'signupClose': case 'signupReopen': return { type: kind };
     case 'signupRemove': {
       if (typeof source.memberId !== 'string' || !SNOWFLAKE.test(source.memberId)) throw bad('command.memberId must be a Discord member ID.');
@@ -125,11 +126,11 @@ function parsePrecondition(value: unknown, command: AdminCommandDto): CommandPre
   if (Object.hasOwn(source, 'signup')) {
     const signup = fields(source.signup, 'precondition.signup', ['status', 'rosterSize']);
     if (signup.status !== 'open' && signup.status !== 'assigned') throw bad('precondition.signup.status must be open or assigned.');
-    precondition.signup = { status: signup.status, rosterSize: integer(signup.rosterSize, 'precondition.signup.rosterSize', 0, 4) };
+    precondition.signup = { status: signup.status, rosterSize: integer(signup.rosterSize, 'precondition.signup.rosterSize', 0, MAX_SIGNUP_CAPACITY) };
   }
   switch (command.type) {
-    case 'publish':
-      if (precondition.eventVersion === undefined) throw bad('publish needs precondition.eventVersion.');
+    case 'publish': case 'delayStart':
+      if (precondition.eventVersion === undefined) throw bad(`${command.type} needs precondition.eventVersion.`);
       break;
     case 'judgeResume': case 'resolve': case 'correct':
       if (precondition.match?.matchId !== command.matchId) throw bad(`${command.type} needs precondition.match for ${command.matchId}.`);
@@ -186,12 +187,13 @@ export function commandContent(request: AdminCommandRequestDto): string {
 export function toDomainCommand(command: AdminCommandDto, adminId: string): Command {
   switch (command.type) {
     case 'publish': return { type: 'publish' };
+    case 'delayStart': return command;
     case 'signupClose': return { type: 'signupClose', adminId };
     case 'signupReopen': return { type: 'signupReopen' };
     case 'signupRemove': return { type: 'signupRemove', memberId: command.memberId };
     case 'judgeResume': return { type: 'judgeResume', matchId: command.matchId, reason: command.reason };
     case 'resolve': case 'correct':
-      if (!MATCH_SEATS[command.matchId].includes(command.winner)) throw new RuleError('Winner is not in the selected match.');
+      if (!command.winner.startsWith('P') && MATCH_SEATS[command.matchId] && !MATCH_SEATS[command.matchId]!.includes(command.winner)) throw new RuleError('Winner is not in the selected match.');
       return { type: command.type, matchId: command.matchId, winner: command.winner, reason: command.reason };
   }
 }

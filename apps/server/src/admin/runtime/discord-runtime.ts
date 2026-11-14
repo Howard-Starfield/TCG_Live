@@ -32,6 +32,7 @@ export interface AdminController {
   /** Wave 3: the explicit card and room repair behind /tcg-test refresh. */
   refreshExplicit(): Promise<ExplicitRefreshResult>;
   refreshArtworkExisting?(): Promise<{ status: 'applied' | 'pending'; message?: string }>;
+  deleteTournament?: import('../../discord/controller.js').PrivateDiscordController['deleteTournament'];
   openSignup?: import('../../discord/controller.js').PrivateDiscordController['openSignup'];
 }
 

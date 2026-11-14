@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { AUDIT_PAGE_LIMIT, type AdminCommandRequestDto, type AdminCommandResultDto, type AuditEntryDto,
   type EventSnapshotDto, type EventSummaryDto, type MemberDto, type PanelRefreshResultDto, type RuntimeStatusDto,
   type Snowflake } from '@tcg-live/core';
-import { ADMIN, createSignupFixture, RuleError, transition, type Command, type EventState, type MatchId,
+import { ADMIN, createSignupFixture, createTournamentFirstRound, RuleError, transition, type Command, type EventState, type MatchId,
   type Outcome, type Player, type Transition } from '../../rehearsal/domain.js';
 import { noChangeReply, savedReply } from '../../discord/controller.js';
 import type { CardSlot } from '../../discord/session.js';
@@ -17,7 +17,7 @@ import { mapAuditRow, mapSnapshot, type AdminAuditRow, type AdminSessionRow } fr
 export const DEMO_ADMIN_ID: Snowflake = '910000000000000001';
 export const DEMO_GUILD_ID: Snowflake = '910000000000000100';
 export const DEMO_CHANNEL_ID: Snowflake = '910000000000000101';
-export const DEMO_MATCH_CHANNELS: Record<MatchId, Snowflake> = { M1: '910000000000000102', M2: '910000000000000103' };
+export const DEMO_MATCH_CHANNELS: Record<'M1' | 'M2', Snowflake> = { M1: '910000000000000102', M2: '910000000000000103' };
 /** Fake people; no avatars. The fifth joins and is removed so signup removal shows up in the audit. */
 export const DEMO_MEMBERS: readonly MemberDto[] = [
   { id: DEMO_ADMIN_ID, displayName: 'Organizer', avatarUrl: null },
@@ -49,8 +49,7 @@ export type DemoStep =
   | { wait: number; repost: CardSlot }         // a sticky card repost: new message ID, panelRevision moves
   | { wait: number; restart: true };           // retire this event and start the next one
 
-/** The scripted scenario. `wait` is the delay in milliseconds after the previous step. */
-export function demoScript(): DemoStep[] {
+function demoSignupAndReadySteps(): DemoStep[] {
   const join: Command = { type: 'signupJoin' };
   return [
     { wait: 2_000, who: { member: ava }, command: join },
@@ -69,7 +68,14 @@ export function demoScript(): DemoStep[] {
     { wait: 2_500, who: 'A', command: { type: 'ready', matchId: 'M1' } },
     { wait: 1_500, who: 'B', command: { type: 'ready', matchId: 'M1' } },
     { wait: 2_000, who: 'C', command: { type: 'ready', matchId: 'M2' } },
-    { wait: 1_500, who: 'D', command: { type: 'ready', matchId: 'M2' } },
+    { wait: 1_500, who: 'D', command: { type: 'ready', matchId: 'M2' } }
+  ];
+}
+
+/** The scripted scenario. `wait` is the delay in milliseconds after the previous step. */
+export function demoScript(): DemoStep[] {
+  return [
+    ...demoSignupAndReadySteps(),
     { wait: 12_000, who: 'A', command: { type: 'pause', matchId: 'M1' } },
     { wait: 5_000, who: 'B', command: { type: 'callJudge', matchId: 'M1' } },
     { wait: 6_000, who: 'admin', command: { type: 'judgeResume', matchId: 'M1', reason: 'Judge checked the board state.' } },
@@ -82,6 +88,23 @@ export function demoScript(): DemoStep[] {
     { wait: 0, expire: 'M1' },
     { wait: 5_000, who: 'A', command: { type: 'propose', matchId: 'M1', winner: 'A', expectedRevision: 0 } },
     { wait: 5_000, who: 'B', command: { type: 'confirm', matchId: 'M1', revision: 1 } },
+    { wait: 20_000, restart: true }
+  ];
+}
+
+/** The dashboard demo shows an agreement before the judge and dispute examples. */
+export function dashboardDemoScript(): DemoStep[] {
+  return [
+    ...demoSignupAndReadySteps(),
+    { wait: 2_500, who: 'A', command: { type: 'propose', matchId: 'M1', winner: 'A', expectedRevision: 0 } },
+    { wait: 5_000, who: 'B', command: { type: 'confirm', matchId: 'M1', revision: 1 } },
+    { wait: 3_000, who: 'C', command: { type: 'pause', matchId: 'M2' } },
+    { wait: 2_500, who: 'D', command: { type: 'callJudge', matchId: 'M2',
+      judgeRequest: { category: 'rules', description: 'We need help deciding which effect resolves first.' } } },
+    { wait: 3_000, who: 'admin', command: { type: 'judgeResume', matchId: 'M2', reason: 'Judge checked the board state.' } },
+    { wait: 3_000, who: 'C', command: { type: 'propose', matchId: 'M2', winner: 'C', expectedRevision: 0 } },
+    { wait: 5_000, who: 'D', command: { type: 'dispute', matchId: 'M2', revision: 1 } },
+    { wait: 5_000, who: 'admin', command: { type: 'resolve', matchId: 'M2', winner: 'D', reason: 'Judge ruling after review.' } },
     { wait: 20_000, restart: true }
   ];
 }
@@ -144,6 +167,7 @@ export interface DemoAdminRuntimeOptions {
   /** Retired events kept for the sidebar. */
   keepRetired?: number;
   script?: DemoStep[];
+  playerCount?: number;
   /**
    * 'autoplay' (default) applies the scripted admin steps itself. 'interactive' keeps the players acting
    * but pauses wherever an admin decision is required, until the admin's console command lands.
@@ -171,6 +195,7 @@ export class DemoAdminRuntime implements AdminRuntime {
   private readonly keepRetired: number;
   private readonly finalHoldMs: number;
   private readonly script: DemoStep[];
+  private readonly playerCount?: number;
   private readonly startedAtMs: number;
   private readonly listeners = new ListenerSet<AdminRuntimeChange>();
   private readonly members = new Map(DEMO_MEMBERS.map(member => [member.id, member]));
@@ -207,7 +232,20 @@ export class DemoAdminRuntime implements AdminRuntime {
     this.durationMs = options.durationMs ?? 90_000;
     this.keepRetired = options.keepRetired ?? 5;
     this.finalHoldMs = options.finalHoldMs ?? DEMO_FINAL_HOLD_MS;
-    this.script = options.script ?? demoScript();
+    this.playerCount = options.playerCount;
+    if (this.playerCount !== undefined) {
+      const roster = Array.from({ length: this.playerCount }, (_, index) => ({
+        id: (930000000000000001n + BigInt(index)).toString(), displayName: `Player ${index + 1}`, avatarUrl: null
+      }));
+      for (const member of roster) this.members.set(member.id, member);
+      this.script = [
+        ...roster.map(member => ({ wait: 35, who: { member: member.id }, command: { type: 'signupJoin' } } as const)),
+        { wait: 1_000, who: 'admin', command: { type: 'signupClose', adminId: DEMO_ADMIN_ID } },
+        ...roster.map((_member, index) => ({ wait: 35, who: `P${index + 1}`, command: { type: 'checkin' } } as const)),
+        { wait: 1_000, who: 'admin', command: { type: 'publish' } },
+        { wait: 60_000, restart: true }
+      ];
+    } else this.script = options.script ?? demoScript();
     this.playMode = options.mode ?? 'autoplay';
     this.startedAtMs = this.clock.now();
     this.current = this.createEvent();
@@ -543,7 +581,8 @@ export class DemoAdminRuntime implements AdminRuntime {
   private createEvent(): DemoEvent {
     const id = this.newEventId();
     return {
-      state: createSignupFixture(id, this.durationMs),
+      state: this.playerCount === undefined ? createSignupFixture(id, this.durationMs)
+        : createTournamentFirstRound(id, this.durationMs, this.playerCount, 3),
       session: {
         event_id: id, application_id: '910000000000000000', guild_id: DEMO_GUILD_ID, channel_id: DEMO_CHANNEL_ID,
         identity_map: { kind: 'signup', adminId: DEMO_ADMIN_ID, matchChannels: { ...DEMO_MATCH_CHANNELS } },
@@ -657,6 +696,13 @@ export class DemoAdminRuntime implements AdminRuntime {
   private record(result: Transition, actor: string, command: Command, nowMs: number,
     principalKind: 'discord' | 'system' | 'web', principalId: string, commandId: string): void {
     this.current.state = result.state;
+    if (result.state.firstRound && command.type === 'publish') {
+      const identity = this.current.session.identity_map;
+      identity.roundRooms = Object.fromEntries(result.state.matches.map(match => [match.id, this.nextSnowflake()]));
+      identity.matchMessages = Object.fromEntries(result.state.matches.slice(2).map(match => [match.id, this.nextSnowflake()]));
+      this.current.session.m1_message_id = this.nextSnowflake();
+      this.current.session.m2_message_id = result.state.matches.length > 1 ? this.nextSnowflake() : null;
+    }
     this.current.audit.push({
       sequence: result.state.version, command_id: commandId, actor_id: actor, action: command,
       outcome: result.outcome, occurred_at_ms: nowMs, mode: 'matchId' in command ? 'CAM' : null,

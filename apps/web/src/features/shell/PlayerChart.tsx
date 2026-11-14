@@ -15,10 +15,12 @@ function ChartDetails({ row, capacity }: { row: ChartRow; capacity: number }) {
 export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }) {
   const seats = Object.values(snapshot.seats);
   const assigned = seats.filter(seat => seat !== null).length;
-  const capacity = snapshot.signup?.capacity ?? seats.length;
+  const signup = snapshot.stage === 'signup';
+  const capacity = signup ? snapshot.signup?.capacity ?? seats.length : snapshot.dynamicRound ? Math.max(1, assigned) : seats.length;
+  const ticks = Array.from({ length: Math.min(capacity, 4) + 1 }, (_, index) =>
+    Math.round(index * capacity / Math.min(capacity, 4)));
   const joined = snapshot.signup?.roster.length ?? assigned;
   const checkedIn = snapshot.checkins.length;
-  const signup = snapshot.stage === 'signup';
   const counts = [
     { label: 'Joined', value: joined, color: 'var(--color-fg-muted)' },
     { label: 'Assigned', value: assigned, color: 'var(--color-accent-fill)' },
@@ -36,7 +38,22 @@ export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }
   };
 
   return <>
-    <p className="home-card-count"><strong>{signup ? joined : assigned}</strong><span> of {capacity} {signup ? 'joined' : 'assigned'}</span></p>
+    <div className="home-seat-summary">
+      <p className="home-card-count"><strong>{signup ? joined : assigned}</strong><span> of {capacity} {signup ? 'joined' : 'assigned'}</span></p>
+      <div className="home-seat-donut">
+        <PieChart width={116} height={116} accessibilityLayer aria-label="Seat availability">
+          <Pie data={breakdown} dataKey="value" nameKey="label" innerRadius={37} outerRadius={52}
+            paddingAngle={breakdown.length > 1 ? 2 : 0} stroke="none" {...MOTION}>
+            {breakdown.map(row => <Cell key={row.label} fill={row.color} />)}
+          </Pie>
+          <Tooltip {...MOTION} position={{ x: -140 }} allowEscapeViewBox={{ x: true, y: true }}
+            content={({ active, payload }) => renderDetails(active, breakdown, payload[0]?.name)} />
+        </PieChart>
+        <div className="home-donut-center" aria-hidden="true">
+          <strong>{capacity - joined}</strong><span>open seats</span>
+        </div>
+      </div>
+    </div>
     <ul className="sr-only" aria-label="Player counts">
       {counts.map(row => <li key={row.label}><span>{row.label}</span><strong>{row.value}</strong></li>)}
     </ul>
@@ -46,8 +63,8 @@ export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }
           <CartesianGrid vertical={false} stroke="var(--color-line-strong)" strokeDasharray="2 4" />
           <XAxis dataKey="label" axisLine={false} tickLine={false} tickMargin={8}
             tick={{ fontSize: 11, fill: 'var(--color-fg-muted)' }} />
-          <YAxis domain={[0, capacity]} ticks={Array.from({ length: capacity + 1 }, (_, i) => i)}
-            allowDecimals={false} axisLine={false} tickLine={false} width={23}
+          <YAxis domain={[0, capacity]} ticks={ticks}
+            allowDecimals={false} axisLine={false} tickLine={false} width={capacity >= 1000 ? 32 : 26}
             tick={{ fontSize: 10, fill: 'var(--color-fg-muted)' }} />
           <Tooltip {...MOTION} cursor={{ fill: 'var(--color-line-faint)' }}
             content={({ active, label }) => renderDetails(active, counts, label)} />
@@ -56,19 +73,6 @@ export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }
           </Bar>
         </BarChart>
       </ResponsiveContainer>
-    </div>
-    <div className="home-seat-donut">
-      <PieChart width={72} height={72} accessibilityLayer aria-label="Seat availability">
-        <Pie data={breakdown} dataKey="value" nameKey="label" innerRadius={23} outerRadius={32}
-          paddingAngle={breakdown.length > 1 ? 2 : 0} stroke="none" {...MOTION}>
-          {breakdown.map(row => <Cell key={row.label} fill={row.color} />)}
-        </Pie>
-        <Tooltip {...MOTION} position={{ x: -140 }} allowEscapeViewBox={{ x: true, y: true }}
-          content={({ active, payload }) => renderDetails(active, breakdown, payload[0]?.name)} />
-      </PieChart>
-      <div className="home-donut-center" aria-hidden="true">
-        <strong>{capacity - joined}</strong><span>open seats</span>
-      </div>
     </div>
     <ul className="sr-only" aria-label="Seat breakdown">
       {breakdown.map(row => <li key={row.label}>{row.label} {row.value}</li>)}

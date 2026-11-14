@@ -1,3 +1,4 @@
+import { JUDGE_REQUEST_CATEGORIES } from '@tcg-live/core';
 import type { AuditEntryDto, EventSnapshotDto, Seat, Snowflake } from '@tcg-live/core';
 
 /** Visual tone of an audit line; the kit maps tones to colors. */
@@ -61,7 +62,7 @@ export function formatAuditEntry(entry: AuditEntryDto, names?: AuditNameSource):
       actorLabel = 'Admin';
       break;
     case 'system':
-      actorLabel = 'Timer';
+      actorLabel = actor.source === 'scheduler' ? 'Scheduler' : 'Timer';
       break;
   }
   const actorName = actorMemberId ? (names?.members[actorMemberId]?.displayName ?? null) : null;
@@ -79,10 +80,19 @@ export function formatAuditEntry(entry: AuditEntryDto, names?: AuditNameSource):
     case 'signupClose': return line(`${actorLabel} closed signup and assigned seats`, 'info', 'lock');
     case 'signupReopen': return line(`${actorLabel} reopened signup`, 'info', 'unlock');
     case 'checkin': return line(`${actorLabel} checked in`, 'success', 'check-in');
+    case 'delayStart': {
+      const minutes = command.delayMinutes;
+      return line(`${actorLabel} delayed the tournament start${minutes ? ` by ${minutes} min` : ''}`, 'warning', 'clock');
+    }
     case 'publish': return line(`${actorLabel} published the round`, 'accent', 'megaphone');
     case 'ready': return line(`${actorLabel} is ready for ${match}`, 'neutral', 'ready');
     case 'pause': return line(`${actorLabel} paused ${match}`, 'warning', 'pause');
-    case 'callJudge': return line(`${actorLabel} called a judge on ${match}`, 'danger', 'gavel');
+    case 'callJudge': {
+      const request = command.judgeRequest;
+      const message = `${actorLabel} called a judge on ${match}`;
+      return line(request ? `${message} · ${JUDGE_REQUEST_CATEGORIES[request.category]} — ${request.description}` : message,
+        'danger', 'gavel');
+    }
     case 'resumeConsent': return line(`${actorLabel} agreed to resume ${match}`, 'neutral', 'play');
     case 'judgeResume': return line(withReason(`${actorLabel} resumed ${match}`, command.reason), 'info', 'play');
     case 'clockCheck':

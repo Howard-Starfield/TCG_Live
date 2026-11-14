@@ -52,6 +52,9 @@ describe('read-only sessions (decision 4)', () => {
     await user.click(screen.getByRole('button', { name: 'Edit tournament details' }));
     const title = await screen.findByRole('textbox', { name: 'Tournament title' });
     await waitFor(() => expect(title).toBeEnabled());
+    await user.click(screen.getByText('Rule settings'));
+    expect(screen.getByText('4 players')).toBeVisible();
+    expect(screen.getByText(/No Swiss settings have been saved/)).toBeVisible();
     await user.clear(title);
     await user.type(title, 'Autumn Cup');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Game' }), 'one-piece');
@@ -126,6 +129,24 @@ describe('stage stepper actions row', () => {
     const [body] = bodies(server);
     expect(body).toEqual({ commandId: expect.stringMatching(/^[0-9a-f-]{36}$/), eventId: publishable.eventId,
       command: { type: 'publish' }, precondition: { eventVersion: publishable.version } });
+  });
+
+  it('lets the organizer delay a scheduled round from the overview', async () => {
+    const user = userEvent.setup();
+    const scheduled = { ...publishable, startsAtMs: Date.now() + 60_000 };
+    const { server } = renderConsole({ snapshot: scheduled, audit: [],
+      setup: respond('POST /commands', result({ result: 'delayStart' })) });
+    await ready();
+    await user.click(screen.getByRole('button', { name: 'Delay start' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delay tournament start' });
+    const submit = within(dialog).getByRole('button', { name: 'Apply delay' });
+    expect(submit).toBeDisabled();
+    await user.type(within(dialog).getByRole('spinbutton', { name: 'Delay in minutes' }), '15');
+    expect(within(dialog).getByText(/New start/)).toBeInTheDocument();
+    await user.click(submit);
+    expect(await screen.findByText('Tournament start delayed')).toBeInTheDocument();
+    expect(bodies(server)[0]).toMatchObject({ eventId: scheduled.eventId,
+      command: { type: 'delayStart', delayMinutes: 15 }, precondition: { eventVersion: scheduled.version } });
   });
 
   it('says the Discord display is pending and shows the room warning', async () => {

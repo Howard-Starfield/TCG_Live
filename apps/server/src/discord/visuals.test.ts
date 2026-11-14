@@ -11,7 +11,7 @@ const eventId = '11111111-1111-4111-8111-111111111111';
 const state = createFixture(eventId);
 const image = (source: EventState, runner?: string) => renderCard(source, 'M1', runner).embeds[0]!.thumbnail?.url;
 const changed = (match: Partial<MatchState>): EventState => ({ ...state,
-  matches: [{ ...state.matches[0], ...match }, state.matches[1]] });
+  matches: [{ ...state.matches[0]!, ...match }, state.matches[1]!] });
 
 function gifFrames(bytes: Buffer): number {
   let offset = 13;

@@ -91,17 +91,20 @@ function RuntimeRows({ query }: { query: { data: RuntimeStatusDto | undefined; i
 export function PanelsTab({ snapshot }: { snapshot: EventSnapshotDto }) {
   const runtime = useRuntimeStatus();
   const { discord } = snapshot;
-  const cards: CardRow[] = SLOTS.map(slot => ({ slot, ...discord.cards[slot] }));
+  const matchIds: MatchId[] = snapshot.dynamicRound ? snapshot.matches.map(match => match.id) : ['M1', 'M2'];
+  const slots: CardSlot[] = snapshot.dynamicRound ? ['checkin', ...matchIds] : SLOTS;
+  const cards: CardRow[] = slots.map(slot => ({ slot, messageId: discord.cards[slot]?.messageId ?? null,
+    repostSuspended: discord.cards[slot]?.repostSuspended ?? false }));
   return (
     <div className="lists-panels flex min-h-0 flex-1 flex-col gap-3 overflow-auto pb-1">
       <Section title="Channels">
         <Rows>
           <Row label="Guild"><IdValue value={discord.guildId} what="guild" /></Row>
           <Row label="Channel"><IdValue value={discord.channelId} what="channel" /></Row>
-          {(['M1', 'M2'] as MatchId[]).map(matchId => (
+          {matchIds.map(matchId => (
             <Row key={matchId} label={`${matchId} room`}>
-              {discord.matchChannels
-                ? <IdValue value={discord.matchChannels[matchId]} what={`${matchId} room channel`} />
+              {discord.matchChannels?.[matchId]
+                ? <IdValue value={discord.matchChannels[matchId]!} what={`${matchId} room channel`} />
                 : <span className="text-fg-subtle">Not created</span>}
             </Row>
           ))}

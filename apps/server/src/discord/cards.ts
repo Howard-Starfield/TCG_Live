@@ -38,7 +38,7 @@ export function parseButtonId(raw: string): ParsedButton {
   if (!raw || raw.length > 100) throw new RuleError('Invalid private Discord control.');
   const parts = raw.split(':');
   if ((parts.length !== 4 && parts.length !== 5) || parts[0] !== 'p1' || !parts[1] || !UUID.test(parts[1]) ||
-      !['checkin', 'M1', 'M2'].includes(parts[2] ?? '') || !parts[3] || !actions[parts[3]]) {
+      (parts[2] !== 'checkin' && !/^M[1-9]\d*$/.test(parts[2] ?? '')) || !parts[3] || !actions[parts[3]]) {
     throw new RuleError('Invalid private Discord control.');
   }
   const slot = parts[2] as CardSlot;
@@ -87,11 +87,13 @@ function matchCard(state: EventState, match: MatchState, runnerId?: string,
   ].filter(Boolean).join('\n') : [
     awaitingSignup ? 'Awaiting signup; players will be assigned on close' : `Practice BO1 CAM · ${match.players.map(mention).join(' vs ')}`,
     `State: ${interrupted ? 'interrupted; local prepare --replace required' : match.phase}`,
+    !state.published && state.startsAtMs !== undefined
+      ? `Scheduled start: <t:${Math.floor(state.startsAtMs / 1000)}:F>` : '',
     `Ready: ${match.ready.map(mention).join(', ') || 'none'}`,
     match.phase === 'setup' ? '' : time,
     match.proposal ? `Proposal #${match.proposal.revision}: ${mention(match.proposal.reporter)} reports ${mention(match.proposal.winner)} won (${match.proposal.decision})` : '',
     match.proposal && proposalOpponent ? match.proposal.decision === 'open' ?
-      `Waiting for ${mention(proposalOpponent)} to Agree or Dispute` :
+      `Waiting for ${mention(proposalOpponent)} to Agree or Disagree` :
       `Disputed by ${mention(proposalOpponent)}; judge needed` : '',
     match.phase === 'paused' ? `Resume agreed: ${match.resumeConsents.map(mention).join(', ') || 'none'}` : '',
     waiting.length ? `Waiting to resume: ${waitingText}` : '',
@@ -107,12 +109,12 @@ function matchCard(state: EventState, match: MatchState, runnerId?: string,
     buttons.push({ label: 'Resume', action: 'resume', revision: match.pauseGeneration,
       disabled: match.phase !== 'paused' });
     const revision = match.proposal?.revision ?? 0;
-    buttons.push({ label: 'I won', action: 'won', revision,
-      disabled: match.proposal?.decision === 'open' });
-    if (match.proposal) buttons.push(
-      { label: 'Agree', action: 'confirm', revision },
-      { label: 'Dispute', action: 'dispute', revision, disabled: match.proposal.decision !== 'open' }
-    );
+    if (match.proposal?.decision === 'open') {
+      buttons.push({ label: 'Agree', action: 'confirm', revision }, { label: 'Disagree', action: 'dispute', revision });
+    } else {
+      buttons.push({ label: 'I won', action: 'won', revision });
+      if (match.proposal) buttons.push({ label: 'Agree', action: 'confirm', revision });
+    }
     buttons.push({ label: 'Call judge', action: 'judge' });
   }
   return {
@@ -124,8 +126,25 @@ function matchCard(state: EventState, match: MatchState, runnerId?: string,
   };
 }
 
+export function renderTournamentRecap(state: EventState, players: Record<Player, string> | null,
+  tournament?: TournamentDetailsDto): CardPayload {
+  const lines = state.matches.map(match => {
+    const winner = match.finalWinner;
+    return `Match ${match.id.slice(1)} · ${winner && players ? `<@${players[winner]}>` : winner ?? '—'} won`;
+  });
+  const bye = state.firstRound?.bye;
+  if (bye && players) lines.unshift(`Bye · <@${players[bye]}>`);
+  const results = lines.join('\n');
+  const description = results.length <= 4_096 ? results
+    : `${results.slice(0, results.lastIndexOf('\n', 3_950))}\nSee full results in the tournament dashboard.`;
+  return {
+    embeds: [{ title: `${tournament?.name ?? 'Signup tournament'} results`, color: 0x22c55e, description }],
+    components: [], allowedMentions: { parse: [] }
+  };
+}
+
 export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
-  players?: Record<Player, string>, tournament?: TournamentDetailsDto): CardPayload {
+  players?: Record<Player, string>, tournament?: TournamentDetailsDto, signupChannelId?: string): CardPayload {
   if (slot !== 'checkin') {
     const match = state.matches.find(item => item.id === slot as MatchId)!;
     return matchCard(state, match, runnerId, players);
@@ -133,14 +152,24 @@ export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
   if (state.signup) {
     const signup = state.signup;
     const assigned = signup.status === 'assigned';
+    const startsAtMs = state.startsAtMs ?? tournament?.startsAtMs;
     const banner = tournament?.bannerStyle === 'compact' ? null : visualBanner();
-    return { embeds: [{ title: tournament?.name ?? 'Signup tournament',
-      description: `Game: ${tournament?.game ? gameLabels[tournament.game] : 'Not set by organizer'}\n` +
-        `Format: 4-player rehearsal · BO1 · camera play · ${state.durationMs / 60_000} min per match\n` +
-        (tournament?.description ? `${literal(tournament.description)}\n\n` : '') +
-        `Signup: ${assigned ? 'closed' : 'open'} · ${signup.roster.length}/4 joined\n` +
-        (assigned ? `Checked in: ${state.checkins.length}/4\n${state.published ? 'Round published' : 'Check in to publish the round'}` :
-          'Join or Withdraw before the admin closes signup.'), color: 0xf59e0b,
+    const description = [
+      `🎮 **Game:** ${tournament?.game ? gameLabels[tournament.game] : 'Not set by organizer'}`,
+      ...(startsAtMs !== undefined ? [`🗓️ **Scheduled start:** <t:${Math.floor(startsAtMs / 1000)}:F>`] : []),
+      ...(signupChannelId ? [`📍 **Signup channel:** <#${signupChannelId}>`] : []),
+      `🎥 **Format:** ${state.firstRound ? 'BO1' : '4-player rehearsal · BO1'} · camera play · ${state.durationMs / 60_000} min per match`,
+      ...(tournament?.description ? ['', '📝 **Tournament details**', literal(tournament.description)] : []),
+      '',
+      `👥 **Signup:** ${assigned ? 'closed' : 'open'} · ${signup.roster.length}/${signup.capacity ?? 4} joined`,
+      ...(assigned ? [
+        `✅ **Checked in:** ${state.checkins.length}/${state.firstRound ? signup.roster.length : 4}`,
+        state.published ? `**Round published**${state.firstRound?.bye && players ? ` · Bye: <@${players[state.firstRound.bye]}>` : ''}`
+          : startsAtMs === undefined ? 'Check in to publish the round.'
+            : 'The round publishes automatically at the scheduled start after check-in is complete.'
+      ] : ['Choose **Join** to sign up or **Withdraw** to leave the roster.'])
+    ].join('\n');
+    return { embeds: [{ title: `🌟 ${tournament?.name ?? 'Signup tournament'}`, description, color: 0xf59e0b,
       ...(banner ? { image: banner } :
         { thumbnail: visualThumbnail(!assigned ? 'signup' : state.published ? 'notice' : 'checkin') }) }],
       components: state.published ? [row([{ label: 'View roster', action: 'signupRoster' }], state.id, slot)] :

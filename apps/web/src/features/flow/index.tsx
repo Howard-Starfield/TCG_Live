@@ -171,7 +171,19 @@ function ViewSwitcher({ snapshot, view, matchId, onViewChange }: {
   return (
     <div className="tcg-flow-toolbar" role="group" aria-label="Canvas view">
       <button type="button" aria-pressed={view === 'event'} onClick={() => onViewChange('event', matchId)}>Event</button>
-      {snapshot.matches.map(match => (
+      {snapshot.matches.length > 8 ? (
+        <select aria-label="Choose a match" value={view === 'match' ? matchId : ''}
+          className="min-w-0 rounded bg-raised px-2 py-1 text-fg"
+          onChange={event => {
+            const match = snapshot.matches.find(item => item.id === event.target.value);
+            if (match) onViewChange('match', match.id);
+          }}>
+          <option value="" disabled>Choose a match</option>
+          {snapshot.matches.map(match => <option key={match.id} value={match.id}>
+            {match.id}{match.judge ? ' · Judge needed' : ''}
+          </option>)}
+        </select>
+      ) : snapshot.matches.map(match => (
         <button key={match.id} type="button" aria-pressed={view === 'match' && matchId === match.id}
           aria-label={`Match ${match.id}`} onClick={() => onViewChange('match', match.id)}>
           {match.id}
