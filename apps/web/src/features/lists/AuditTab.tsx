@@ -7,8 +7,9 @@ import type { AuditEntryDto, EventSnapshotDto } from '@tcg-live/core';
 import { Bot, ChevronRight, FileClock, History, Search, ShieldCheck, Terminal, X } from 'lucide-react';
 import { useId, useMemo, useState } from 'react';
 import { formatAuditEntry, formatTimeOfDay, useAudit } from '../../data';
-import { Avatar, Button, Chip, CodeBlock, DataTable, Disclosure, EmptyState, IconButton, Input, Select, cx,
+import { Avatar, Button, Chip, CodeBlock, DataTable, Disclosure, EmptyState, IconButton, Input, SegmentedControl, Select, cx,
   type Column, type SortState } from '../../ui';
+import { OpsAuditView, useOpsAuditAccess } from '../moderation/OpsAuditView';
 import { EMPTY_AUDIT_FILTERS, commandDetails, commandTypes, filterAudit, hasActiveFilters,
   type ActorKindFilter, type AuditFilters, type MatchFilter, type ViaFilter } from './model';
 import { None, SeatTag, ToneBadge } from './shared';
@@ -116,7 +117,23 @@ function FilterBar({ filters, onChange, types, shown, loaded }: {
   );
 }
 
+type AuditSource = 'commands' | 'ops';
+
+/** Audit tab: match commands, plus an "Evidence & moderation" source when this session may read it. */
 export function AuditTab({ snapshot }: { snapshot: EventSnapshotDto }) {
+  const ops = useOpsAuditAccess();
+  const [source, setSource] = useState<AuditSource>('commands');
+  if (!ops) return <CommandAudit snapshot={snapshot} />;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      <SegmentedControl<AuditSource> label="Audit source" value={source} onChange={setSource} className="self-start"
+        options={[{ value: 'commands', label: 'Match commands' }, { value: 'ops', label: 'Evidence & moderation' }]} />
+      {source === 'commands' ? <CommandAudit snapshot={snapshot} /> : <OpsAuditView snapshot={snapshot} />}
+    </div>
+  );
+}
+
+function CommandAudit({ snapshot }: { snapshot: EventSnapshotDto }) {
   const audit = useAudit(snapshot.eventId);
   const [filters, setFilters] = useState<AuditFilters>(EMPTY_AUDIT_FILTERS);
   const [selected, setSelected] = useState<number | null>(null);

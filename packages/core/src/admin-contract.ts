@@ -18,7 +18,8 @@ export type CardSlot = 'checkin' | MatchId;
 export type MatchPhase = 'setup' | 'running' | 'paused' | 'expired' | 'final';
 
 export const CAPABILITIES = ['dashboard.read', 'event.publish', 'signup.manage',
-  'match.judge', 'match.correct', 'panels.refresh'] as const;
+  'match.judge', 'match.correct', 'panels.refresh',
+  'evidence.read', 'evidence.manage', 'moderation.manage'] as const;
 export type Capability = typeof CAPABILITIES[number];
 
 export interface PrincipalDto { kind: 'local'; id: 'local-admin'; label: string }
@@ -36,6 +37,10 @@ export interface SessionDto {
   artwork?: true;
   /** The separate tournament directory is available to this session. */
   tournaments?: true;
+  /** Match evidence routes are mounted in this runtime. */
+  evidence?: true;
+  /** Moderation settings, flags and voice bot routes are mounted in this runtime. */
+  moderation?: true;
 }
 export interface SessionGrantDto { token: string; session: SessionDto }   // bearer token; kept in sessionStorage
 

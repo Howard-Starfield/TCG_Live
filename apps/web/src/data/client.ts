@@ -36,6 +36,11 @@ export interface RawRequestOptions {
   signal?: AbortSignal;
   /** Accept header; defaults to any type. */
   accept?: string;
+  /**
+   * Upload progress for `body`. With the browser's own fetch this sends through XMLHttpRequest (fetch has
+   * no upload progress); with an injected fetch it reports 0 before and the full size after the request.
+   */
+  onUploadProgress?: (loaded: number, total: number) => void;
 }
 
 /** Typed client for `/api/v1`. Every method rejects with ApiError, or rethrows an AbortError unchanged. */
@@ -71,7 +76,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   const baseUrl = options.baseUrl ?? '';
 
   async function send(method: string, path: string, request: RequestOptions, accept: string,
-    raw?: { body: BodyInit; contentType: string | undefined }): Promise<Response> {
+    raw?: { body: BodyInit; contentType: string | undefined; onUploadProgress?: ((loaded: number, total: number) => void) | undefined }): Promise<Response> {
     const auth = request.auth ?? true;
     const headers: Record<string, string> = { Accept: accept, ...request.headers };
     const token = auth ? options.getToken() : null;
@@ -87,8 +92,16 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     if (request.signal) init.signal = request.signal;
 
     let response: Response;
+    const progress = raw?.onUploadProgress;
+    const total = raw && raw.body instanceof Blob ? raw.body.size : 0;
     try {
-      response = await doFetch(`${baseUrl}${API_PREFIX}${path}`, init);
+      if (progress && !options.fetch && typeof XMLHttpRequest !== 'undefined') {
+        response = await xhrFetch(`${baseUrl}${API_PREFIX}${path}`, init, progress);
+      } else {
+        progress?.(0, total);
+        response = await doFetch(`${baseUrl}${API_PREFIX}${path}`, init);
+        if (response.ok) progress?.(total, total);
+      }
     } catch (error) {
       if (isAbortError(error)) throw error;
       throw networkError(error);
@@ -125,7 +138,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   return {
     request,
     requestRaw: (method, path, raw = {}) => send(method, path, withSignal(raw.signal), raw.accept ?? '*/*',
-      raw.body === undefined ? undefined : { body: raw.body, contentType: raw.contentType }),
+      raw.body === undefined ? undefined : { body: raw.body, contentType: raw.contentType, onUploadProgress: raw.onUploadProgress }),
     createSession: (launchToken, signal) =>
       request<SessionGrantDto>('POST', '/session', { body: { token: launchToken }, auth: false, ...withSignal(signal) }),
     getSession: signal => request<SessionDto>('GET', '/session', withSignal(signal)),
@@ -163,4 +176,33 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       return response;
     }
   };
+}
+
+/** fetch-shaped XMLHttpRequest for uploads that report progress. Rejects like fetch: TypeError or AbortError. */
+function xhrFetch(url: string, init: RequestInit, onProgress: (loaded: number, total: number) => void): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const signal = init.signal ?? undefined;
+    const abort = () => xhr.abort();
+    if (signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+    signal?.addEventListener('abort', abort, { once: true });
+    xhr.open(init.method ?? 'GET', url);
+    xhr.responseType = 'blob';
+    for (const [name, value] of Object.entries((init.headers ?? {}) as Record<string, string>)) xhr.setRequestHeader(name, value);
+    xhr.upload.onprogress = event => onProgress(event.loaded, event.lengthComputable ? event.total : 0);
+    const done = () => signal?.removeEventListener('abort', abort);
+    xhr.onload = () => {
+      done();
+      const headers = new Headers();
+      for (const line of xhr.getAllResponseHeaders().trim().split(/[\r\n]+/)) {
+        const at = line.indexOf(':');
+        if (at > 0) headers.append(line.slice(0, at).trim(), line.slice(at + 1).trim());
+      }
+      const empty = xhr.status === 204 || xhr.status === 205 || xhr.status === 304;
+      resolve(new Response(empty ? null : xhr.response as Blob, { status: xhr.status, statusText: xhr.statusText, headers }));
+    };
+    xhr.onerror = () => { done(); reject(new TypeError('Network request failed')); };
+    xhr.onabort = () => { done(); reject(new DOMException('Aborted', 'AbortError')); };
+    xhr.send((init.body ?? null) as XMLHttpRequestBodyInit | null);
+  });
 }

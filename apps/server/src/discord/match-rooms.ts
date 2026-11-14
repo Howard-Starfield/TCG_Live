@@ -6,6 +6,7 @@ import { RuleError, type MatchId, type Player } from '../rehearsal/domain.js';
 import { NoActiveSessionError, resolvePlayers, type SessionRow } from './session.js';
 import type { EventState } from '../rehearsal/domain.js';
 import { channelForSlot, type PrivateDiscordConfig } from './config.js';
+import { voicePoolIdentities, type VoicePoolIdentities } from '../voice/identities.js';
 
 export type RoomOverwrite = { id: string; type: OverwriteType; allow: string; deny: string };
 export type Room = MatchId;
@@ -79,12 +80,15 @@ export class MatchRoomReconciler {
     private readonly afkId: string | null, private readonly transport: RoomTransport,
     private readonly read: () => Promise<Snapshot>, private readonly canAct: () => boolean,
     private readonly now: () => number = Date.now,
-    private readonly backup = backupRoomOverwrites) {
+    private readonly backup = backupRoomOverwrites,
+    private readonly poolBots: Pick<VoicePoolIdentities, 'has'> = voicePoolIdentities) {
     if (!config.publicMatchRooms || !config.matchChannels) throw new RuleError('Public match rooms are not configured.');
   }
 
   trigger(explicit = false, changedMemberId?: string): Promise<void> {
     if (!this.accepting || !this.canAct()) return Promise.resolve();
+    // Voice pool bots (main and helpers) joining or leaving a room never drive placement.
+    if (changedMemberId && (changedMemberId === this.botId || this.poolBots.has(changedMemberId))) return this.running ?? Promise.resolve();
     if (explicit) this.failedMoves.clear();
     if (changedMemberId) this.failedMoves.delete(changedMemberId);
     this.dirty = true;
@@ -170,7 +174,7 @@ export class MatchRoomReconciler {
       for (const player of match.players) active.set(players[player]!, match.id);
     for (const id of assignedIds) {
       const room = active.get(id);
-      if (!room || id === session.identity_map.adminId || id === this.botId ||
+      if (!room || id === session.identity_map.adminId || id === this.botId || this.poolBots.has(id) ||
           this.moving.has(id) || this.failedMoves.has(id)) continue;
       const source = this.transport.voiceChannel(id);
       if (!source || source === this.afkId || source === channelForSlot(this.config, room)) continue;

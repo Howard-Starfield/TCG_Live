@@ -3,6 +3,7 @@ import { CircleCheck, Workflow } from 'lucide-react';
 import { formatElapsed, formatTimeOfDay, useServerNow } from '../../data';
 import { Badge, Button, CountBadge, DecisionCard, type DecisionReason } from '../../ui';
 import { MatchActions } from '../commands';
+import { EvidenceButton } from '../evidence';
 import { seatName } from '../shell/labels';
 
 const REASON: Record<JudgeReason, DecisionReason> = {
@@ -104,6 +105,7 @@ function JudgeCard({ snapshot, match, now, readOnly, onOpen }: {
           <MatchActions snapshot={snapshot} match={match} readOnly={readOnly} allowResultRuling={allowResultRuling} />
           <Button size="sm" variant="secondary" icon={<Workflow aria-hidden />} onClick={onOpen}
             aria-label={`Open ${match.id} in live preview`}>Open in live preview</Button>
+          <EvidenceButton snapshot={snapshot} matchId={match.id} />
         </>
       )}>
       {requests.size > 0 && <ul aria-label="Player messages" className="mt-2 space-y-2">

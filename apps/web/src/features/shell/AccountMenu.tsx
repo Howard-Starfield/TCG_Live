@@ -1,9 +1,11 @@
-import { FlaskConical, Images, Laptop, Link2, LogOut, Moon, Sun } from 'lucide-react';
+import { FlaskConical, Images, Laptop, Link2, LogOut, Moon, ShieldAlert, Sun } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useAdminData, useSession } from '../../data';
 import { ConfirmDialog, Menu, useToast, type MenuEntry, type Placement, type TriggerProps } from '../../ui';
 import { useConsolePreferences } from '../../app/preferences';
 import { ArtworkDialog } from '../artwork/ArtworkDialog';
+import { ModerationSettings } from '../moderation/ModerationSettings';
+import { useModerationAccess } from '../moderation/api';
 
 export interface AccountMenuProps {
   trigger: (props: TriggerProps) => ReactNode;
@@ -20,6 +22,8 @@ export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuPr
   const [rotating, setRotating] = useState(false);
   const [artworkOpen, setArtworkOpen] = useState(false);
   const hasArtwork = session.session?.artwork === true;
+  const hasModeration = useModerationAccess();
+  const [moderationOpen, setModerationOpen] = useState(false);
 
   const rotate = async () => {
     setRotating(true);
@@ -60,6 +64,8 @@ export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuPr
     { type: 'separator', id: 'sep-1' },
     ...(hasArtwork ? [{ id: 'artwork', label: 'Game artwork…', textValue: 'Game artwork', icon: <Images />,
       onSelect: () => setArtworkOpen(true) }] : []),
+    ...(hasModeration ? [{ id: 'moderation', label: 'Moderation & evidence…', textValue: 'Moderation and evidence', icon: <ShieldAlert />,
+      onSelect: () => setModerationOpen(true) }] : []),
     ...(session.session?.demoAvailable ? [{ id: 'demo', label: 'Run tournament demo', icon: <FlaskConical />,
       onSelect: () => { void launchDemo(); } },
       ...[5, 8, 9, 100].map(size => ({ id: `demo-${size}`, label: `Demo · ${size} players`, icon: <FlaskConical />,
@@ -73,6 +79,7 @@ export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuPr
     <>
       <Menu label="Account and theme" items={items} trigger={trigger} placement={placement} />
       {hasArtwork && <ArtworkDialog open={artworkOpen} onClose={() => setArtworkOpen(false)} />}
+      {hasModeration && <ModerationSettings open={moderationOpen} onClose={() => setModerationOpen(false)} />}
       <ConfirmDialog open={confirming} onCancel={() => setConfirming(false)} onConfirm={() => { void rotate(); }}
         pending={rotating} confirmLabel="Rotate link" title="Rotate the console link?"
         description="The bot prints a fresh console link in its terminal and the current link stops working. Tabs that are already signed in stay signed in." />

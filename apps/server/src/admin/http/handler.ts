@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { artworkRoutes } from '../../artwork/routes.js';
+import { evidenceRoutes } from '../../evidence/routes.js';
+import { moderationRoutes } from '../../moderation/routes.js';
 import { tournamentRoutes } from '../../tournaments/routes.js';
 import { AUDIT_PAGE_LIMIT, type Capability, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
 import { sessionCapabilities } from '../commands.js';
@@ -108,7 +110,9 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       ...(options.persistentSessions && options.mode === 'discord' ? { persistent: true as const } : {}),
       ...(options.setup ? { setup: true as const } : {}),
       ...(options.artwork ? { artwork: true as const } : {}),
-      ...(options.tournaments ? { tournaments: true as const } : {})
+      ...(options.tournaments ? { tournaments: true as const } : {}),
+      ...(options.evidence ? { evidence: true as const } : {}),
+      ...(options.moderation ? { moderation: true as const } : {})
     };
   }
 
@@ -231,6 +235,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
         await options.artwork?.selectGame(game);
         return await options.applyArtwork?.() ?? { status: 'pending', message: 'Existing Discord panels are not available yet.' };
       }, options.openSignup, options.signupChannels, options.deleteTournament) : []),
+    ...(options.evidence ? evidenceRoutes({ ...options.evidence, sessionLive: session => sessions.isLive(session) }) : []),
+    ...(options.moderation ? moderationRoutes(options.moderation) : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 
@@ -294,7 +300,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
         inFlight.add(response);
         response.on('close', () => inFlight.delete(response));
         dispatch(request, response, pathname, queryAt === -1 ? '' : raw.slice(queryAt + 1))
-          .catch(error => fail(response, error, `${method} ${pathname}`))
+          .catch(error => fail(response, error, `${method} ${pathname.replace(/^\/api\/v1\/media\/.*/, '/api/v1/media/:ticket')}`))
           .finally(() => inFlight.delete(response));
         return true;
       } catch (error) {

@@ -2,26 +2,35 @@
 // L6 (web-shell) hosts it inside the preview dock. Keep the ListPreviewProps contract stable.
 // Needs `AdminDataProvider` above it (audit and runtime status come from `src/data`).
 import type { EventSnapshotDto } from '@tcg-live/core';
-import { History, MessageSquare, Swords, Users } from 'lucide-react';
+import { Flag, History, MessageSquare, Swords, Users } from 'lucide-react';
 import { useEffect, useId } from 'react';
 import { CountBadge, TabPanel, TabStrip, cx, tabId, type TabItem } from '../../ui';
+import { FlagsTab } from '../moderation/FlagsTab';
+import { useModerationAccess } from '../moderation/api';
 import { AuditTab } from './AuditTab';
 import { MatchesTab } from './MatchesTab';
 import { judgeCount, playerRows } from './model';
 import { PanelsTab } from './PanelsTab';
 import { PlayersTab } from './PlayersTab';
 
-export type ListTab = 'players' | 'matches' | 'audit' | 'panels';
+export type ListTab = 'players' | 'matches' | 'audit' | 'panels' | 'flags';
 
 /** Tab order and labels. */
 export const LIST_TABS: ReadonlyArray<{ value: ListTab; label: string }> = [
   { value: 'players', label: 'Players' },
   { value: 'matches', label: 'Matches' },
   { value: 'audit', label: 'Audit' },
-  { value: 'panels', label: 'Discord' }
+  { value: 'panels', label: 'Discord' },
+  { value: 'flags', label: 'Flags' }
 ];
 
-const ICONS: Record<ListTab, typeof Users> = { players: Users, matches: Swords, audit: History, panels: MessageSquare };
+const ICONS: Record<ListTab, typeof Users> = { players: Users, matches: Swords, audit: History, panels: MessageSquare, flags: Flag };
+
+/** The tab actually shown: Flags needs moderation access and falls back to Players without it. */
+function useVisibleTab(tab: ListTab): ListTab {
+  const moderation = useModerationAccess();
+  return tab === 'flags' && !moderation ? 'players' : tab;
+}
 
 export interface ListPreviewProps {
   snapshot: EventSnapshotDto;
@@ -52,7 +61,9 @@ export interface ListTabStripProps {
  * The four list tabs (arrow keys move and select). Exported so the shell may host it in a header; in a
  * header narrower than the strip it scrolls sideways (focus scrolls the active tab into view).
  */
-export function ListTabStrip({ snapshot, tab, onTabChange, idBase, className }: ListTabStripProps) {
+export function ListTabStrip({ snapshot, tab: requested, onTabChange, idBase, className }: ListTabStripProps) {
+  const moderation = useModerationAccess();
+  const tab = useVisibleTab(requested);
   useEffect(() => {
     // Keep the selected tab fully visible when the strip scrolls inside a tight header.
     const node = document.getElementById(tabId(idBase, tab));
@@ -64,7 +75,7 @@ export function ListTabStrip({ snapshot, tab, onTabChange, idBase, className }: 
   }, [idBase, tab]);
   const judges = judgeCount(snapshot);
   const people = playerRows(snapshot).filter(row => row.memberId).length;
-  const tabs: Array<TabItem<ListTab>> = LIST_TABS.map(({ value, label }) => {
+  const tabs: Array<TabItem<ListTab>> = LIST_TABS.filter(({ value }) => value !== 'flags' || moderation).map(({ value, label }) => {
     const Icon = ICONS[value];
     return {
       value,
@@ -84,7 +95,8 @@ export function ListTabStrip({ snapshot, tab, onTabChange, idBase, className }: 
 }
 
 /** List preview: one table per tab, controlled by `tab` / `onTabChange`. */
-export function ListPreview({ snapshot, tab, onTabChange, onOpenMatch, className, showTabs = true, idBase }: ListPreviewProps) {
+export function ListPreview({ snapshot, tab: requested, onTabChange, onOpenMatch, className, showTabs = true, idBase }: ListPreviewProps) {
+  const tab = useVisibleTab(requested);
   const generated = useId();
   const base = idBase ?? `lists${generated.replace(/:/g, '')}`;
   return (
@@ -100,6 +112,7 @@ export function ListPreview({ snapshot, tab, onTabChange, onOpenMatch, className
         {tab === 'matches' && <MatchesTab snapshot={snapshot} {...(onOpenMatch ? { onOpenMatch } : {})} />}
         {tab === 'audit' && <AuditTab key={snapshot.eventId} snapshot={snapshot} />}
         {tab === 'panels' && <PanelsTab snapshot={snapshot} />}
+        {tab === 'flags' && <FlagsTab snapshot={snapshot} />}
       </TabPanel>
     </div>
   );

@@ -5,13 +5,11 @@ import { MAX_SIGNUP_CAPACITY } from '@tcg-live/core';
 import { parseDatabaseUrl } from '../config.js';
 import { createFixture, PLAYERS, scheduledPublishDue, type Command, type EventState, type Outcome, RuleError, transition } from './domain.js';
 import { channelForSlot, type PrivateDiscordConfig } from '../discord/config.js';
+import { PUBLIC_RELATIONS_SQL, privateDiscordSetupDecision, rehearsalSetupDecision } from './schema-tables.js';
 import { assertSessionConfig, messageId, resolvePlayers, type CardSlot, type SessionRow } from '../discord/session.js';
 
 const DB_ERROR = 'Rehearsal database operation failed.';
 const TARGET_DB = 'tcg_rehearsal';
-const TABLES_V1 = ['tcg_rehearsal_audit', 'tcg_rehearsal_events', 'tcg_rehearsal_meta'];
-const TABLES_V2 = [...TABLES_V1, 'tcg_rehearsal_sessions'];
-const TABLES_V2_DIRECTORY = [...TABLES_V2, 'tcg_tournament_directory'];
 
 export interface AuditRow {
   sequence: number;
@@ -123,25 +121,20 @@ export async function setupRehearsalSchema(): Promise<'created' | 'already_ready
     const db = await client.query<{ name: string }>('SELECT current_database() AS name');
     if (db.rows[0]?.name !== TARGET_DB) throw new RuleError('Schema setup requires the exact tcg_rehearsal database.');
     await client.query("SELECT pg_advisory_xact_lock(hashtext('tcg_rehearsal_schema'))");
-    const objects = await client.query<{ relname: string }>(
-      "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY c.relname"
-    );
+    const objects = await client.query<{ relname: string }>(PUBLIC_RELATIONS_SQL);
     const names = objects.rows.map(row => row.relname);
-    if (names.length === 0) {
+    if (rehearsalSetupDecision(names, null) === 'create') {
       const sql = await readFile(new URL('../../../../database/migrations/001_rehearsal.sql', import.meta.url), 'utf8');
       await client.query(sql);
       return 'created';
     }
-    if (![TABLES_V1, TABLES_V2, TABLES_V2_DIRECTORY].some(expected => JSON.stringify(names) === JSON.stringify(expected))) {
+    if (rehearsalSetupDecision(names, null) === 'refuse_schema') {
       throw new RuleError('Schema setup refused: public schema is not the expected rehearsal fixture.');
     }
     const marker = await client.query<{ value: string }>(
       "SELECT value FROM public.tcg_rehearsal_meta WHERE key = 'schema_version'"
     );
-    if (marker.rows.length !== 1 ||
-        (JSON.stringify(names) === JSON.stringify(TABLES_V1) && marker.rows[0]?.value !== '1') ||
-        ((JSON.stringify(names) === JSON.stringify(TABLES_V2) ||
-          JSON.stringify(names) === JSON.stringify(TABLES_V2_DIRECTORY)) && marker.rows[0]?.value !== '2')) {
+    if (marker.rows.length !== 1 || rehearsalSetupDecision(names, marker.rows[0]!.value) !== 'already_ready') {
       throw new RuleError('Schema setup refused: rehearsal schema version is incompatible.');
     }
     return 'already_ready';
@@ -151,16 +144,14 @@ export async function setupRehearsalSchema(): Promise<'created' | 'already_ready
 export async function setupPrivateDiscordSchema(): Promise<'upgraded' | 'already_ready'> {
   return withClient(client => transaction(client, async () => {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('tcg_rehearsal_schema'))");
-    const objects = await client.query<{ relname: string }>(
-      "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY c.relname"
-    );
+    const objects = await client.query<{ relname: string }>(PUBLIC_RELATIONS_SQL);
     const names = objects.rows.map(row => row.relname);
     const marker = await client.query<{ value: string }>(
       "SELECT value FROM public.tcg_rehearsal_meta WHERE key = 'schema_version'"
     );
-    if ((JSON.stringify(names) === JSON.stringify(TABLES_V2) ||
-         JSON.stringify(names) === JSON.stringify(TABLES_V2_DIRECTORY)) && marker.rows[0]?.value === '2') return 'already_ready';
-    if (JSON.stringify(names) !== JSON.stringify(TABLES_V1) || marker.rows[0]?.value !== '1') {
+    const decision = privateDiscordSetupDecision(names, marker.rows.length === 1 ? marker.rows[0]!.value : null);
+    if (decision === 'already_ready') return 'already_ready';
+    if (decision !== 'upgrade') {
       throw new RuleError('Private Discord migration refused: unexpected rehearsal schema.');
     }
     const sql = await readFile(new URL('../../../../database/migrations/002_private_discord.sql', import.meta.url), 'utf8');

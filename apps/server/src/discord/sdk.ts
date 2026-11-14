@@ -2,9 +2,11 @@ import { Client, GatewayIntentBits, REST } from 'discord.js';
 
 // Discord REST retries timeout/network/5xx requests, including POST by default.
 // An ambiguous initial card send or command creation must not be repeated here.
-export function privateDiscordClient(publicMatchRooms = false): Client {
-  return new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
-    ...(publicMatchRooms ? [GatewayIntentBits.GuildVoiceStates] : [])], rest: { retries: 0 } });
+/** `extraIntents` come from registered Discord features (non-privileged intents only). */
+export function privateDiscordClient(publicMatchRooms = false, extraIntents: readonly GatewayIntentBits[] = []): Client {
+  const intents = new Set<GatewayIntentBits>([GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
+    ...(publicMatchRooms ? [GatewayIntentBits.GuildVoiceStates] : []), ...extraIntents]);
+  return new Client({ intents: [...intents], rest: { retries: 0 } });
 }
 
 export function privateDiscordRest(token: string): REST {

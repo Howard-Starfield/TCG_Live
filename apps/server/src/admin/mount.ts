@@ -6,6 +6,8 @@ import type { SetupService } from '../onboarding/service.js';
 import type { ArtworkStore } from '../artwork/store.js';
 import type { ArtworkApplyResult } from '../artwork/routes.js';
 import type { TournamentDirectory } from '../tournaments/directory.js';
+import type { EvidenceRouteOptions } from '../evidence/routes.js';
+import type { ModerationRouteOptions } from '../moderation/routes.js';
 import type { OpenTournamentSignupResult, TournamentSignupChannelDto } from '@tcg-live/core';
 
 export interface AdminHandlerOptions {
@@ -32,6 +34,10 @@ export interface AdminHandlerOptions {
   openSignup?: (eventId: string, expectedActiveEventId: string | null) => Promise<OpenTournamentSignupResult>;
   signupChannels?: () => Promise<TournamentSignupChannelDto[]>;
   persistentSessions?: boolean;
+  /** Match evidence routes; the handler supplies session liveness for playback tickets. */
+  evidence?: Omit<EvidenceRouteOptions, 'sessionLive'>;
+  /** Moderation settings, flags, helper voice bots and the ops audit routes. */
+  moderation?: ModerationRouteOptions;
   /** Ignored local launcher rendezvous; never mounted by direct or demo commands. */
   launcher?: { instanceId: string; secret: string };
 }

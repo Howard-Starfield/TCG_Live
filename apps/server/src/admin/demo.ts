@@ -7,6 +7,28 @@ import { startServer } from '../server.js';
 import { readAdminConfig } from './config.js';
 import { createAdminHandler, type AdminHandler, type AdminHandlerOptions } from './mount.js';
 import { DemoAdminRuntime, type DemoAdminRuntimeOptions } from './runtime/demo-runtime.js';
+import { MemoryEvidenceStore } from '../evidence/store.js';
+import { createEvidenceSeams } from '../evidence/seams.js';
+import { tmpdir } from 'node:os';
+import { MemoryModerationFlagStore } from '../moderation/flags.js';
+import { MemoryModerationSettingsStore } from '../moderation/settings.js';
+import { MemoryOpsAuditStore } from '../ops/audit.js';
+import { MemoryVoiceBotRegistry } from '../voice/tokens.js';
+
+/** Synthetic Discord server for the demo's in-memory moderation settings. */
+export const DEMO_GUILD_ID = '100000000000000001';
+
+/** In-memory evidence and moderation routes for the demo: nothing touches PostgreSQL or data/. */
+export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'moderation'> {
+  const audit = new MemoryOpsAuditStore();
+  return {
+    // Demo uploads go to a per-process OS temp directory, never data/evidence.
+    evidence: { store: new MemoryEvidenceStore(audit), audit,
+      seams: createEvidenceSeams({ root: join(tmpdir(), 'tcg-live-demo-evidence', String(process.pid)) }).seams },
+    moderation: { settings: new MemoryModerationSettingsStore(audit), flags: new MemoryModerationFlagStore(audit), audit,
+      voiceBots: new MemoryVoiceBotRegistry(), guildId: () => DEMO_GUILD_ID }
+  };
+}
 
 export interface AdminDemo {
   port: number;
@@ -45,6 +67,7 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
     server = await startServer({ port: requestedPort, database: null }, { admin: adapter });
     handler = (options.createHandler ?? createAdminHandler)({
       runtime, port: server.port, mode: 'demo', commandsEnabled: true, webDist: options.webDist ?? adminConfig.webDist,
+      ...demoOpsOptions(),
       ...(options.ephemeral ? {} : { devOrigin: adminConfig.devOrigin, fixedLoginToken: adminConfig.fixedLoginToken })
     });
     runtime.start();

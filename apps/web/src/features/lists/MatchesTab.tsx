@@ -9,6 +9,7 @@ import { useMemo } from 'react';
 import { formatTimeOfDay, memberName, useMatchCountdown } from '../../data';
 import { DataTable, EmptyState, StatusDot, cx, type Column } from '../../ui';
 import { MatchActions, useMatchActionsAvailable } from '../commands';
+import { EvidenceButton, useEvidenceAccess } from '../evidence';
 import { JUDGE_REASON_LABEL, PHASE_META, matchPhaseMeta } from './model';
 import { None, ScrollCue, SeatTag, StatusChip, ToneBadge, useElementWidth } from './shared';
 
@@ -132,6 +133,7 @@ export function MatchesTab({ snapshot, onOpenMatch }: MatchesTabProps) {
   const stackPlayers = width !== null && width < MATCH_STACK_PLAYERS_BELOW;
   const tight = width !== null && width < MATCH_STACK_CLOCK_BELOW;
   const actionable = useMatchActionsAvailable(snapshot);
+  const evidence = useEvidenceAccess().read;
 
   const columns = useMemo<Array<Column<MatchDto>>>(() => {
     const list: Array<Column<MatchDto>> = [
@@ -177,6 +179,10 @@ export function MatchesTab({ snapshot, onOpenMatch }: MatchesTabProps) {
           cell: match => <ProposalCell match={match} /> });
       }
     }
+    if (evidence) {
+      list.push({ id: 'evidence', header: tight ? <span className="sr-only">Evidence</span> : 'Evidence', width: '64px',
+        cell: match => <EvidenceButton snapshot={snapshot} matchId={match.id} variant="cell" /> });
+    }
     if (actionable) {
       // Wave 3 (L10): resolve / judge-resume / correct in a row menu; empty cells where none apply.
       list.push({ id: 'actions', header: <span className="sr-only">Actions</span>, width: '40px', align: 'end',
@@ -187,7 +193,7 @@ export function MatchesTab({ snapshot, onOpenMatch }: MatchesTabProps) {
         cell: () => <ChevronRight aria-hidden className="inline size-3.5 text-fg-subtle group-hover/row:text-fg" /> });
     }
     return list;
-  }, [actionable, onOpenMatch, snapshot, stackPlayers, tight, wide]);
+  }, [actionable, evidence, onOpenMatch, snapshot, stackPlayers, tight, wide]);
 
   const judges = snapshot.matches.filter(match => match.judge).length;
   return (

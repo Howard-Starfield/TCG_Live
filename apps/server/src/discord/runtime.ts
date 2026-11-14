@@ -21,6 +21,16 @@ import { privateDiscordClient, privateDiscordRest } from './sdk.js';
 import { backupRoomOverwrites, MatchRoomReconciler, roomPlan, sameOverwrites, type Room, type RoomOverwrite, type RoomTransport } from './match-rooms.js';
 import { filenameFromThumbnail, noticeEmbed, retainedVisual, setVisualArtworkStore, visualFile, visualThumbnail } from './visuals.js';
 import { defaultArtworkStore } from '../artwork/store.js';
+import { pgEvidenceStore } from '../evidence/store.js';
+import { createEvidenceSeams } from '../evidence/seams.js';
+import { discordAutoModSync } from '../moderation/automod.js';
+import { pgModerationFlagStore } from '../moderation/flags.js';
+import { pgModerationSettingsStore } from '../moderation/settings.js';
+import { pgOpsAuditStore } from '../ops/audit.js';
+import { VoiceBotTokenStore } from '../voice/tokens.js';
+import { discordFeatures } from './feature-registry.js';
+import { DiscordFeatureEvents, featureIntents, startDiscordFeatures, VoicePoolState, type DiscordFeatureContext,
+  type MatchRoomInfo } from './features.js';
 
 function safeError(error: unknown): string {
   return error instanceof RuleError ? error.message : 'Private Discord operation failed.';
@@ -68,6 +78,12 @@ export function commandDefinition() {
       .addStringOption(option => option.setName(match.name).setDescription(match.description).setRequired(true)
         .addChoices(...match.choices))
       .addStringOption(option => option.setName(reason.name).setDescription(reason.description).setRequired(true)))
+    // Handled by the evidence-submit feature (evidence/discord-submit.ts), not the controller.
+    .addSubcommand(sub => sub.setName('evidence').setDescription('Submit a clip or link for your match')
+      .addStringOption(option => option.setName('match').setDescription('Match, for example M1').setRequired(true).setMaxLength(5))
+      .addAttachmentOption(option => option.setName('file').setDescription('Video or audio file (up to 100 MB)'))
+      .addStringOption(option => option.setName('link').setDescription('https:// link to the clip').setMaxLength(2048))
+      .addStringOption(option => option.setName('note').setDescription('What the clip shows').setMaxLength(500)))
     .toJSON();
 }
 
@@ -240,7 +256,8 @@ function judgeModal(buttonId: string, requesterId: string) {
 
 export function adapt(interaction: Interaction): PrivateInteraction | null {
   if (!interaction.isButton() && !interaction.isChatInputCommand() && !interaction.isModalSubmit()) return null;
-  if (interaction.isChatInputCommand() && interaction.commandName !== 'tcg-test') return null;
+  if (interaction.isChatInputCommand() && (interaction.commandName !== 'tcg-test' ||
+    interaction.options.getSubcommand(false) === 'evidence')) return null;
   const base = {
     id: interaction.id, applicationId: interaction.applicationId,
     guildId: interaction.guildId, channelId: interaction.channelId,
@@ -363,7 +380,17 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   const artwork = defaultArtworkStore();
   setVisualArtworkStore(artwork);
   const runnerId = randomUUID();
-  const client = privateDiscordClient(!!config.publicMatchRooms);
+  const features = discordFeatures();
+  const client = privateDiscordClient(!!config.publicMatchRooms, featureIntents(features));
+  // Evidence and moderation storage (migration 012). Routes answer 503 until the schema exists.
+  const opsAudit = pgOpsAuditStore();
+  const moderationSettings = pgModerationSettingsStore();
+  const moderationFlags = pgModerationFlagStore();
+  const evidence = pgEvidenceStore();
+  const voiceBots = new VoiceBotTokenStore();
+  const featureEvents = new DiscordFeatureEvents();
+  const voicePool = new VoicePoolState();
+  let featureHandle: Awaited<ReturnType<typeof startDiscordFeatures>> | undefined;
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
   let deletedCardRetry: ReturnType<typeof setInterval> | undefined;
@@ -390,6 +417,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       try {
         // Ends console streams and polling first, so open streams cannot hold the watchdog budget.
         await admin?.close();
+        await featureHandle?.stop();
         await controller?.stop();
         await roomSync?.stop();
         await client.destroy();
@@ -430,6 +458,12 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         if (!prepareSignupChannel || !client.isReady()) throw new RuleError('Discord is not ready.');
         return prepareSignupChannel(id);
       },
+      evidence: { store: evidence, audit: opsAudit, seams: createEvidenceSeams().seams },
+      moderation: { settings: moderationSettings, flags: moderationFlags, audit: opsAudit, voiceBots, voicePool,
+        guildId: () => config.guildId, mainBotUserId: () => client.user?.id ?? null,
+        onSettingsSaved: settings => featureEvents.emit({ type: 'moderationSettingsChanged', settings }),
+        onVoiceBotsChanged: () => featureEvents.emit({ type: 'voiceBotsChanged' }),
+        automodSync: discordAutoModSync(client, moderationSettings) },
       ...(guided ? { persistentSessions: true, ...(guided.launcher ? { launcher: guided.launcher } : {}) } : {}) });
     health = await startServer(healthConfig, admin ? { admin: admin.handler } : {});
     admin?.announce();
@@ -530,7 +564,10 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
           ensureActive();
           await voice.permissionOverwrites.set(permissionOverwrites);
         }
-        if (voice.id !== savedId) await bindRoundRoom(config, state.id, match.id, voice.id);
+        if (voice.id !== savedId) {
+          await bindRoundRoom(config, state.id, match.id, voice.id);
+          featureEvents.emit({ type: 'matchRoomAssigned', eventId: state.id, matchId: match.id, channelId: voice.id, occurredAtMs: Date.now() });
+        }
         savedRooms[match.id] = voice.id;
         roundRooms.set(match.id, voice);
         if (matches && match.id !== 'M1' && match.id !== 'M2') matches[match.id] = voice;
@@ -543,6 +580,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       undefined, undefined, undefined, undefined, undefined, undefined, () => !stopping && !lease?.isLost(),
       undefined, undefined, explicit => roomSync?.trigger(explicit) ?? Promise.resolve(), undefined, provisionRound);
     admin?.attachController(controller);
+    controller.onMatchEvent(event => featureEvents.emit(event));
     // A tournament may have opened in its own signup channel before the restart.
     await controller.start(async id => {
       ensureActive();
@@ -610,6 +648,32 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     const reconnect = () => { cleanupDeletedCards(); controller?.reconnect(); void roomSync?.trigger().catch(reportRoomFailure); };
     client.on('shardResume', reconnect);
     client.on('shardReady', reconnect);
+    if (features.length) {
+      const isActive = () => !stopping && !lease?.isLost();
+      const roomsOf = async (): Promise<MatchRoomInfo[]> => {
+        let current: Awaited<ReturnType<typeof getSessionState>>;
+        try { current = await getSessionState(config); } catch { return []; }
+        const players = resolvePlayers(current.session, current.state);
+        return current.state.matches.map(match => ({ eventId: current.state.id, matchId: match.id,
+          voiceChannelId: current.session.identity_map.roundRooms?.[match.id] ?? config.matchChannels?.[match.id] ?? null,
+          playerIds: match.players.flatMap(player => players?.[player] ? [players[player]] : []),
+          phase: match.phase, judgeCall: match.judgeAttention || match.proposal?.decision === 'disputed' }));
+      };
+      const featureContext: DiscordFeatureContext = {
+        client, guildId: config.guildId, adminId: config.adminId, isActive,
+        moderationSettings: () => moderationSettings.get(config.guildId),
+        appendFlag: input => moderationFlags.append(input),
+        appendAudit: input => opsAudit.append(input),
+        evidence, voiceBots,
+        publishVoicePool: state => voicePool.publish(state),
+        on: (type, listener) => featureEvents.on(type, listener),
+        matchRoom: async matchId => (await roomsOf()).find(room => room.matchId === matchId) ?? null,
+        activeMatchRooms: roomsOf,
+        log: message => { process.stderr.write(`${message.replace(/[^\x20-\x7e]/g, '?').slice(0, 300)}\n`); }
+      };
+      featureHandle = await startDiscordFeatures(features, featureContext);
+      ensureActive();
+    }
     process.stdout.write(`Private Discord runtime ready; health on 127.0.0.1:${health.port}.\n`);
     if (onReady) onReady(guided?.launcher ?
       guided.browserAutoOpen === false ? null : admin?.handler.claimLauncherOpen?.() ?? null :

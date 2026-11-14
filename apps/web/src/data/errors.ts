@@ -20,14 +20,17 @@ export class ApiError extends Error {
   readonly snapshot: EventSnapshotDto | undefined;
   /** From a `Retry-After` header, for 429 and 503. */
   readonly retryAfterMs: number | undefined;
+  /** The parsed JSON error body, for routes that send more than `error` (for example a 409 with `current`). */
+  readonly body: unknown;
 
   constructor(init: { code: ApiErrorCode; status: number; message: string; snapshot?: EventSnapshotDto;
-    retryAfterMs?: number; cause?: unknown }) {
+    retryAfterMs?: number; body?: unknown; cause?: unknown }) {
     super(init.message, init.cause === undefined ? undefined : { cause: init.cause });
     this.code = init.code;
     this.status = init.status;
     this.snapshot = init.snapshot;
     this.retryAfterMs = init.retryAfterMs;
+    this.body = init.body;
   }
 
   /** True for 401: the session is gone and the console must sign in again. */
@@ -71,7 +74,7 @@ export async function errorFromResponse(response: Response): Promise<ApiError> {
   if (isErrorDto(body)) {
     const code = KNOWN_CODES.has(body.error.code) ? body.error.code : fallback;
     return new ApiError({ code, status: response.status, message: body.error.message,
-      ...(body.snapshot ? { snapshot: body.snapshot } : {}),
+      ...(body.snapshot ? { snapshot: body.snapshot } : {}), body,
       ...(retryAfterMs === undefined ? {} : { retryAfterMs }) });
   }
   return new ApiError({ code: fallback, status: response.status,

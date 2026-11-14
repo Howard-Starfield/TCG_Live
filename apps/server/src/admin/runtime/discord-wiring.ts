@@ -23,6 +23,10 @@ export interface DiscordAdminOptions {
   signupChannels?: AdminHandlerOptions['signupChannels'];
   prepareSignupChannel?: Parameters<NonNullable<AdminController['openSignup']>>[3];
   lease?: { isLost(): boolean };
+  /** Match evidence routes (mounted when given). */
+  evidence?: AdminHandlerOptions['evidence'];
+  /** Moderation settings, flags, helper voice bots and ops audit routes (mounted when given). */
+  moderation?: AdminHandlerOptions['moderation'];
   createRuntime?: (options: DiscordAdminRuntimeOptions) => DiscordAdminRuntime;
   createHandler?: (options: AdminHandlerOptions) => AdminHandler;
   write?: (text: string) => void;
@@ -83,7 +87,9 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
         options.prepareSignupChannel);
     } } : {}),
     ...(options.persistentSessions ? { persistentSessions: true } : {}),
-    ...(options.launcher ? { launcher: options.launcher } : {})
+    ...(options.launcher ? { launcher: options.launcher } : {}),
+    ...(options.evidence ? { evidence: options.evidence } : {}),
+    ...(options.moderation ? { moderation: options.moderation } : {})
   });
   const write = options.write ?? (text => { process.stdout.write(text); });
   let announced = false;

@@ -308,6 +308,8 @@ async function prepareSchema() {
     await store.setupPrivateDiscordSchema();
     const { setupTournamentDirectory } = await import('../apps/server/dist/tournaments/directory.js');
     await setupTournamentDirectory();
+    const { setupEvidenceSchema } = await import('../apps/server/dist/evidence/schema.js');
+    await setupEvidenceSchema();
   } catch {
     throw new Error('Local database setup could not complete. Existing data was kept; check free disk space and the local PostgreSQL log before retrying. No database reset was attempted.');
   }

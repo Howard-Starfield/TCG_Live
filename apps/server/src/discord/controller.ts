@@ -3,6 +3,7 @@ import type { Command, EventState, MatchId, Outcome, Player } from '../rehearsal
 import { isJudgeRequestCategory, MAX_JUDGE_REQUEST_LENGTH, type ArtworkGame, type OpenTournamentSignupResult } from '@tcg-live/core';
 import { RuleError, scheduledPublishDue, signupTournamentComplete } from '../rehearsal/domain.js';
 import { applyDiscordCommand, applyWebCommand, type WebCommandContext } from '../rehearsal/store.js';
+import type { MatchLifecycleEvent } from './features.js';
 import { parseButtonId, renderCard, renderTournamentRecap, type CardPayload, type ParsedButton } from './cards.js';
 import { channelForSlot, type PrivateDiscordConfig } from './config.js';
 import { activateSignupDraft, adoptSessionClocks, bindCard, claimResumeReminder, clearDeletedSessionCards, completeStickyCard, deleteActiveTournament, deletedSessionsWithCards, getSessionState, messageId, sessionSlots, NoActiveSessionError, replaceStickyCard, suspendStickyCard,
@@ -110,6 +111,7 @@ export class PrivateDiscordController {
   private deletedCardCleanup: Promise<void> | undefined;
   private sticky = new Map<string, StickyChannel>();
   private listeners = new Set<ControllerListener>();
+  private matchListeners = new Set<(event: MatchLifecycleEvent) => void>();
   private panelRevision = 0;
   private lastPending = false;
   /** A refresh that has not started yet; later requests of the same mode join it. */
@@ -141,6 +143,50 @@ export class PrivateDiscordController {
     private readonly adoptClocks = adoptSessionClocks
   ) {
     this.homeChannelId = config.channelId;
+  }
+
+  /**
+   * Committed match transitions for Discord features (judge called, dispute opened, judge resumed,
+   * match resolved). Same isolation as subscribe(); emitting never changes command handling.
+   */
+  onMatchEvent(listener: (event: MatchLifecycleEvent) => void): () => void {
+    this.matchListeners.add(listener);
+    return () => { this.matchListeners.delete(listener); };
+  }
+
+  private emitMatch(event: MatchLifecycleEvent): void {
+    for (const listener of [...this.matchListeners]) {
+      try {
+        queueMicrotask(() => {
+          try { listener(event); } catch { /* Features never affect Discord handling. */ }
+        });
+      } catch { /* Never reached; emission must not throw into the caller. */ }
+    }
+  }
+
+  /** Events known from the command alone, emitted right after the commit. */
+  private emitCommitted(eventId: string, command: Command, actorId: string | null): void {
+    if (!this.matchListeners.size) return;
+    const occurredAtMs = this.clock();
+    if (command.type === 'callJudge')
+      this.emitMatch({ type: 'judgeCalled', eventId, matchId: command.matchId, reason: 'called', requestedBy: actorId, occurredAtMs });
+    else if (command.type === 'dispute')
+      this.emitMatch({ type: 'disputeOpened', eventId, matchId: command.matchId, revision: command.revision, requestedBy: actorId, occurredAtMs });
+    else if (command.type === 'judgeResume')
+      this.emitMatch({ type: 'judgeResumed', eventId, matchId: command.matchId, occurredAtMs });
+  }
+
+  /** Events that depend on the committed state: a final result, or a clock that expired into a judge call. */
+  private emitFromState(eventId: string, command: Command, state: EventState): void {
+    if (!this.matchListeners.size || state.id !== eventId || !('matchId' in command)) return;
+    const match = state.matches.find(item => item.id === command.matchId);
+    if (!match) return;
+    const occurredAtMs = this.clock();
+    if ((command.type === 'confirm' || command.type === 'resolve' || command.type === 'correct') && match.phase === 'final')
+      this.emitMatch({ type: 'matchResolved', eventId, matchId: match.id, winner: match.finalWinner,
+        source: command.type === 'confirm' ? 'agreed' : 'admin', occurredAtMs });
+    else if (command.type === 'clockCheck' && match.phase === 'expired')
+      this.emitMatch({ type: 'judgeCalled', eventId, matchId: match.id, reason: 'expired', requestedBy: null, occurredAtMs });
   }
 
   /** Subscribers run in isolated microtasks; a throwing subscriber cannot affect replies, cards or shutdown. */
@@ -499,6 +545,7 @@ export class PrivateDiscordController {
       timer: { matchId, pauseGeneration, deadlineMs } }, { type: 'clockCheck', matchId }, this.runnerId, this.clock);
     if (result.applied) this.notify({ type: 'event', eventId });
     const latest = await this.read(this.config);
+    if (result.applied) this.emitFromState(eventId, { type: 'clockCheck', matchId }, latest.state);
     this.schedule(latest.state);
     if (result.applied) await this.requestRefresh();
   }
@@ -571,7 +618,7 @@ export class PrivateDiscordController {
     if (!this.accepting || !this.canPost()) return Promise.reject(new ControllerUnavailableError('Private Discord runtime is not accepting commands.'));
     const { command, ...context } = request;
     return this.track(this.commit(request.eventId, command,
-      () => this.applyWeb({ config: this.config, ...context }, command, this.runnerId, this.clock)));
+      () => this.applyWeb({ config: this.config, ...context }, command, this.runnerId, this.clock), request.principalId));
   }
 
   /**
@@ -736,10 +783,12 @@ export class PrivateDiscordController {
    * arms its expiry timer) and the card refresh. Errors before the commit reject. After a committed
    * change nothing rejects: a later failure schedules a retry and reports "saved; display pending".
    */
-  private async commit(eventId: string, command: Command, apply: () => Promise<Outcome>): Promise<AdminApplyResult> {
+  private async commit(eventId: string, command: Command, apply: () => Promise<Outcome>,
+    actorId: string | null = null): Promise<AdminApplyResult> {
     const outcome = await apply();
     try {
       if (outcome.applied) this.notify({ type: 'event', eventId });
+      if (outcome.applied) this.emitCommitted(eventId, command, actorId);
       let roomWarning = '';
       if (outcome.applied && ['signupClose', 'signupReopen', 'publish'].includes(command.type)) {
         try { await this.syncRooms?.(false); }
@@ -760,6 +809,7 @@ export class PrivateDiscordController {
         }
       }
       const latest = await this.read(this.config);
+      if (outcome.applied) this.emitFromState(eventId, command, latest.state);
       this.schedule(latest.state);
       if (!outcome.applied) return { outcome, cards: 'updated', roomWarning: null, reply: noChangeReply(outcome.result), degraded: false };
       let cardPending = false;
@@ -805,7 +855,8 @@ export class PrivateDiscordController {
       const cardId = slot && interaction.kind === 'judgeRequest' ? messageId(session, slot) : interaction.messageId;
       committed = await this.commit(session.event_id, command, () => this.apply({ config: this.config, eventId: session.event_id,
         principalId: interaction.userId, interactionId: interaction.id,
-        ...(slot && cardId ? { message: { slot, id: cardId, channelId: interaction.channelId! } } : {}) }, command, this.runnerId, this.clock));
+        ...(slot && cardId ? { message: { slot, id: cardId, channelId: interaction.channelId! } } : {}) }, command, this.runnerId, this.clock),
+        interaction.userId);
       if (committed.degraded) {
         // A post-commit failure already scheduled the retry; one reply attempt, as before.
         try { await interaction.reply(committed.reply); } catch { /* Initial acknowledgment already succeeded. */ }
