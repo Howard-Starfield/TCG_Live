@@ -31,3 +31,6 @@ apps/web/test-results/
 # Claude Code local scheduler state (the demo launch config in .claude/launch.json is tracked)
 .claude/scheduled_tasks.json
 .claude/scheduled_tasks.lock
+
+# graphify knowledge graph (regenerate with npm run graph)
+graphify-out/

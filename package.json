@@ -32,6 +32,7 @@
     "test:all": "npm run test:core && npm test && npm run test:web && npm run test:launcher",
     "admin:demo": "npm run build:web && npm run admin:demo --workspace @tcg-live/server",
     "web:dev": "npm run dev --workspace @tcg-live/web",
-    "test:e2e": "npm run build:all && npm run test:e2e --workspace @tcg-live/web"
+    "test:e2e": "npm run build:all && npm run test:e2e --workspace @tcg-live/web",
+    "graph": "py -3.14 -I -X utf8 scripts/graphify-rebuild.py"
   }
 }
