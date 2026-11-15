@@ -27,3 +27,7 @@ apps/web/dist/
 apps/web/playwright-report/
 apps/web/test-results/
 *.tsbuildinfo
+
+# Claude Code local scheduler state (the demo launch config in .claude/launch.json is tracked)
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock

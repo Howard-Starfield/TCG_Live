@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "admin-demo",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["apps/server/dist/admin/demo.js"],
+      "env": { "PORT": "3917" },
+      "port": 3917
+    }
+  ]
+}
