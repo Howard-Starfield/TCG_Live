@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { ensureLocalDatabase, runQuietCommand } from './local-database.mjs';
+import { ensureLocalDatabase, freePort, runQuietCommand } from './local-database.mjs';
 
 async function fixture(run) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'tcg-local-db-test-'));
@@ -204,27 +205,103 @@ test('persisted fresh credentials survive initdb failure and retry only while PG
     assert(env.DATABASE_URL.includes('@127.0.0.1:51949/tcg_rehearsal'));
   }));
 
-test('partial managed PGDATA is preserved and never sent to initdb again', async () =>
+const syntheticInitdb = data => async (file, _args, _timeout, log) => {
+  if (file.endsWith('initdb.exe')) {
+    assert.match(log ?? '', /initdb\.log$/);
+    await mkdir(path.join(data, 'base', '1'), { recursive: true });
+    await writeFile(path.join(data, 'PG_VERSION'), '18\n');
+  }
+  return file.endsWith('postgres.exe') ? 'postgres (PostgreSQL) 18.6' : '';
+};
+
+test('interrupted initdb is moved aside (never deleted) and initialized again', async () =>
   fixture(async ({ root, bin, data }) => {
     await assert.rejects(ensureLocalDatabase({ root, env: {}, dependencies: {
-      ensurePostgres: async () => bin, freePort: async () => 51949,
+      ensurePostgres: async () => bin, freePort: async () => 21949,
       runCommand: async file => {
         if (file.endsWith('initdb.exe')) {
-          await mkdir(data, { recursive: true });
+          await mkdir(path.join(data, 'base', '1'), { recursive: true });
+          await writeFile(path.join(data, 'PG_VERSION'), '18\n');
           await writeFile(path.join(data, 'partial'), 'keep');
           throw new Error('synthetic init failure');
         }
         return 'postgres (PostgreSQL) 18.6';
       }
     } }), /initialization failed/);
-    let commands = 0;
-    await assert.rejects(ensureLocalDatabase({ root, env: {}, dependencies: {
-      ensurePostgres: async () => bin,
-      runCommand: async () => { commands++; return 'postgres (PostgreSQL) 18.6'; }
-    } }), /Partial PostgreSQL data was preserved/);
-    assert.equal(commands, 0);
-    assert.equal(await readFile(path.join(data, 'partial'), 'utf8'), 'keep');
+    const commands = [];
+    const run = syntheticInitdb(data);
+    const result = await ensureLocalDatabase({ root, env: {}, dependencies: {
+      ensurePostgres: async () => bin, occupied: async () => false, clientFactory: fakeClient(data, { provision: true }).factory,
+      runCommand: async (...args) => { commands.push(path.basename(args[0])); return run(...args); }
+    } });
+    assert.equal(result.managed, true);
+    assert.equal(commands[0], 'initdb.exe');
+    const aside = (await readdir(path.join(root, 'data'))).filter(name => name.startsWith('postgres.incomplete-'));
+    assert.equal(aside.length, 1);
+    assert.equal(await readFile(path.join(root, 'data', aside[0], 'partial'), 'utf8'), 'keep');
+    assert(existsSync(path.join(data, 'tcg-live-initdb.complete')), 'completion marker written after initdb');
   }));
+
+test('managed cluster without the marker is kept when it was ever started or holds user data', async () =>
+  fixture(async ({ root, bin, data }) => {
+    const record = { ...credentials(data, 21950), version: 1, marker: 'tcg-live-local-postgres',
+      dataDirectory: path.join('data', 'postgres'), binDirectory: path.join('.local', 'postgresql', 'pgsql', 'bin') };
+    await mkdir(path.join(root, 'data'), { recursive: true });
+    await writeFile(path.join(root, 'data', 'local-database.json'), JSON.stringify(record));
+    for (const evidence of ['postmaster.opts', path.join('base', '16384')]) {
+      await rm(data, { recursive: true, force: true });
+      await mkdir(path.join(data, 'base', '1'), { recursive: true });
+      await writeFile(path.join(data, 'PG_VERSION'), '18\n');
+      if (evidence === 'postmaster.opts') await writeFile(path.join(data, evidence), 'synthetic');
+      else await mkdir(path.join(data, evidence));
+      const commands = [];
+      await ensureLocalDatabase({ root, env: {}, dependencies: {
+        ensurePostgres: async () => bin, occupied: async () => true, clientFactory: fakeClient(data).factory,
+        runCommand: async file => { commands.push(path.basename(file)); return 'postgres (PostgreSQL) 18.6'; }
+      } });
+      assert.deepEqual(commands, ['postgres.exe'], `no initdb when ${evidence} exists`);
+      assert.deepEqual((await readdir(path.join(root, 'data'))).filter(name => name.includes('incomplete')), []);
+    }
+  }));
+
+test('unbindable saved port moves a launcher-owned cluster to a new port once', async () =>
+  fixture(async ({ root, bin, data }) => {
+    const env = {};
+    const starts = [];
+    const run = syntheticInitdb(data);
+    const ports = [21951, 21952];
+    const result = await ensureLocalDatabase({ root, env, dependencies: {
+      ensurePostgres: async () => bin, occupied: async () => false, freePort: async () => ports.shift(),
+      clientFactory: fakeClient(data, { provision: true }).factory,
+      runCommand: async (file, args, timeout, log) => {
+        if (file.endsWith('pg_ctl.exe')) {
+          starts.push(args[args.indexOf('-o') + 1]);
+          assert.equal(args[args.indexOf('-t') + 1], '120');
+          assert(timeout > 120_000);
+          assert.match(log, /pg_ctl\.log$/);
+          if (starts.length === 1) throw new Error('synthetic bind failure');
+        }
+        return run(file, args, timeout, log);
+      }
+    } });
+    assert.deepEqual(starts, ['-h 127.0.0.1 -p 21951', '-h 127.0.0.1 -p 21952']);
+    assert.equal(result.port, 21952);
+    assert.equal(JSON.parse(await readFile(path.join(root, 'data', 'local-database.json'), 'utf8')).port, 21952);
+    assert(env.DATABASE_URL.includes('@127.0.0.1:21952/'));
+  }));
+
+test('fresh PostgreSQL port comes from the fixed range below the Windows ephemeral ports', async () => {
+  const tried = [];
+  const values = [0, 0.5, 0.999999];
+  const port = await freePort({ random: () => values.shift(), canBind: async candidate => {
+    tried.push(candidate); return tried.length === 3;
+  } });
+  assert.deepEqual(tried, [20_000, 30_000, 39_999]);
+  assert.equal(port, 39_999);
+  assert.equal(await freePort({ canBind: async () => false, attempts: 3 }), null);
+  const real = await freePort();
+  assert(real >= 20_000 && real < 40_000);
+});
 
 test('authenticated server advertising a non-loopback listener is refused', async () =>
   fixture(async ({ root, bin, data }) => {
@@ -288,3 +365,20 @@ test('quiet PostgreSQL helper resolves on exit without waiting for inherited str
   });
   assert.equal(await result, '');
 });
+
+test('quiet PostgreSQL helper sends output to a private log file handle when one is given', async () =>
+  fixture(async ({ root }) => {
+    const log = path.join(root, '.local', 'postgresql', 'initdb.log');
+    const child = new EventEmitter();
+    child.kill = () => {};
+    const result = runQuietCommand('initdb.exe', [], 100, (_file, _args, options) => {
+      assert(Array.isArray(options.stdio));
+      assert.equal(options.stdio[0], 'ignore');
+      assert.equal(typeof options.stdio[1], 'number');
+      assert.equal(options.stdio[1], options.stdio[2]);
+      queueMicrotask(() => child.emit('exit', 0));
+      return child;
+    }, log);
+    assert.equal(await result, '');
+    assert(existsSync(log));
+  }));

@@ -166,7 +166,7 @@ export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
         `✅ **Checked in:** ${state.checkins.length}/${state.firstRound ? signup.roster.length : 4}`,
         state.published ? `**Round published**${state.firstRound?.bye && players ? ` · Bye: <@${players[state.firstRound.bye]}>` : ''}`
           : startsAtMs === undefined ? 'Check in to publish the round.'
-            : 'The round publishes automatically at the scheduled start after check-in is complete.'
+            : 'Check in before the scheduled start. The round publishes then with everyone checked in (at least 2 players).'
       ] : ['Choose **Join** to sign up or **Withdraw** to leave the roster.'])
     ].join('\n');
     return { embeds: [{ title: `🌟 ${tournament?.name ?? 'Signup tournament'}`, description, color: 0xf59e0b,

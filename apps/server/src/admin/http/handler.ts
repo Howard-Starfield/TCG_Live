@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { artworkRoutes } from '../../artwork/routes.js';
+import { evidenceRoutes } from '../../evidence/routes.js';
+import { moderationRoutes } from '../../moderation/routes.js';
 import { tournamentRoutes } from '../../tournaments/routes.js';
 import { AUDIT_PAGE_LIMIT, type Capability, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
 import { sessionCapabilities } from '../commands.js';
@@ -108,7 +110,9 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       ...(options.persistentSessions && options.mode === 'discord' ? { persistent: true as const } : {}),
       ...(options.setup ? { setup: true as const } : {}),
       ...(options.artwork ? { artwork: true as const } : {}),
-      ...(options.tournaments ? { tournaments: true as const } : {})
+      ...(options.tournaments ? { tournaments: true as const } : {}),
+      ...(options.evidence ? { evidence: true as const } : {}),
+      ...(options.moderation ? { moderation: true as const } : {})
     };
   }
 
@@ -130,10 +134,11 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       } }
     } },
     { pattern: /^\/api\/v1\/session\/rotate-link$/, methods: {
-      POST: { access: 'session', run: async ({ request, response }) => {
+      POST: { access: 'session', run: async ({ request, response, session }) => {
         await readEmptyBody(request);
         if (closed) throw unavailable();
-        const url = sessions.rotate();
+        // Every other session ends with the old link; the admin who rotated stays signed in.
+        const url = sessions.rotate(session!);
         try { print(url); } catch { /* printing is best effort; the link is still rotated */ }
         sendNoContent(response);
       } }
@@ -209,7 +214,17 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       { pattern: /^\/api\/v1\/setup\/finish$/, methods: {
         POST: { access: 'session' as const, run: async ({ request, response }: Context) => {
           const result = await options.setup!.finish(await readJsonBody(request));
-          response.once('finish', () => { void options.setup!.handover().catch(() => {}); });
+          // Hand over once the reply is out, or once the client has gone: a dropped connection
+          // must not leave setup stuck "in progress" (handover() itself runs at most once).
+          let handedOver = false;
+          const handover = () => {
+            if (handedOver) return;
+            handedOver = true;
+            void options.setup!.handover().catch(() => {});
+          };
+          response.once('finish', handover);
+          response.once('close', handover);
+          if (response.destroyed) handover();
           sendJson(response, 200, result);
         } }
       } }
@@ -220,6 +235,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
         await options.artwork?.selectGame(game);
         return await options.applyArtwork?.() ?? { status: 'pending', message: 'Existing Discord panels are not available yet.' };
       }, options.openSignup, options.signupChannels, options.deleteTournament) : []),
+    ...(options.evidence ? evidenceRoutes({ ...options.evidence, sessionLive: session => sessions.isLive(session) }) : []),
+    ...(options.moderation ? moderationRoutes(options.moderation) : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 
@@ -283,7 +300,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
         inFlight.add(response);
         response.on('close', () => inFlight.delete(response));
         dispatch(request, response, pathname, queryAt === -1 ? '' : raw.slice(queryAt + 1))
-          .catch(error => fail(response, error, `${method} ${pathname}`))
+          .catch(error => fail(response, error, `${method} ${pathname.replace(/^\/api\/v1\/media\/.*/, '/api/v1/media/:ticket')}`))
           .finally(() => inFlight.delete(response));
         return true;
       } catch (error) {

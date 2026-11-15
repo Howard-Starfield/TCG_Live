@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { ADMIN_API_VERSION, formatStreamId, parseStreamId } from '@tcg-live/core';
 import { FIXTURE_BOOT_ID, FIXTURE_EVENT_ID, liveDispute } from '@tcg-live/core/fixtures';
 import { SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from './sessions.js';
-import { MAX_STREAMS } from './stream.js';
+import { MAX_STREAMS, MAX_STREAMS_PER_SESSION } from './stream.js';
 import { AdminUnavailableError } from '../runtime-types.js';
 import { fixtureStatus, SECOND_EVENT_ID, StubRuntime } from './test-runtime.js';
 import { call, delay, login, openStream, startHarness, waitFor, type StreamClient } from './test-support.js';
@@ -303,8 +303,10 @@ test('at most 20 streams are open; the runtime is subscribed only while one is',
     assert.equal(harness.admin.subscribed, false);
     assert.equal(harness.runtime.listeners.size, 0);
     const streams: StreamClient[] = [];
+    const tokens: string[] = [];
     for (let index = 0; index < MAX_STREAMS; index += 1) {
-      const stream = await openStream(harness.port, token);
+      if (index % MAX_STREAMS_PER_SESSION === 0) tokens.push(await login(harness));
+      const stream = await openStream(harness.port, tokens.at(-1)!);
       await stream.nextEvent('hello');
       streams.push(stream);
     }
@@ -316,7 +318,7 @@ test('at most 20 streams are open; the runtime is subscribed only while one is',
 
     streams.pop()!.close();
     await waitFor(() => harness.admin.streamCount < MAX_STREAMS, 'a free stream slot');
-    const again = await openStream(harness.port, token);
+    const again = await openStream(harness.port, tokens.at(-1)!);
     assert.equal(again.status, 200);
     streams.push(again);
 
@@ -324,6 +326,34 @@ test('at most 20 streams are open; the runtime is subscribed only while one is',
     await waitFor(() => harness.admin.streamCount === 0, 'every stream to close');
     assert.equal(harness.admin.subscribed, false);
     assert.equal(harness.runtime.listeners.size, 0, 'unsubscribed after the last stream closed');
+  } finally {
+    await harness.stop();
+  }
+});
+
+test('one session holds at most MAX_STREAMS_PER_SESSION streams; others still get theirs', async () => {
+  const harness = await startHarness();
+  try {
+    const token = await login(harness);
+    const streams: StreamClient[] = [];
+    for (let index = 0; index < MAX_STREAMS_PER_SESSION; index += 1) {
+      const stream = await openStream(harness.port, token);
+      await stream.nextEvent('hello');
+      streams.push(stream);
+    }
+    const refused = await call(harness.port, '/api/v1/stream', { token });
+    assert.equal(refused.status, 429);
+    assert.equal(refused.json().error.code, 'too_many_requests');
+    const other = await openStream(harness.port, await login(harness));
+    assert.equal(other.status, 200);
+    streams.push(other);
+    streams.shift()!.close();
+    await waitFor(() => harness.admin.streamCount === MAX_STREAMS_PER_SESSION, 'a freed session slot');
+    const again = await openStream(harness.port, token);
+    assert.equal(again.status, 200);
+    streams.push(again);
+    for (const stream of streams) stream.close();
+    await waitFor(() => harness.admin.streamCount === 0, 'every stream to close');
   } finally {
     await harness.stop();
   }

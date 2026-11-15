@@ -24,10 +24,12 @@ export interface DialogProps {
   tone?: 'default' | 'danger';
   /** Blocks Escape and backdrop dismissal while something is in flight. */
   dismissible?: boolean;
-  width?: 'sm' | 'md' | 'lg';
+  width?: 'sm' | 'md' | 'lg' | 'xl';
+  /** `drawer` docks the panel to the right edge at full height (same focus and dismissal rules). */
+  layout?: 'center' | 'drawer';
 }
 
-const WIDTH = { sm: 'max-w-[400px]', md: 'max-w-[480px]', lg: 'max-w-[640px]' } as const;
+const WIDTH = { sm: 'max-w-[400px]', md: 'max-w-[480px]', lg: 'max-w-[640px]', xl: 'max-w-[880px]' } as const;
 
 type OverflowSnapshot = { value: string; priority: string };
 const scrollLocks = new WeakMap<Document, { count: number; html: OverflowSnapshot; body: OverflowSnapshot }>();
@@ -61,7 +63,8 @@ function lockPageScroll(document: Document): () => void {
  * Modal dialog: traps Tab focus inside, closes on Escape and backdrop click, makes the rest of the page
  * inert, and returns focus to the element that opened it.
  */
-export function Dialog({ open, onClose, title, description, children, footer, initialFocusRef, role = 'dialog', tone = 'default', dismissible = true, width = 'md' }: DialogProps) {
+export function Dialog({ open, onClose, title, description, children, footer, initialFocusRef, role = 'dialog', tone = 'default', dismissible = true, width = 'md', layout = 'center' }: DialogProps) {
+  const drawer = layout === 'drawer';
   const titleId = useId();
   const descriptionId = useId();
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -125,14 +128,15 @@ export function Dialog({ open, onClose, title, description, children, footer, in
     <Portal>
       <AnimatePresence>
         {open && (
-          <div ref={layerRef} className="fixed inset-0 z-50 grid place-items-center p-4" onKeyDown={onKeyDown}>
+          <div ref={layerRef} className={cx('fixed inset-0 z-50 grid', drawer ? 'justify-items-end p-2' : 'place-items-center p-4')} onKeyDown={onKeyDown}>
             <motion.div aria-hidden className="absolute inset-0 bg-[rgb(20_19_17/0.32)] backdrop-blur-[2px] dark:bg-[rgb(0_0_0/0.5)]"
               variants={backdropVariants} initial="hidden" animate="shown" exit="exit"
               onClick={() => { if (dismissible) onClose(); }} />
             <motion.div ref={panelRef} role={role} aria-modal="true" aria-labelledby={titleId}
               aria-describedby={description ? descriptionId : undefined} tabIndex={-1}
               variants={panelVariants} initial="hidden" animate="shown" exit="exit"
-              className={cx('relative flex max-h-[min(640px,calc(100vh-32px))] w-full flex-col overflow-hidden rounded-xl bg-overlay text-fg shadow-pop outline-none', WIDTH[width])}>
+              className={cx('relative flex w-full flex-col overflow-hidden rounded-xl bg-overlay text-fg shadow-pop outline-none', WIDTH[width],
+                drawer ? 'h-[calc(100vh-16px)]' : 'max-h-[min(640px,calc(100vh-32px))]')}>
               <header className="flex items-start gap-3 px-5 pb-1 pt-4">
                 {tone === 'danger' && (
                   <span aria-hidden className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-danger-soft text-danger">
@@ -146,7 +150,7 @@ export function Dialog({ open, onClose, title, description, children, footer, in
                 <IconButton aria-label="Close dialog" data-dialog-close="true" size="sm" icon={<X aria-hidden />}
                   onClick={onClose} disabled={!dismissible} className="-mr-2 -mt-1" />
               </header>
-              {children && <div className="min-h-0 overflow-y-auto px-5 py-3 text-[13px]">{children}</div>}
+              {children && <div className={cx('min-h-0 overflow-y-auto px-5 py-3 text-[13px]', drawer && 'flex-1')}>{children}</div>}
               {footer && <footer className="flex items-center justify-end gap-2 px-5 pb-4 pt-2">{footer}</footer>}
             </motion.div>
           </div>

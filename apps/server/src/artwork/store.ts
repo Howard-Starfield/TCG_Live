@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises';
+import { constants as fsConstants, existsSync, readFileSync } from 'node:fs';
+import { copyFile, mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { imageSize } from 'image-size';
@@ -39,6 +39,11 @@ function emptyProfile(): Profile {
   return { version: 1, activeGame: null, games: {
     'one-piece': {}, 'one-punch-man': {}, pokemon: {}
   } };
+}
+
+/** JSON.parse that tolerates a leading UTF-8 byte order mark, as written by some editors. */
+function parseJson(text: string): unknown {
+  return JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
 }
 
 function parseProfile(raw: unknown): Profile {
@@ -99,22 +104,32 @@ function inspect(bytes: Buffer): { type: ImageType; width: number; height: numbe
 export class ArtworkStore {
   private profile = emptyProfile();
   private loadIssue: string | null = null;
+  /** The saved profile could not be read; keep a copy of it before the first save replaces it. */
+  private preserveInvalid = false;
   private mutation: Promise<unknown> = Promise.resolve();
   private readonly known = new Map<string, ResolvedArtwork>();
   private constructor(readonly directory: string) {}
 
+  private get profilePath(): string { return path.join(this.directory, 'profile.json'); }
+
+  private loadFailed(error: unknown): void {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    this.loadIssue = 'Saved artwork settings are invalid; using default artwork until you save a selection.';
+    this.preserveInvalid = true;
+  }
+
   static async open(directory = DEFAULT_ARTWORK_DIR): Promise<ArtworkStore> {
     const store = new ArtworkStore(path.resolve(directory));
-    try { store.profile = parseProfile(JSON.parse(await readFile(path.join(store.directory, 'profile.json'), 'utf8'))); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') store.loadIssue = 'Saved artwork settings are invalid; using default artwork until you save a selection.'; }
+    try { store.profile = parseProfile(parseJson(await readFile(store.profilePath, 'utf8'))); }
+    catch (error) { store.loadFailed(error); }
     store.rememberSelected();
     return store;
   }
 
   static openSync(directory = DEFAULT_ARTWORK_DIR): ArtworkStore {
     const store = new ArtworkStore(path.resolve(directory));
-    try { store.profile = parseProfile(JSON.parse(readFileSync(path.join(store.directory, 'profile.json'), 'utf8'))); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') store.loadIssue = 'Saved artwork settings are invalid; using default artwork until you save a selection.'; }
+    try { store.profile = parseProfile(parseJson(readFileSync(store.profilePath, 'utf8'))); }
+    catch (error) { store.loadFailed(error); }
     store.rememberSelected();
     return store;
   }
@@ -130,7 +145,12 @@ export class ArtworkStore {
     const temporary = path.join(this.directory, `.profile-${randomUUID()}.tmp`);
     try {
       await writeFile(temporary, JSON.stringify(next), { flag: 'wx', mode: 0o600 });
-      await rename(temporary, path.join(this.directory, 'profile.json'));
+      if (this.preserveInvalid) {
+        try { await copyFile(this.profilePath, `${this.profilePath}.invalid-${Date.now()}`, fsConstants.COPYFILE_EXCL); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        this.preserveInvalid = false;
+      }
+      await rename(temporary, this.profilePath);
     } finally { await unlink(temporary).catch(() => {}); }
     this.profile = next;
     this.loadIssue = null;

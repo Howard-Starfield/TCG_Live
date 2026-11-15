@@ -46,45 +46,88 @@ export async function verifyArchive(file, artifact = POSTGRES) {
     throw new RuntimeSetupError('Private runtime download checksum or size did not match. No runtime was installed.');
 }
 
+/**
+ * Downloads with a stall (no bytes received) timeout instead of a whole-transfer deadline and
+ * resumes interrupted attempts with an HTTP Range request. A server that ignores Range (200)
+ * restarts from zero. Size and SHA-256 are always verified over the complete file.
+ */
 export async function downloadArchive(file, artifact = POSTGRES,
-  { fetchImpl = fetch, write = text => process.stderr.write(text), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
-  let lastError;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    lastError = null;
-    const handle = await open(file, 'wx', 0o600);
-    try {
-      write(`TCG Live: downloading private PostgreSQL ${artifact.version} (${Math.ceil(artifact.size / 1024 / 1024)} MiB), attempt ${attempt}/3.\n`);
-      const response = await fetchImpl(artifact.url, { redirect: 'follow', signal: AbortSignal.timeout(600_000) });
-      if (!response.ok || !response.body) throw new Error('PostgreSQL download did not complete.');
-      const declared = Number(response.headers.get('content-length'));
-      if (Number.isFinite(declared) && declared > 0 && declared !== artifact.size)
-        throw new Error('PostgreSQL download size differs from the pinned archive.');
-      const hash = createHash('sha256');
-      let size = 0;
-      let nextProgress = Math.ceil(artifact.size / 4);
-      for await (const chunk of response.body) {
-        size += chunk.length;
-        if (size > artifact.size) throw new RuntimeSetupError('Private runtime download is larger than its pinned artifact.');
-        hash.update(chunk);
-        await handle.write(chunk);
-        if (size >= nextProgress) {
-          write(`TCG Live: PostgreSQL download ${Math.floor(size / artifact.size * 100)}%.\n`);
-          nextProgress += Math.ceil(artifact.size / 4);
+  { fetchImpl = fetch, write = text => process.stderr.write(text), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    stallMs = 60_000, maxFailures = 3, maxAttempts = 20 } = {}) {
+  const handle = await open(file, 'wx', 0o600);
+  const quarter = Math.ceil(artifact.size / 4);
+  let hash = createHash('sha256');
+  let size = 0;
+  let failures = 0;
+  let lastError = null;
+  const restart = async () => { await handle.truncate(0); hash = createHash('sha256'); size = 0; };
+  try {
+    for (let attempt = 1; attempt <= maxAttempts && failures < maxFailures; attempt++) {
+      const before = size;
+      const controller = new AbortController();
+      let timer;
+      const arm = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => controller.abort(new Error('PostgreSQL download stalled.')), stallMs);
+      };
+      try {
+        write(`TCG Live: downloading private PostgreSQL ${artifact.version} (${Math.ceil(artifact.size / 1024 / 1024)} MiB)` +
+          (size ? `, resuming at ${Math.floor(size / artifact.size * 100)}%` : '') + `, attempt ${attempt}.\n`);
+        arm();
+        const response = await fetchImpl(artifact.url, { redirect: 'follow', signal: controller.signal,
+          ...(size ? { headers: { Range: `bytes=${size}-` } } : {}) });
+        if (size && response.status === 206) {
+          const range = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(response.headers.get('content-range') ?? '');
+          if (!range || Number(range[1]) !== size || (range[3] !== '*' && Number(range[3]) !== artifact.size)) {
+            await restart();
+            throw new Error('PostgreSQL download resume range was not accepted.');
+          }
+        } else if (response.status === 200) {
+          if (size) await restart();
+        } else {
+          if (response.status === 416) await restart();
+          throw new Error('PostgreSQL download did not complete.');
         }
+        if (!response.body) throw new Error('PostgreSQL download did not complete.');
+        const declared = Number(response.headers.get('content-length'));
+        if (Number.isFinite(declared) && declared > 0 && declared !== artifact.size - size)
+          throw new Error('PostgreSQL download size differs from the pinned archive.');
+        let nextProgress = (Math.floor(size / quarter) + 1) * quarter;
+        for await (const chunk of response.body) {
+          arm();
+          if (size + chunk.length > artifact.size) {
+            await restart();
+            throw new RuntimeSetupError('Private runtime download is larger than its pinned artifact.');
+          }
+          await handle.write(chunk, 0, chunk.length, size);
+          hash.update(chunk);
+          size += chunk.length;
+          if (size >= nextProgress) {
+            write(`TCG Live: PostgreSQL download ${Math.floor(size / artifact.size * 100)}%.\n`);
+            nextProgress += quarter;
+          }
+        }
+        if (size < artifact.size) throw new Error('PostgreSQL download ended early.');
+        if (hash.digest('hex') !== artifact.sha256) {
+          await restart();
+          throw new RuntimeSetupError('Private runtime download checksum or size did not match. No runtime was installed.');
+        }
+        lastError = null;
+        return;
+      } catch (error) {
+        lastError = error;
+        // An interrupted transfer that made progress resumes without consuming the failure budget.
+        if (size <= before) failures++;
+      } finally {
+        clearTimeout(timer);
       }
-      if (size !== artifact.size || hash.digest('hex') !== artifact.sha256)
-        throw new RuntimeSetupError('Private runtime download checksum or size did not match. No runtime was installed.');
-      lastError = null;
-      return;
-    } catch (error) {
-      lastError = error;
-    } finally {
-      await handle.close();
-      if (lastError) await unlink(file).catch(() => {});
+      if (failures < maxFailures && attempt < maxAttempts) await sleep(2_000 * Math.max(1, failures));
     }
-    if (attempt < 3) await sleep(2_000 * attempt);
+    throw lastError ?? new Error('PostgreSQL download failed.');
+  } finally {
+    await handle.close();
+    if (lastError) await unlink(file).catch(() => {});
   }
-  throw lastError ?? new Error('PostgreSQL download failed.');
 }
 
 export async function probePostgresDetailed(bin, version = '18.6',

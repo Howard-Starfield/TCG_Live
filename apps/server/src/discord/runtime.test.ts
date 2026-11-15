@@ -5,7 +5,7 @@ import { Collection, Events, MessageFlags, MessageType, type Guild, type GuildMe
   type Interaction, type TextChannel, type VoiceChannel } from 'discord.js';
 import { channelForSlot, readPrivateDiscordConfig, publicConfig } from './config.js';
 import { assertSessionConfig, type SessionRow } from './session.js';
-import { adapt, discordRoomTransport, discordTransport, loginAndWaitReady } from './runtime.js';
+import { adapt, discordRoomTransport, discordTransport, loginAndWaitReady, RetryBackoff } from './runtime.js';
 
 const settings: NodeJS.ProcessEnv = {
   TCG_DISCORD_APPLICATION_ID: '111111111111111111',
@@ -312,4 +312,36 @@ test('gateway readiness waiter cleans up after login failure, cancellation, and 
   const timedOut = new FakeGateway();
   await assert.rejects(loginAndWaitReady(timedOut, 'synthetic-token', undefined, 5), /readiness/);
   assert.equal(timedOut.listenerCount(Events.ClientReady), 0);
+});
+
+test('a signup session keeps its own signup channel across restarts; legacy sessions stay on the configured channel', () => {
+  const signup = readPrivateDiscordConfig({ ...settings, TCG_DISCORD_PLAYER_A_ID: '', TCG_DISCORD_PLAYER_B_ID: '',
+    TCG_DISCORD_PLAYER_C_ID: '', TCG_DISCORD_PLAYER_D_ID: '' }, false, 'signup');
+  const moved: SessionRow = { event_id: 'fixture', application_id: signup.applicationId, guild_id: signup.guildId,
+    channel_id: '999999999999999999', identity_map: { kind: 'signup', adminId: signup.adminId }, status: 'active',
+    checkin_message_id: null, m1_message_id: null, m2_message_id: null };
+  assert.doesNotThrow(() => assertSessionConfig(moved, signup));
+  assert.throws(() => assertSessionConfig({ ...moved, guild_id: '999999999999999999' }, signup), /configuration differs/);
+  const legacy = readPrivateDiscordConfig(settings);
+  assert.throws(() => assertSessionConfig({ ...moved, identity_map: { players: legacy.players, adminId: legacy.adminId } }, legacy),
+    /configuration differs/);
+});
+
+test('scheduled draft retries back off exponentially per draft up to the cap and reset on success', () => {
+  let now = 0;
+  const backoff = new RetryBackoff(3_000, 10_000, () => now);
+  assert.equal(backoff.ready('a'), true);
+  const waits: number[] = [];
+  for (let attempt = 0; attempt < 4; attempt++) {
+    backoff.failed('a');
+    const start = now;
+    while (!backoff.ready('a')) now += 1_000;
+    waits.push(now - start);
+  }
+  assert.deepEqual(waits, [3_000, 6_000, 10_000, 10_000]);
+  backoff.failed('a');
+  assert.equal(backoff.ready('a'), false);
+  assert.equal(backoff.ready('b'), true, 'other drafts are unaffected');
+  backoff.succeeded('a');
+  assert.equal(backoff.ready('a'), true);
 });

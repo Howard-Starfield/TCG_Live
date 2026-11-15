@@ -6,7 +6,8 @@ export const galleries: Record<string, ComponentType> = {
   '#/__kit': lazy(() => import('./KitGallery').then(module => ({ default: module.KitGallery }))),
   '#/__flow': lazy(() => import('./FlowGallery').then(module => ({ default: module.FlowGallery }))),
   '#/__lists': lazy(() => import('./ListsGallery').then(module => ({ default: module.ListsGallery }))),
-  '#/__commands': lazy(() => import('./CommandsGallery').then(module => ({ default: module.CommandsGallery })))
+  '#/__commands': lazy(() => import('./CommandsGallery').then(module => ({ default: module.CommandsGallery }))),
+  '#/__moderation': lazy(() => import('./ModerationGallery').then(module => ({ default: module.ModerationGallery })))
 };
 
 export function resolveGallery(hash: string): ComponentType | null {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  ADMIN, createFixture, deriveFixture, transition, type Command, type EventState
+  ADMIN, adoptRunningClocks, createFixture, createTournamentFirstRound, deriveFixture, SCHEDULED_PUBLISH_WINDOW_MS, scheduledPublishDue, transition, type Command, type EventState, type Player
 } from './domain.js';
 
 const runner = 'runner-one';
@@ -156,4 +156,34 @@ test('participant judge request is idempotent and does not pause or award result
   state = apply(state, ADMIN, { type: 'resolve', matchId: 'M1', winner: 'B', reason: 'Practice ruling' }, now + 400);
   assert.equal(state.matches[0]!.judgeAttention, false);
   assert.throws(() => apply(state, 'player:A', { type: 'callJudge', matchId: 'M1' }, now + 500), /unavailable/);
+});
+
+test('a restarted runner adopts running clocks; admin resolve needs no clock ownership', () => {
+  const running = started();
+  assert.equal(adoptRunningClocks(running, runner), null, 'own clocks need no adoption');
+  assert.throws(() => apply(running, 'player:A', { type: 'pause', matchId: 'M1' }, now + 10, 'next-runner'), /another process/);
+  const adopted = adoptRunningClocks(running, 'next-runner')!;
+  assert.equal(adopted.matches[0]!.runnerId, 'next-runner');
+  assert.equal(adopted.matches[0]!.startedAtMs, running.matches[0]!.startedAtMs, 'elapsed time keeps counting');
+  assert.equal(adopted.version, running.version);
+  assert.equal(running.matches[0]!.runnerId, runner, 'the input is not mutated');
+  assert.equal(apply(adopted, 'player:A', { type: 'pause', matchId: 'M1' }, now + 10, 'next-runner').matches[0]!.phase, 'paused');
+  const resolved = apply(running, ADMIN, { type: 'resolve', matchId: 'M1', winner: 'A', reason: 'Interrupted clock' }, now + 10, 'next-runner');
+  assert.equal(resolved.matches[0]!.phase, 'final');
+  assert.equal(resolved.matches[0]!.runnerId, null);
+});
+
+test('scheduled publication is due only within the window after the start, with at least two check-ins', () => {
+  const state = createTournamentFirstRound('tournament', 60_000, 4, 0);
+  state.startsAtMs = 10_000;
+  state.signup = { status: 'assigned', roster: ['111111111111111111', '222222222222222222'],
+    assignment: { P1: '111111111111111111', P2: '222222222222222222' } as unknown as Record<Player, string> };
+  state.checkins = ['P1'];
+  assert.equal(scheduledPublishDue(state, 10_000), false, 'one check-in is not enough');
+  state.checkins = ['P1', 'P2'];
+  assert.equal(scheduledPublishDue(state, 9_999), false, 'never before the start');
+  assert.equal(scheduledPublishDue(state, 10_000), true);
+  assert.equal(scheduledPublishDue(state, 10_000 + SCHEDULED_PUBLISH_WINDOW_MS - 1), true);
+  assert.equal(scheduledPublishDue(state, 10_000 + SCHEDULED_PUBLISH_WINDOW_MS), false, 'a missed start waits for the admin');
+  assert.equal(scheduledPublishDue({ ...state, published: true }, 10_000), false);
 });

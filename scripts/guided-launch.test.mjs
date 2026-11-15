@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { claimOrReuse, ownedRecord, parseLauncherArgs, probeOwned, runOwnedLaunch, supportedNode, prepareApplication } from './guided-launch.mjs';
+import { claimOrReuse, ownedRecord, parseLauncherArgs, probeOwned, recoveryPorts, runOwnedLaunch, supportedNode,
+  prepareApplication, withRecoveryMutex } from './guided-launch.mjs';
 
 test('application preparation installs before database imports, builds before migrations, and leaves external schemas alone', async () => {
   const calls = [];
@@ -128,6 +130,74 @@ test('foreign record is not removed or treated as the running application', asyn
     /different or invalid/);
   assert.equal(JSON.parse(await readFile(options.file, 'utf8')).projectRoot, 'different checkout');
 }));
+
+test('record left by a moved checkout or changed PORT is reclaimed once its owner is dead', async () => withFiles(async options => {
+  await mkdir(path.dirname(options.file), { recursive: true });
+  for (const stale of [{ projectRoot: 'moved checkout', port: options.port }, { projectRoot: options.root, port: 3000 }]) {
+    await writeFile(options.file, JSON.stringify({ version: 1, pid: 987654321, instanceId: 'i'.repeat(32),
+      secret: 's'.repeat(43), ...stale }));
+    const claim = await claimOrReuse({ ...options, probe: async () => null, alive: pid => pid === process.pid,
+      occupied: async () => false });
+    assert.equal(claim.reused, false);
+    assert.equal(JSON.parse(await readFile(options.file, 'utf8')).instanceId, claim.record.instanceId);
+    await claim.release();
+  }
+}));
+
+test('same checkout on another PORT that still answers is reported, not removed', async () => withFiles(async options => {
+  await mkdir(path.dirname(options.file), { recursive: true });
+  await writeFile(options.file, JSON.stringify({ version: 1, projectRoot: options.root, port: 3000,
+    pid: process.pid, instanceId: 'i'.repeat(32), secret: 's'.repeat(43) }));
+  await assert.rejects(() => claimOrReuse({ ...options, probe: async () => ({ present: true }), alive: () => true }),
+    /already running|still running on port 3000/);
+  assert.equal(JSON.parse(await readFile(options.file, 'utf8')).port, 3000);
+}));
+
+test('reused PID with no identity answer, no listener and no heartbeat is reclaimed; a building owner is not', async () => withFiles(async options => {
+  const first = await claimOrReuse({ ...options, occupied: async () => false });
+  let ticks = 0;
+  await assert.rejects(() => claimOrReuse({ ...options, probe: async () => null, alive: () => true,
+    occupied: async () => false, sleep: async () => {}, now: () => ++ticks, maxWaitMs: 5 }), /did not answer/);
+  assert.equal(JSON.parse(await readFile(options.file, 'utf8')).instanceId, first.record.instanceId);
+  const later = () => Date.now() + 60_000;
+  await assert.rejects(() => claimOrReuse({ ...options, probe: async () => null, alive: () => true,
+    occupied: async () => true, sleep: async () => {}, now: () => ++ticks, maxWaitMs: 5, clock: later }),
+  /did not answer/, 'a listener on the recorded port keeps the record');
+  const next = await claimOrReuse({ ...options, probe: async () => null, alive: () => true,
+    occupied: async () => false, clock: later });
+  assert.equal(next.reused, false);
+  assert.notEqual(next.record.instanceId, first.record.instanceId);
+  await next.release();
+}));
+
+test('empty or garbled record is reclaimed once it is older than a few seconds', async () => withFiles(async options => {
+  await mkdir(path.dirname(options.file), { recursive: true });
+  await writeFile(options.file, '');
+  let ticks = 0;
+  await assert.rejects(() => claimOrReuse({ ...options, sleep: async () => {}, now: () => ++ticks, maxWaitMs: 5 }),
+    /unreadable/);
+  await writeFile(options.file, '{"version":1');
+  const claim = await claimOrReuse({ ...options, occupied: async () => false, clock: () => Date.now() + 10_000 });
+  assert.equal(claim.reused, false);
+  assert(ownedRecord(JSON.parse(await readFile(options.file, 'utf8')), options.root, options.port));
+  await claim.release();
+  await assert.rejects(() => readFile(options.file, 'utf8'), { code: 'ENOENT' });
+}));
+
+test('recovery mutex skips a port held by an unrelated program but yields to another launcher', async () => {
+  const root = path.join(os.tmpdir(), `tcg-mutex-${process.pid}-${Date.now()}`);
+  const [first] = recoveryPorts(root);
+  const foreign = net.createServer(socket => { socket.on('error', () => {}); socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); });
+  await new Promise((resolve, reject) => { foreign.once('error', reject); foreign.listen(first, '127.0.0.1', resolve); });
+  try {
+    let ran = false;
+    assert.equal(await withRecoveryMutex(root, async () => {
+      ran = true;
+      assert.equal(await withRecoveryMutex(root, async () => assert.fail('mutex must be exclusive')), false);
+    }), true);
+    assert.equal(ran, true);
+  } finally { await new Promise(resolve => foreign.close(resolve)); }
+});
 
 test('launcher accepts only a matching keyed proof and private loopback login URL', async () => {
   const original = globalThis.fetch;

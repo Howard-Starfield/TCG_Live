@@ -5,7 +5,7 @@ import { browserLocalStorage, safeStorage, type KeyValueStorage } from './storag
 export const PREFERENCES_KEY = 'tcg-admin.prefs.v1';
 
 export type ThemePreference = 'light' | 'dark' | 'system';
-export type ListTab = 'players' | 'matches' | 'audit' | 'panels';
+export type ListTab = 'players' | 'matches' | 'audit' | 'panels' | 'flags';
 export type CanvasView = 'event' | 'match';
 
 /** Console layout and display preferences, persisted per browser. */
@@ -42,7 +42,7 @@ export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
 }) as Preferences;
 
 const THEMES: readonly ThemePreference[] = ['light', 'dark', 'system'];
-const LIST_TABS: readonly ListTab[] = ['players', 'matches', 'audit', 'panels'];
+const LIST_TABS: readonly ListTab[] = ['players', 'matches', 'audit', 'panels', 'flags'];
 const CANVAS_VIEWS: readonly CanvasView[] = ['event', 'match'];
 
 const record = (value: unknown): Record<string, unknown> | null =>

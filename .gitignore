@@ -7,6 +7,9 @@ data/postgres/
 data/discord-room-overwrites/
 data/discord-setup.json
 data/artwork/
+data/evidence/
+data/voice-bots.json
+data/.voice-bots-*.tmp
 data/guided-instance.json
 data/local-database.json
 data/.managed-record-*.tmp

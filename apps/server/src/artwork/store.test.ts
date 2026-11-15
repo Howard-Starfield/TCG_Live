@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,5 +67,18 @@ test('uploads reject fake, mismatched, truncated and oversized artwork without c
     assert.equal(await readFile(path.join(directory, 'profile.json'), 'utf8'), malformed);
     await recovered.selectGame('one-piece');
     assert.equal(recovered.describe().loadIssue, undefined);
+    const backups = async () => (await readdir(directory)).filter(name => name.startsWith('profile.json.invalid-'));
+    const kept = await backups();
+    assert.equal(kept.length, 1, 'the invalid profile is preserved before it is replaced');
+    assert.equal(await readFile(path.join(directory, kept[0]!), 'utf8'), malformed);
+    await recovered.selectGame('pokemon');
+    assert.equal((await backups()).length, 1, 'only the first save keeps a copy');
+
+    const saved = await readFile(path.join(directory, 'profile.json'), 'utf8');
+    await writeFile(path.join(directory, 'profile.json'), `﻿${saved}`);
+    for (const reopened of [await ArtworkStore.open(directory), ArtworkStore.openSync(directory)]) {
+      assert.equal(reopened.describe().activeGame, 'pokemon', 'a UTF-8 BOM is tolerated');
+      assert.equal(reopened.describe().loadIssue, undefined);
+    }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

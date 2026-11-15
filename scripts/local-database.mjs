@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { link, lstat, mkdir, mkdtemp, open, readFile, realpath, readdir, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { closeSync, openSync } from 'node:fs';
+import { link, lstat, mkdir, mkdtemp, open, readFile, realpath, readdir, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +15,9 @@ const APP = 'tcg_rehearsal';
 const DATA_RELATIVE = path.join('data', 'postgres');
 const BIN_RELATIVE = path.join('.local', 'postgresql', 'pgsql', 'bin');
 const MARKER = 'tcg-live-local-postgres';
+const INIT_MARKER = 'tcg-live-initdb.complete';
+const FRESH_DATABASES = new Set(['1', '4', '5']); // template1, template0, postgres after initdb
+const PORT_RANGE = [20_000, 40_000]; // Below the Windows ephemeral range and its Hyper-V/WSL exclusions.
 const PORT_ERROR = 'The managed PostgreSQL port is occupied by an unverified server.';
 const OWNERSHIP_ERROR = 'The selected PostgreSQL cluster does not belong to this TCG Live checkout.';
 const CREDENTIAL_ERROR = 'The managed PostgreSQL credentials or database could not be verified.';
@@ -51,10 +55,31 @@ async function saveManagedRecord(file, record, root) {
   }
 }
 
-async function command(file, args, timeout = 25_000) {
+/** Atomic replacement of an existing record (used only to move the cluster to a new port). */
+async function replaceManagedRecord(file, record, root) {
+  const scratch = path.join(root, '.local', 'postgresql',
+    '.managed-record-' + randomBytes(12).toString('hex') + '.tmp');
+  let handle;
+  try {
+    await mkdir(path.dirname(scratch), { recursive: true });
+    handle = await open(scratch, 'wx', 0o600);
+    await handle.writeFile(JSON.stringify(record));
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(scratch, file);
+  } catch {
+    throw new Error('Managed PostgreSQL credentials could not be saved safely.');
+  } finally {
+    await handle?.close().catch(() => {});
+    await unlink(scratch).catch(() => {});
+  }
+}
+
+async function command(file, args, timeout = 25_000, logFile = null) {
   try {
     if (['pg_ctl.exe', 'initdb.exe'].includes(path.basename(file).toLowerCase()))
-      return await runQuietCommand(file, args, timeout);
+      return await runQuietCommand(file, args, timeout, spawn, logFile);
     const result = await execute(file, args, { windowsHide: true, timeout, maxBuffer: 256 * 1024 });
     return result.stdout;
   } catch {
@@ -62,11 +87,21 @@ async function command(file, args, timeout = 25_000) {
   }
 }
 
-export async function runQuietCommand(file, args, timeout, launch = spawn) {
+/**
+ * Output goes to a private log file (a file handle, never a pipe, so exit is not delayed by the
+ * server inheriting the stream). Without a log file the output is discarded.
+ */
+export async function runQuietCommand(file, args, timeout, launch = spawn, logFile = null) {
   return new Promise((resolve, reject) => {
     let child;
-    try { child = launch(file, args, { windowsHide: true, stdio: 'ignore' }); }
+    let log = null;
+    if (logFile) {
+      try { log = openSync(logFile, 'a', 0o600); }
+      catch { log = null; }
+    }
+    try { child = launch(file, args, { windowsHide: true, stdio: log === null ? 'ignore' : ['ignore', log, log] }); }
     catch { reject(new Error('The local PostgreSQL command failed.')); return; }
+    finally { if (log !== null) closeSync(log); }
     let settled = false;
     const finish = ok => {
       if (settled) return;
@@ -101,16 +136,22 @@ async function occupied(port) {
   });
 }
 
-async function freePort() {
+async function bindable(port) {
   const server = net.createServer();
-  return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, HOST, () => {
-      const address = server.address();
-      const port = typeof address === 'object' ? address.port : null;
-      server.close(error => error ? reject(error) : resolve(port));
-    });
+  return new Promise(resolve => {
+    server.once('error', () => resolve(false));
+    server.listen(port, HOST, () => server.close(() => resolve(true)));
   });
+}
+
+/** A random bindable port from a fixed range below the Windows ephemeral/excluded ranges. */
+export async function freePort({ random = Math.random, canBind = bindable, attempts = 50 } = {}) {
+  const [low, high] = PORT_RANGE;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const port = low + Math.floor(random() * (high - low));
+    if (await canBind(port)) return port;
+  }
+  return null;
 }
 
 async function createClient(config) {
@@ -231,7 +272,7 @@ async function provision(record, clientFactory) {
   });
 }
 
-async function initialize(record, dataDirectory, binDirectory, run) {
+async function initialize(record, dataDirectory, binDirectory, run, logFile) {
   const scratch = await mkdtemp(path.join(os.tmpdir(), 'tcg-pg-init-'));
   const pwfile = path.join(scratch, 'password');
   try {
@@ -240,12 +281,35 @@ async function initialize(record, dataDirectory, binDirectory, run) {
       await run(path.join(binDirectory, 'initdb.exe'),
         ['-D', dataDirectory, '--username=' + record.adminUser,
           '--auth-host=scram-sha-256', '--auth-local=scram-sha-256',
-          '--encoding=UTF8', '--pwfile=' + pwfile], 60_000);
-    } catch { throw new Error('The local PostgreSQL initialization failed; saved credentials were preserved.'); }
+          '--encoding=UTF8', '--pwfile=' + pwfile], 60_000, logFile);
+      await writeFile(path.join(dataDirectory, INIT_MARKER), new Date().toISOString() + '\n');
+    } catch { throw new Error('The local PostgreSQL initialization failed; saved credentials were preserved. See .local/postgresql/initdb.log.'); }
   } finally {
     await unlink(pwfile).catch(() => {});
     await rmdir(scratch).catch(() => {});
   }
+}
+
+/**
+ * 'empty', 'complete', or 'incomplete' (an interrupted initdb). Clusters predating the marker count
+ * as complete once a server has ever started (postmaster.opts) or any database beyond initdb's
+ * three exists, so existing installs are never moved aside.
+ */
+async function clusterState(dataDirectory) {
+  let entries;
+  try { entries = await readdir(dataDirectory); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return 'empty';
+    throw new Error('Managed PostgreSQL data is unreadable.');
+  }
+  if (!entries.length) return 'empty';
+  if (entries.includes(INIT_MARKER) || entries.includes('postmaster.opts')) return 'complete';
+  let databases = [];
+  try { databases = await readdir(path.join(dataDirectory, 'base')); }
+  catch (error) {
+    if (error?.code !== 'ENOENT') throw new Error('Managed PostgreSQL data is unreadable.');
+  }
+  return databases.some(name => !FRESH_DATABASES.has(name)) ? 'complete' : 'incomplete';
 }
 
 /**
@@ -279,6 +343,8 @@ export async function ensureLocalDatabase({ root, env = process.env, dependencie
   const isOccupied = dependencies.occupied ?? occupied;
   const selectPort = dependencies.freePort ?? freePort;
   const clientFactory = dependencies.clientFactory ?? createClient;
+  const initdbLog = path.join(projectRoot, '.local', 'postgresql', 'initdb.log');
+  const pgCtlLog = path.join(projectRoot, '.local', 'postgresql', 'pg_ctl.log');
   let binDirectory;
   try { binDirectory = dependencies.runtimeBinDirectory ?? await ensurePostgres(projectRoot); }
   catch (error) {
@@ -308,34 +374,40 @@ export async function ensureLocalDatabase({ root, env = process.env, dependencie
     };
     await mkdir(path.dirname(dataDirectory), { recursive: true });
     await saveManagedRecord(metadataPath, record, projectRoot);
-    await initialize(record, dataDirectory, binDirectory, run);
+    await initialize(record, dataDirectory, binDirectory, run, initdbLog);
   } else if (source === 'managed') {
-    let hasVersion = true;
-    try { await readFile(path.join(dataDirectory, 'PG_VERSION'), 'utf8'); }
-    catch (error) {
-      if (error?.code !== 'ENOENT') throw new Error('Managed PostgreSQL data is unreadable.');
-      hasVersion = false;
+    const state = await clusterState(dataDirectory);
+    if (state === 'incomplete') {
+      // An interrupted initdb with no user database: keep it for review, then initialize afresh.
+      await assertOwnedDirectory(dataDirectory);
+      const aside = `${dataDirectory}.incomplete-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      try { await rename(dataDirectory, aside); }
+      catch { throw new Error('Partial PostgreSQL data could not be moved aside; it was not reinitialized.'); }
+      process.stderr.write(`TCG Live: an interrupted PostgreSQL setup was moved to data/${path.basename(aside)}.\n`);
     }
-    if (!hasVersion) {
-      let entries;
-      try { entries = await readdir(dataDirectory); }
-      catch (error) {
-        if (error?.code !== 'ENOENT') throw new Error('Managed PostgreSQL data is unreadable.');
-        entries = [];
-      }
-      if (entries.length) throw new Error('Partial PostgreSQL data was preserved for manual review; it was not reinitialized.');
-      await initialize(record, dataDirectory, binDirectory, run);
-    }
+    if (state !== 'complete') await initialize(record, dataDirectory, binDirectory, run, initdbLog);
   }
   await assertOwnedDirectory(dataDirectory);
   await verifyVersion(dataDirectory, binDirectory, run);
+  const startError = () => new Error('The managed PostgreSQL cluster could not be started; review .local/postgresql/server.log and pg_ctl.log.');
+  const startCluster = port => run(path.join(binDirectory, 'pg_ctl.exe'),
+    ['-D', dataDirectory, '-l', path.join(projectRoot, '.local', 'postgresql', 'server.log'),
+      '-o', `-h ${HOST} -p ${port}`, '-w', '-t', '120', 'start'], 135_000, pgCtlLog);
   const wasOccupied = await isOccupied(record.port);
   if (!wasOccupied) {
-    try {
-      await run(path.join(binDirectory, 'pg_ctl.exe'),
-        ['-D', dataDirectory, '-l', path.join(projectRoot, '.local', 'postgresql', 'server.log'),
-          '-o', `-h ${HOST} -p ${record.port}`, '-w', '-t', '20', 'start'], 30_000);
-    } catch { throw new Error('The managed PostgreSQL cluster could not be started; review its private log.'); }
+    try { await startCluster(record.port); }
+    catch {
+      // The saved port may have become unbindable (e.g. a Windows excluded port range). Move a
+      // launcher-owned record to a new port once; never when the URL is pinned or the port is in use.
+      if (source === 'legacy' || explicit || await isOccupied(record.port)) throw startError();
+      const port = await selectPort();
+      if (!validPort(port) || port === record.port) throw startError();
+      record = { ...record, port };
+      await replaceManagedRecord(metadataPath, record, projectRoot);
+      process.stderr.write(`TCG Live: local PostgreSQL moved to port ${port}.\n`);
+      try { await startCluster(port); }
+      catch { throw startError(); }
+    }
   }
   try { await verifyOwnership(record, dataDirectory, clientFactory); }
   catch { throw new Error(wasOccupied ? PORT_ERROR : OWNERSHIP_ERROR); }

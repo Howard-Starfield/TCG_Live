@@ -176,18 +176,21 @@ test('missing, malformed, unknown, expired and logged-out bearer tokens are 401'
   }
 });
 
-test('launch-token attempts are rate limited globally', async () => {
+test('failed launch-token attempts are rate limited globally; the right token still signs in', async () => {
   let now = 9_000_000;
   const harness = await startHarness({}, { now: () => now });
   const attempt = (token: string) => call(harness.port, '/api/v1/session', { method: 'POST', body: JSON.stringify({ token }) });
   try {
+    for (let index = 0; index < 3 * LOGIN_MAX_FAILURES; index += 1)
+      assert.equal((await attempt(harness.launchToken())).status, 200, 'successful sign-ins do not count');
     for (let index = 0; index < LOGIN_MAX_FAILURES; index += 1) assert.equal((await attempt(`wrong-${index}`)).status, 401);
-    const limited = await attempt(harness.launchToken());
-    assert.equal(limited.status, 429, 'even the right token waits out the window');
+    const limited = await attempt('wrong-again');
+    assert.equal(limited.status, 429, 'further guesses wait out the window');
     assert.equal(limited.json().error.code, 'too_many_requests');
     assert.equal(limited.headers['retry-after'], '60');
+    assert.equal((await attempt(harness.launchToken())).status, 200, 'a local process cannot lock the admin out');
     now += 60_001;
-    assert.equal((await attempt(harness.launchToken())).status, 200);
+    assert.equal((await attempt('wrong-later')).status, 401, 'the window resets');
   } finally {
     await harness.stop();
   }
@@ -209,7 +212,7 @@ test('rotate-link prints a fresh link and the old launch token stops working', a
     assert.notEqual(harness.launchToken(), fixed);
     const old = await call(harness.port, '/api/v1/session', { method: 'POST', body: JSON.stringify({ token: fixed }) });
     assert.equal(old.status, 401);
-    assert.equal((await call(harness.port, '/api/v1/session', { token })).status, 200, 'existing sessions survive rotation');
+    assert.equal((await call(harness.port, '/api/v1/session', { token })).status, 200, 'the rotating session survives');
     const direct = harness.admin.rotateLoginUrl();
     assert.equal(direct, harness.admin.loginUrl());
     assert.equal(harness.printed.length, 1, 'rotateLoginUrl() only returns the link');
@@ -218,6 +221,25 @@ test('rotate-link prints a fresh link and the old launch token stops working', a
     await harness.stop();
     await discord.stop();
   }
+});
+
+test('rotating the link ends every other session and its streams, including persistent ones', async () => {
+  let now = 1_000_000;
+  const harness = await startHarness({ mode: 'discord', persistentSessions: true }, { now: () => now });
+  let leakedStream: Awaited<ReturnType<typeof openStream>> | null = null;
+  try {
+    const mine = await login(harness);
+    const leaked = await login(harness);
+    leakedStream = await openStream(harness.port, leaked);
+    await leakedStream.nextEvent('hello');
+    now += 365 * 24 * HOUR;
+    assert.equal((await call(harness.port, '/api/v1/session/rotate-link', { method: 'POST', token: mine })).status, 204);
+    await leakedStream.ended;
+    assert.equal((await call(harness.port, '/api/v1/session', { token: leaked })).status, 401, 'other sessions end');
+    assert.equal((await call(harness.port, '/api/v1/session', { token: mine })).status, 200, 'the caller stays signed in');
+    harness.admin.rotateLoginUrl();
+    assert.equal((await call(harness.port, '/api/v1/session', { token: mine })).status, 200, 'a server-side rotation (launcher, demo) keeps signed-in tabs');
+  } finally { leakedStream?.close(); await harness.stop(); }
 });
 
 test('read routes return runtime data and validate their parameters', async () => {

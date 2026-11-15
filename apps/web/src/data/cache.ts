@@ -58,11 +58,11 @@ function summaryFrom(snapshot: EventSnapshotDto): EventSummaryDto {
 export const INACTIVE_EVENT_GC_MS = 5 * 60_000;
 
 /**
- * A new event became active: the stream no longer updates the previous one, whose cached snapshot
- * still says `active`. Observed queries refetch (they are retired now); unobserved ones are dropped,
- * so they neither show stale state later nor stay cached forever.
+ * A new event became active (or, on `hello`, none is): the stream no longer updates the previous one,
+ * whose cached snapshot still says `active`. Observed queries refetch (they are retired now);
+ * unobserved ones are dropped, so they neither show stale state later nor stay cached forever.
  */
-function releasePreviousActive(queryClient: QueryClient, activeEventId: string): void {
+function releasePreviousActive(queryClient: QueryClient, activeEventId: string | null): void {
   const cache = queryClient.getQueryCache();
   for (const [key, snapshot] of queryClient.getQueriesData<EventSnapshotDto>({ queryKey: adminKeys.snapshots() })) {
     if (!snapshot || snapshot.status !== 'active' || snapshot.eventId === activeEventId) continue;
@@ -86,6 +86,11 @@ export function applyStreamEvent(queryClient: QueryClient, clock: ServerClock, e
         // (the demo runtime starts over). Reset them; mounted queries refetch, the stream refills.
         void queryClient.resetQueries({ queryKey: adminKeys.snapshots() });
         void queryClient.resetQueries({ queryKey: adminKeys.audits() });
+      } else if (!(event.activeEventId === null && event.status.database === 'unavailable')) {
+        // An event retired while we were disconnected sends no `change` on resume (with no active
+        // event, hello is all we get), so release any other event still cached as active. During a
+        // database outage "no active event" is not reliable; keep the cache then.
+        releasePreviousActive(queryClient, event.activeEventId);
       }
       queryClient.setQueryData<RuntimeStatusDto>(adminKeys.status(), event.status);
       void queryClient.invalidateQueries({ queryKey: adminKeys.events() });

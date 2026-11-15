@@ -1,7 +1,7 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { AUDIT_PAGE_LIMIT, type AuditEntryDto, type Capability, type EventSnapshotDto,
   type EventSummaryDto, type RuntimeStatusDto, type SessionDto } from '@tcg-live/core';
-import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useAdminData, type AdminData } from './admin-data';
 import { auditHasOlder, mergeAuditEntries, olderPageQuery, type AuditLog } from './audit-log';
 import { adminKeys, INACTIVE_EVENT_GC_MS, isSnapshotNewer } from './cache';
@@ -206,40 +206,57 @@ export function useAudit(eventId: string | null | undefined, pageSize: number = 
   const [isFetchingOlder, setFetchingOlder] = useState(false);
   const [isFetchingMore, setFetchingMore] = useState(false);
   const [pageError, setPageError] = useState<ApiError | null>(null);
-  const inFlight = useRef({ older: false, more: false });
+  // Paging state belongs to one event: reset it when the event changes, and ignore results of
+  // requests started for a previous event.
+  const [pagingId, setPagingId] = useState(id);
+  if (pagingId !== id) {
+    setPagingId(id);
+    setFetchingOlder(false);
+    setFetchingMore(false);
+    setPageError(null);
+  }
+  const currentId = useRef(id);
+  useEffect(() => { currentId.current = id; }, [id]);
+  const inFlight = useRef(new Set<string>());
   const limit = Math.max(1, Math.min(AUDIT_PAGE_LIMIT, pageSize));
 
   const fetchOlder = useCallback(async () => {
-    if (!id || inFlight.current.older) return;
+    const flightKey = `older:${id}`;
+    if (!id || inFlight.current.has(flightKey)) return;
     const key = adminKeys.audit(id);
     const pageQuery = olderPageQuery(data.queryClient.getQueryData<AuditLog>(key), limit);
     if (!pageQuery) return;
-    inFlight.current.older = true;
+    inFlight.current.add(flightKey);
     setFetchingOlder(true);
     try {
       const page = await data.api.getAudit(id, pageQuery);
       data.queryClient.setQueryData<AuditLog>(key, latest => {
         if (!latest) return latest;
         const before = latest.entries[0]?.sequence ?? Infinity;
+        const pageLast = page.reduce((max, entry) => Math.max(max, entry.sequence), -Infinity);
+        // A stream `replace` may have moved the cached run past this page while it loaded; merging
+        // it would hide the gap in between, so drop it (the next fetchOlder asks for the right page).
+        if (page.length > 0 && pageLast < before - 1) return latest;
         const entries = mergeAuditEntries(latest.entries, page);
         const gained = (entries[0]?.sequence ?? Infinity) < before;
         return { ...latest, entries, olderExhausted: !gained };
       });
-      setPageError(null);
+      if (currentId.current === id) setPageError(null);
     } catch (error) {
-      setPageError(toApiError(error));
+      if (currentId.current === id) setPageError(toApiError(error));
     } finally {
-      inFlight.current.older = false;
-      setFetchingOlder(false);
+      inFlight.current.delete(flightKey);
+      if (currentId.current === id) setFetchingOlder(false);
     }
   }, [data, id, limit]);
 
   const fetchMore = useCallback(async () => {
-    if (!id || inFlight.current.more) return;
+    const flightKey = `more:${id}`;
+    if (!id || inFlight.current.has(flightKey)) return;
     const key = adminKeys.audit(id);
     const log = data.queryClient.getQueryData<AuditLog>(key);
     const after = log?.entries[log.entries.length - 1]?.sequence ?? 0;
-    inFlight.current.more = true;
+    inFlight.current.add(flightKey);
     setFetchingMore(true);
     try {
       const page = await data.api.getAudit(id, { after, limit });
@@ -247,12 +264,12 @@ export function useAudit(eventId: string | null | undefined, pageSize: number = 
         const base = latest ?? { entries: [], olderExhausted: false, hasMore: false };
         return { ...base, entries: mergeAuditEntries(base.entries, page), hasMore: page.length >= limit };
       });
-      setPageError(null);
+      if (currentId.current === id) setPageError(null);
     } catch (error) {
-      setPageError(toApiError(error));
+      if (currentId.current === id) setPageError(toApiError(error));
     } finally {
-      inFlight.current.more = false;
-      setFetchingMore(false);
+      inFlight.current.delete(flightKey);
+      if (currentId.current === id) setFetchingMore(false);
     }
   }, [data, id, limit]);
 

@@ -79,3 +79,22 @@ it('ordinary signed-in sessions never call setup routes', async () => {
   await waitFor(() => expect(server.callsTo('GET /session').length).toBeGreaterThan(0));
   expect(server.calls.filter(call => call.url.includes('/setup'))).toHaveLength(0);
 });
+
+it('Refresh reloads the channel list without overwriting choices in progress', async () => {
+  const user = userEvent.setup();
+  const { server } = mountSetup({ prerequisite: null, activeEventId: null, selection: null,
+    frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
+  await user.selectOptions(await screen.findByRole('combobox', { name: /Discord server/ }), ids[0]!);
+  await user.click(screen.getByRole('button', { name: 'Next: channels' }));
+  await user.selectOptions(await screen.findByRole('combobox', { name: /Signup text channel/ }), ids[1]!);
+  expect(server.callsTo('GET /setup/channels')).toHaveLength(1);
+  // The bot was granted another channel, and the server now reports a different saved selection.
+  server.always('GET /setup/channels', () => json(200, [...channels,
+    { id: '666666666666666666', name: 'late-signups', category: 'Tournament', type: 'text' }]));
+  server.always('GET /setup', () => json(200, { prerequisite: null, activeEventId: null, frozen: false,
+    selection: { ...selection, channelId: ids[0]! }, botName: 'BoBoAssist', check: null, openingDashboard: false }));
+  await user.click(screen.getByRole('button', { name: 'Refresh' }));
+  expect(await screen.findByRole('option', { name: 'late-signups' })).toBeInTheDocument();
+  expect(server.callsTo('GET /setup/channels')).toHaveLength(2);
+  expect(screen.getByRole('combobox', { name: /Signup text channel/ })).toHaveValue(ids[1]);
+});

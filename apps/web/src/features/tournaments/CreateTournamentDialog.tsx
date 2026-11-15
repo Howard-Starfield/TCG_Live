@@ -4,7 +4,7 @@ import { ARTWORK_GAMES, DEFAULT_MATCH_MINUTES, DEFAULT_SIGNUP_CAPACITY, DEFAULT_
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, CircleHelp } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { useAdminData, useEventSnapshot } from '../../data';
+import { useAdminData, useEventSnapshot, useServerClock } from '../../data';
 import { Button, Dialog, Field, IconButton, Input, Select, Textarea, Tooltip, useToast } from '../../ui';
 import { useShell } from '../shell/model';
 import { tournamentDirectoryKey } from './directory';
@@ -25,6 +25,8 @@ export function CreateTournamentDialog({ open, defaultGame, initial, onClose, on
   const { api, queryClient } = useAdminData();
   const shell = useShell();
   const toast = useToast();
+  // The server checks start and signup times against its own clock, so compare with server time.
+  const clock = useServerClock();
   const [game, setGame] = useState<ArtworkGame>(defaultGame);
   const [name, setName] = useState('');
   const [start, setStart] = useState('');
@@ -33,9 +35,9 @@ export function CreateTournamentDialog({ open, defaultGame, initial, onClose, on
   const plannedSignupMs = signupStart ? new Date(signupStart).getTime() : NaN;
   const immediateSignupMs = useRef<number | null>(null);
   const startsAtMs = start ? new Date(start).getTime() : NaN;
-  const hasFutureStart = Number.isFinite(startsAtMs) && startsAtMs > Date.now();
+  const hasFutureStart = Number.isFinite(startsAtMs) && startsAtMs > clock.now();
   const validSignupTiming = signupTiming === 'immediate' ||
-    (Number.isFinite(plannedSignupMs) && plannedSignupMs > Date.now() && plannedSignupMs < startsAtMs);
+    (Number.isFinite(plannedSignupMs) && plannedSignupMs > clock.now() && plannedSignupMs < startsAtMs);
   const [description, setDescription] = useState('');
   const [minutes, setMinutes] = useState(String(DEFAULT_MATCH_MINUTES));
   const [capacity, setCapacity] = useState(String(DEFAULT_SIGNUP_CAPACITY));
@@ -47,6 +49,9 @@ export function CreateTournamentDialog({ open, defaultGame, initial, onClose, on
   const [error, setError] = useState<string | null>(null);
   const form = useRef<HTMLFormElement>(null);
   const draftId = useRef<string | null>(null);
+  // What `draftId` was last sent with: an identical retry reuses the ID (idempotent), an edited one
+  // gets a new ID (the server rejects a known ID with different contents).
+  const draftFingerprint = useRef<string | null>(null);
   const unavailable = !shell.session.commandsEnabled;
   const active = useEventSnapshot(open ? shell.activeEventId : null).data;
   const destination = active?.status === 'active' ? active.discord : undefined;
@@ -62,8 +67,18 @@ export function CreateTournamentDialog({ open, defaultGame, initial, onClose, on
     retry: false
   });
 
+  // Reset the form only when the dialog opens (or is pointed at another entry), not whenever the
+  // directory loads or the default game changes while the user is typing.
+  const wasOpen = useRef(false);
+  const resetFor = useRef<TournamentDirectoryEntryDto['eventId'] | null>(null);
+  const openedDefault = useRef(defaultGame);
   useEffect(() => {
-    if (!open) return;
+    const opening = open && !wasOpen.current;
+    wasOpen.current = open;
+    const target = initial?.eventId ?? null;
+    if (!open || (!opening && target === resetFor.current)) return;
+    resetFor.current = target;
+    openedDefault.current = defaultGame;
     const selectedGame = initial?.game ?? defaultGame;
     setGame(selectedGame);
     setName(initial?.name ?? `${gameLabel[selectedGame]} Tournament`);
@@ -80,20 +95,44 @@ export function CreateTournamentDialog({ open, defaultGame, initial, onClose, on
     setChannelOverride(initial ? initial.signupChannelId ?? '' : undefined);
     setError(null);
     draftId.current = null;
+    draftFingerprint.current = null;
   }, [open, defaultGame, initial]);
+
+  // A default game that arrives late (directory loaded, active game changed) is adopted only while
+  // the game and name are still the untouched defaults.
+  useEffect(() => {
+    if (!open || initial || defaultGame === openedDefault.current) return;
+    const previousDefault = openedDefault.current;
+    openedDefault.current = defaultGame;
+    if (game !== previousDefault || name !== `${gameLabel[previousDefault]} Tournament`) return;
+    setGame(defaultGame);
+    setName(`${gameLabel[defaultGame]} Tournament`);
+    setBannerOverride(undefined);
+    setChannelOverride(undefined);
+  }, [open, initial, defaultGame, game, name]);
 
   async function save(asDraft: boolean) {
     if (busy || (!asDraft && (!hasFutureStart || !validSignupTiming)) || !form.current?.reportValidity()) return;
     setBusy(true);
     setError(null);
-    draftId.current ??= crypto.randomUUID();
+    const immediate = !asDraft && signupTiming === 'immediate';
+    const payload = {
+      name: name.trim() || undefined, game, description: description.trim(),
+      startsAtMs: Number.isFinite(startsAtMs) ? startsAtMs : undefined,
+      signupOpensAtMs: asDraft || immediate ? undefined : plannedSignupMs,
+      matchMinutes: Number(minutes), signupCapacity: Number(capacity), swissRules, bannerStyle, signupChannelId: signupChannelId || undefined
+    };
+    const fingerprint = JSON.stringify({ ...payload, immediate });
+    if (draftId.current === null || draftFingerprint.current !== fingerprint) {
+      draftId.current = crypto.randomUUID();
+      draftFingerprint.current = fingerprint;
+      immediateSignupMs.current = null;
+    }
     try {
-      if (!asDraft && signupTiming === 'immediate') immediateSignupMs.current ??= Date.now();
+      if (immediate) immediateSignupMs.current ??= clock.now();
       const entry = await api.createTournamentDraft({
-        draftId: draftId.current, name: name.trim() || undefined, game, description: description.trim(),
-        startsAtMs: Number.isFinite(startsAtMs) ? startsAtMs : undefined,
-        signupOpensAtMs: asDraft ? undefined : signupTiming === 'immediate' ? immediateSignupMs.current ?? undefined : plannedSignupMs,
-        matchMinutes: Number(minutes), signupCapacity: Number(capacity), swissRules, bannerStyle, signupChannelId: signupChannelId || undefined
+        ...payload, draftId: draftId.current,
+        signupOpensAtMs: immediate ? immediateSignupMs.current ?? undefined : payload.signupOpensAtMs
       });
       await queryClient.invalidateQueries({ queryKey: tournamentDirectoryKey });
       if (!asDraft) toast.show({ title: signupTiming === 'immediate' ? 'Discord signup queued' : 'Discord signup scheduled', tone: 'success' });

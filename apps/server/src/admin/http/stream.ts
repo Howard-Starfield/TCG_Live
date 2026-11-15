@@ -19,6 +19,8 @@ export const DEFAULT_STREAM_TIMINGS: StreamTimings = {
   coalesceMs: 50, pingMs: 15_000, heartbeatMs: 30_000, versionCheckMs: 5_000, closeGraceMs: 250
 };
 export const MAX_STREAMS = 20;
+/** Streams one session may hold, so a single session cannot take every slot. */
+export const MAX_STREAMS_PER_SESSION = 4;
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 
 export const STREAM_HEADERS: Readonly<Record<string, string>> = {
@@ -94,7 +96,8 @@ export class StreamManager {
   /** Starts a stream. Rejects with an HttpError, before any stream bytes are written, when it cannot. */
   async open(request: IncomingMessage, response: ServerResponse, session: Session): Promise<void> {
     if (this.closed) throw unavailable();
-    if (this.connections.size >= MAX_STREAMS) throw new HttpError(429, 'too_many_requests', 'Too many open streams.');
+    if (this.connections.size >= MAX_STREAMS || session.openStreams >= MAX_STREAMS_PER_SESSION)
+      throw new HttpError(429, 'too_many_requests', 'Too many open streams.');
     const connection: Connection = {
       response, session, ready: false, ended: false, released: false, eventId: null, version: 0, panelRevision: 0
     };

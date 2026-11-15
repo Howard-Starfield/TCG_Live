@@ -5,6 +5,7 @@ import { ARTWORK_GAMES, DEFAULT_MATCH_MINUTES, DEFAULT_SIGNUP_CAPACITY, DEFAULT_
 import { RuleError } from '../rehearsal/domain.js';
 import { transaction, withClient } from '../rehearsal/store.js';
 import { requireDiscordSchema } from '../discord/session.js';
+import { directorySetupDecision, PUBLIC_RELATIONS_SQL } from '../rehearsal/schema-tables.js';
 
 const games = new Set<string>(ARTWORK_GAMES);
 const labels: Record<ArtworkGame, string> = {
@@ -308,12 +309,11 @@ export async function setupTournamentDirectory(): Promise<'created' | 'already_r
   return withClient(client => transaction(client, async () => {
     await requireDiscordSchema(client);
     await client.query("SELECT pg_advisory_xact_lock(hashtext('tcg_tournament_directory_schema'))");
-    const objects = await client.query<{ relname: string }>(
-      "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY c.relname");
-    const names = objects.rows.map(row => row.relname).join(',');
-    const base = 'tcg_rehearsal_audit,tcg_rehearsal_events,tcg_rehearsal_meta,tcg_rehearsal_sessions';
-    const exists = names === `${base},tcg_tournament_directory`;
-    if (!exists && names !== base) throw new DirectoryUnavailableError('Tournament directory setup refused: unexpected public schema.');
+    const objects = await client.query<{ relname: string }>(PUBLIC_RELATIONS_SQL);
+    // The evidence and moderation tables (migration 012) are additive; the directory stays ready beside them.
+    const decision = directorySetupDecision(objects.rows.map(row => row.relname));
+    if (decision === 'refuse') throw new DirectoryUnavailableError('Tournament directory setup refused: unexpected public schema.');
+    const exists = decision === 'already_ready';
     const migrations = ['003_tournament_directory.sql', '004_tournament_description.sql', '005_tournament_match_timer.sql', '006_tournament_signup_banner.sql', '007_tournament_signup_capacity.sql', '008_tournament_start.sql', '009_tournament_delete.sql', '010_signup_opening.sql', '011_tournament_templates.sql'];
     for (const file of exists ? migrations.slice(1) : migrations) {
       await client.query(await readFile(new URL(`../../../../database/migrations/${file}`, import.meta.url), 'utf8'));

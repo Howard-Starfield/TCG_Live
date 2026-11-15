@@ -23,7 +23,7 @@ export interface StreamConnection {
   lastError: ApiError | null;
   /** When the next reconnect attempt is due (local epoch ms), while reconnecting. */
   retryAtMs: number | null;
-  /** Consecutive failed attempts since the last `hello`. */
+  /** Consecutive failed attempts; reset once a connection proves healthy (see `healthyMs`). */
   attempt: number;
 }
 
@@ -61,6 +61,11 @@ export interface StreamClientOptions {
   backoffBaseMs?: number;
   /** Backoff cap. Default 30 s. */
   backoffMaxMs?: number;
+  /**
+   * How long a connection must stay up after `hello` before the backoff resets. A message processed
+   * after `hello` also resets it. Default 10 s.
+   */
+  healthyMs?: number;
   /** Local clock. */
   now?: () => number;
 }
@@ -68,6 +73,7 @@ export interface StreamClientOptions {
 export const STREAM_WATCHDOG_MS = 45_000;
 export const STREAM_BACKOFF_BASE_MS = 1_000;
 export const STREAM_BACKOFF_MAX_MS = 30_000;
+export const STREAM_HEALTHY_MS = 10_000;
 const RELOAD_GUARD_KEY = 'tcg-admin.reloaded-for-build.v1';
 
 /** Jittered exponential backoff: half the step fixed, half random, capped. */
@@ -101,6 +107,7 @@ export class StreamClient {
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  private healthyTimer: ReturnType<typeof setTimeout> | null = null;
   private cursor: StreamCursor | null = null;
   private expectedBuildId: string | null;
   private readonly storage: KeyValueStorage | undefined;
@@ -109,6 +116,7 @@ export class StreamClient {
   private readonly watchdogMs: number;
   private readonly backoffBaseMs: number;
   private readonly backoffMaxMs: number;
+  private readonly healthyMs: number;
   private readonly eventTarget: Pick<EventTarget, 'addEventListener' | 'removeEventListener'> | null;
 
   constructor(private readonly options: StreamClientOptions) {
@@ -119,6 +127,7 @@ export class StreamClient {
     this.watchdogMs = options.watchdogMs ?? STREAM_WATCHDOG_MS;
     this.backoffBaseMs = options.backoffBaseMs ?? STREAM_BACKOFF_BASE_MS;
     this.backoffMaxMs = options.backoffMaxMs ?? STREAM_BACKOFF_MAX_MS;
+    this.healthyMs = options.healthyMs ?? STREAM_HEALTHY_MS;
     this.eventTarget = options.eventTarget === undefined
       ? (typeof window === 'undefined' ? null : window)
       : options.eventTarget;
@@ -204,10 +213,22 @@ export class StreamClient {
     this.watchdogTimer = null;
   }
 
+  private clearHealthy(): void {
+    if (this.healthyTimer !== null) clearTimeout(this.healthyTimer);
+    this.healthyTimer = null;
+  }
+
+  /** The connection proved itself: the next failure starts the backoff over. */
+  private markHealthy(): void {
+    this.clearHealthy();
+    if (this.snapshot.attempt !== 0) this.update({ attempt: 0 });
+  }
+
   /** Invalidates the current connection attempt and releases it. */
   private teardown(): void {
     this.generation += 1;
     this.clearWatchdog();
+    this.clearHealthy();
     const controller = this.abortController;
     const reader = this.reader;
     this.abortController = null;
@@ -284,12 +305,14 @@ export class StreamClient {
       parser.feed(decoder.decode());
       parser.reset();                    // an unterminated final message is discarded
       this.clearWatchdog();
+      this.clearHealthy();
       this.reader = null;
       this.abortController = null;
       this.scheduleReconnect();          // the server ended the stream (logout, expiry, shutdown)
     } catch (error) {
       if (!current()) return;
       this.clearWatchdog();
+      this.clearHealthy();
       this.reader = null;
       this.abortController = null;
       if (isAbortError(error)) {
@@ -317,6 +340,17 @@ export class StreamClient {
       return;   // a malformed message is skipped; the next change carries a full snapshot anyway
     }
     if (!isStreamEvent(event)) return;
+    try {
+      this.applyMessage(generation, message, event);
+    } catch (error) {
+      // A message we cannot apply is skipped instead of failing the connection (which would reconnect
+      // and replay it forever). The next change replaces the audit, so the caches resync.
+      this.cursor = null;
+      console.warn('Skipped a live stream message that could not be applied.', error);
+    }
+  }
+
+  private applyMessage(generation: number, message: SseMessage, event: StreamEventDto): void {
     const receivedAtMs = this.now();
     switch (event.type) {
       case 'hello': {
@@ -327,8 +361,15 @@ export class StreamClient {
         // the one we already know (same boot), so the console keeps showing its last state.
         const activeEventId = event.activeEventId === null && event.status.database === 'unavailable' && !bootChanged
           ? this.snapshot.activeEventId : event.activeEventId;
+        // The backoff resets only once the connection proves healthy, so a server that says hello and
+        // then drops the stream is still retried with growing delays.
+        this.clearHealthy();
+        this.healthyTimer = setTimeout(() => {
+          this.healthyTimer = null;
+          if (generation === this.generation && this.running) this.markHealthy();
+        }, this.healthyMs);
         this.update({
-          state: 'live', helloReceived: true, attempt: 0, lastError: null, retryAtMs: null,
+          state: 'live', helloReceived: true, lastError: null, retryAtMs: null,
           bootId: event.bootId, buildId: event.buildId, activeEventId,
           ...(bootChanged ? { lastEventId: null } : {})
         });
@@ -351,10 +392,12 @@ export class StreamClient {
           activeEventId: retired ? (active === event.eventId ? null : active) : event.eventId
         });
         this.options.onEvent(event, { auditMode, bootChanged: false, receivedAtMs });
+        this.markHealthy();
         return;
       }
       default:
         this.options.onEvent(event, { auditMode: 'replace', bootChanged: false, receivedAtMs });
+        if (this.snapshot.helloReceived) this.markHealthy();
     }
   }
 

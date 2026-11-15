@@ -78,6 +78,29 @@ export function checkinsReadyToPublish(state: EventState): boolean {
   return !state.published && (!state.signup || state.signup.status === 'assigned') && (state.firstRound ? state.checkins.length >= 2 : state.checkins.length === PLAYERS.length);
 }
 
+/** How long after the scheduled start the scheduler may still publish the first round. */
+export const SCHEDULED_PUBLISH_WINDOW_MS = 2 * 60_000;
+
+/**
+ * The scheduler publishes once, at the scheduled start, with whoever has checked in (at least two).
+ * Never before the start, and not after the window: a missed start waits for the admin.
+ */
+export function scheduledPublishDue(state: EventState, nowMs: number): boolean {
+  return !!state.signup && state.startsAtMs !== undefined && nowMs >= state.startsAtMs &&
+    nowMs < state.startsAtMs + SCHEDULED_PUBLISH_WINDOW_MS && checkinsReadyToPublish(state);
+}
+
+/**
+ * Transfers running clocks left by a stopped process to the current runner. The caller must hold the
+ * runtime lease, which guarantees that no other runner is alive. Returns null when nothing changes.
+ */
+export function adoptRunningClocks(state: EventState, runnerId: string): EventState | null {
+  if (!runnerId || !state.matches.some(match => match.phase === 'running' && match.runnerId !== runnerId)) return null;
+  const next = structuredClone(state);
+  for (const match of next.matches) if (match.phase === 'running') match.runnerId = runnerId;
+  return next;
+}
+
 export interface Outcome {
   eventId: string;
   version: number;
@@ -255,11 +278,13 @@ export function transition(current: EventState, actor: ActorId, command: Command
     const match = state.matches.find(item => item.id === command.matchId);
     if (!match) throw new RuleError('Unknown fixture match.');
     // Ownership must be checked before elapsed time, including at exact expiry.
-    if (match.phase === 'running' && match.runnerId !== runnerId) {
+    // An admin resolution ends the match outright, so it needs no clock ownership.
+    const foreignResolve = command.type === 'resolve' && match.phase === 'running' && match.runnerId !== runnerId;
+    if (match.phase === 'running' && match.runnerId !== runnerId && !foreignResolve) {
       throw new RuleError('Running-clock continuation from another process is unsupported.');
     }
     const wasRunning = match.phase === 'running';
-    materialize(match, nowMs, runnerId);
+    if (!foreignResolve) materialize(match, nowMs, runnerId);
     switch (command.type) {
       case 'ready': {
         const player = requireParticipant(match, actor);

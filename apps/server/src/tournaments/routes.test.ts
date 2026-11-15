@@ -40,3 +40,36 @@ test('details save retains successful persistence when Discord delivery fails; r
   await assert.rejects(invoke('PUT'), /Only the active tournament/);
   assert.equal(applies, 1);
 });
+
+test('only database outages become 503; unexpected errors propagate to be logged as 500s', async () => {
+  let failure: unknown = null;
+  const directory: TournamentDirectory = {
+    async list() { throw failure; },
+    async createDraft() { throw Error('not used'); }
+  };
+  const route = tournamentRoutes(directory, () => 'pokemon').find(item => item.pattern.test('/api/v1/tournaments'))!;
+  const invoke = () => route.methods.GET!.run({ request: {} as IncomingMessage, response: {} as ServerResponse,
+    query: new URLSearchParams(), params: [] });
+  const outages = [Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }),
+    Object.assign(new Error('gone'), { code: '57P01' }), Object.assign(new Error('missing'), { code: '42P01' }),
+    new Error('Rehearsal database operation failed.')];
+  for (const outage of outages) {
+    failure = outage;
+    await assert.rejects(invoke(), (error: any) => error.status === 503 && /Check PostgreSQL/.test(error.message));
+  }
+  const bug = new TypeError('cannot read properties of undefined');
+  failure = bug;
+  await assert.rejects(invoke(), error => error === bug);
+  const wrapped = (cause: unknown) => new Error('Rehearsal database operation failed.', { cause });
+  for (const outage of [wrapped(Object.assign(new Error('connect'), { code: 'ECONNREFUSED' })),
+    wrapped(new Error('Connection terminated unexpectedly')), wrapped(Object.assign(new Error('gone'), { code: '57P01' }))]) {
+    failure = outage;
+    await assert.rejects(invoke(), (error: any) => error.status === 503);
+  }
+  for (const wrappedBug of [wrapped(new TypeError('x is undefined')), wrapped(Object.assign(new Error('dup'), { code: '23505' }))]) {
+    failure = wrappedBug;
+    await assert.rejects(invoke(), error => error === wrappedBug);
+  }
+  failure = Object.assign(new Error('syntax'), { code: '42601' });
+  await assert.rejects(invoke(), (error: any) => error.status === undefined);
+});

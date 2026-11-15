@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { DEFAULT_SIGNUP_CAPACITY, DEFAULT_TOURNAMENT_SWISS_RULES, isMatchId, type TournamentDetailsDto } from '@tcg-live/core';
-import { createFixture, createSignupFixture, createTournamentFirstRound, RuleError, signupTournamentComplete, type EventState, type MatchId, type Player } from '../rehearsal/domain.js';
+import { adoptRunningClocks, createFixture, createSignupFixture, createTournamentFirstRound, RuleError, signupTournamentComplete, type EventState, type MatchId, type Player } from '../rehearsal/domain.js';
 import { rehearsalClient, transaction, verifyState, withClient } from '../rehearsal/store.js';
 import { publicConfig, sameIdentityMap, type ConfiguredRooms, type PrivateDiscordConfig } from './config.js';
 
@@ -49,9 +49,13 @@ export function messageId(session: SessionRow, slot: CardSlot): string | null {
   return slot === 'checkin' || slot === 'M1' || slot === 'M2' ? session[columns[slot]] : session.identity_map.matchMessages?.[slot] ?? null;
 }
 
+/**
+ * A signup session keeps its tournament's own signup channel, chosen and validated at activation; the
+ * controller adopts it on startup. Legacy sessions stay bound to the configured control channel.
+ */
 export function assertSessionConfig(session: SessionRow, config: PrivateDiscordConfig): void {
   if (session.application_id !== config.applicationId || session.guild_id !== config.guildId ||
-      session.channel_id !== config.channelId ||
+      (config.mode !== 'signup' && session.channel_id !== config.channelId) ||
       !sameIdentityMap(session.identity_map, config)) {
     throw new RuleError('Private Discord configuration differs from the saved session.');
   }
@@ -178,6 +182,25 @@ export async function getSessionState(config: PrivateDiscordConfig): Promise<{ s
   });
 }
 
+/** Takes over running clocks of the active event after a restart. Requires the runtime lease. */
+export async function adoptSessionClocks(config: PrivateDiscordConfig, eventId: string, runnerId: string): Promise<boolean> {
+  return withClient(client => transaction(client, async () => {
+    await requireDiscordSchema(client);
+    const event = await client.query<{ state: EventState; version: number }>(
+      'SELECT state, version FROM public.tcg_rehearsal_events WHERE id = $1 FOR UPDATE', [eventId]);
+    if (!event.rows[0]) throw new RuleError('Private Discord event is missing.');
+    verifyState(event.rows[0].state, eventId, event.rows[0].version);
+    const { rows: [session] } = await client.query<SessionRow>('SELECT * FROM public.tcg_rehearsal_sessions WHERE event_id = $1', [eventId]);
+    if (!session || session.status !== 'active') return false;
+    assertSessionConfig(session, config);
+    const adopted = adoptRunningClocks(event.rows[0].state, runnerId);
+    if (!adopted) return false;
+    // Ownership is runtime bookkeeping, not a domain change: the version and audit trail stay unchanged.
+    await client.query('UPDATE public.tcg_rehearsal_events SET state = $2::jsonb WHERE id = $1', [eventId, JSON.stringify(adopted)]);
+    return true;
+  }));
+}
+
 export async function prepareSession(config: PrivateDiscordConfig, replace = false): Promise<SessionRow> {
   const lease = await acquireAdvisoryLease(config);
   try {
@@ -242,7 +265,13 @@ export async function dueSignupDrafts(now: number): Promise<Array<{ eventId: str
 export async function activateSignupDraft(config: PrivateDiscordConfig, eventId: string,
   expectedActiveEventId: string | null, ownsRuntime: () => boolean,
   prepareChannel?: (channelId: string) => Promise<() => (id: string, slot: CardSlot) => Promise<void>>,
-  scheduled = false) {
+  scheduled = false,
+  options: {
+    /** The configured home channel, used when the draft names no signup channel. */
+    defaultChannelId?: string;
+    /** Runs once every check passed, before the switch is written; a failure aborts the activation. */
+    beforeActivate?: () => Promise<void>;
+  } = {}) {
   if (config.mode !== 'signup') throw new RuleError('Open signup from a runtime configured for signup tournaments.');
   return withClient(client => transaction(client, async () => {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('tcg_live_signup_activation'))");
@@ -260,10 +289,12 @@ export async function activateSignupDraft(config: PrivateDiscordConfig, eventId:
       throw new RuleError('The active tournament changed. Return to the draft and review the current event.');
     const existing = await client.query('SELECT 1 FROM public.tcg_rehearsal_sessions WHERE event_id = $1', [eventId]);
     if (existing.rows.length) throw new RuleError('This tournament already ran. Create a new draft.');
-    const channelId = draft.signup_channel_id ?? config.channelId;
+    const channelId = draft.signup_channel_id ?? options.defaultChannelId ?? config.channelId;
     const moved = channelId !== config.channelId;
     if (moved && !prepareChannel) throw new RuleError('This bot cannot change signup channels.');
     const installChannel = moved ? await prepareChannel?.(channelId) : undefined;
+    // Before this transaction locks the current event row, which result-card cleanup binds through.
+    await options.beforeActivate?.();
     let completed = false;
     if (active) {
       // Gameplay commands lock this row before checking the session status.
