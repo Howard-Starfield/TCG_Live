@@ -27,6 +27,8 @@ export interface DiscordAdminOptions {
   evidence?: AdminHandlerOptions['evidence'];
   /** Moderation settings, flags, helper voice bots and ops audit routes (mounted when given). */
   moderation?: AdminHandlerOptions['moderation'];
+  /** Admin tools routes (mounted when given). */
+  adminTools?: AdminHandlerOptions['adminTools'];
   createRuntime?: (options: DiscordAdminRuntimeOptions) => DiscordAdminRuntime;
   createHandler?: (options: AdminHandlerOptions) => AdminHandler;
   write?: (text: string) => void;
@@ -89,7 +91,8 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     ...(options.persistentSessions ? { persistentSessions: true } : {}),
     ...(options.launcher ? { launcher: options.launcher } : {}),
     ...(options.evidence ? { evidence: options.evidence } : {}),
-    ...(options.moderation ? { moderation: options.moderation } : {})
+    ...(options.moderation ? { moderation: options.moderation } : {}),
+    ...(options.adminTools ? { adminTools: options.adminTools } : {})
   });
   const write = options.write ?? (text => { process.stdout.write(text); });
   let announced = false;

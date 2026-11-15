@@ -14,19 +14,26 @@ import { MemoryModerationFlagStore } from '../moderation/flags.js';
 import { MemoryModerationSettingsStore } from '../moderation/settings.js';
 import { MemoryOpsAuditStore } from '../ops/audit.js';
 import { MemoryVoiceBotRegistry } from '../voice/tokens.js';
+import { createDemoGuild } from '../admin-tools/demo-guild.js';
+import { MemoryAdminToolsSettingsStore } from '../admin-tools/settings.js';
+import { AdminToolsRuntimeState } from '../admin-tools/status.js';
+import { discordFeatures } from '../discord/feature-registry.js';
 
 /** Synthetic Discord server for the demo's in-memory moderation settings. */
 export const DEMO_GUILD_ID = '100000000000000001';
 
-/** In-memory evidence and moderation routes for the demo: nothing touches PostgreSQL or data/. */
-export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'moderation'> {
+/** In-memory evidence, moderation and admin-tools routes for the demo: nothing touches PostgreSQL or data/. */
+export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'moderation' | 'adminTools'> {
   const audit = new MemoryOpsAuditStore();
   return {
     // Demo uploads go to a per-process OS temp directory, never data/evidence.
     evidence: { store: new MemoryEvidenceStore(audit), audit,
       seams: createEvidenceSeams({ root: join(tmpdir(), 'tcg-live-demo-evidence', String(process.pid)) }).seams },
     moderation: { settings: new MemoryModerationSettingsStore(audit), flags: new MemoryModerationFlagStore(audit), audit,
-      voiceBots: new MemoryVoiceBotRegistry(), guildId: () => DEMO_GUILD_ID }
+      voiceBots: new MemoryVoiceBotRegistry(), guildId: () => DEMO_GUILD_ID },
+    // Admin tools act on a synthetic server (members, bans, roles, channels); route modules use Memory* stores.
+    adminTools: { settings: new MemoryAdminToolsSettingsStore(audit), audit, storage: 'memory', guildId: () => DEMO_GUILD_ID,
+      status: new AdminToolsRuntimeState(discordFeatures(), 'demo'), demo: createDemoGuild(DEMO_GUILD_ID) }
   };
 }
 

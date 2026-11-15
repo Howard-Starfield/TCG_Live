@@ -3,6 +3,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { artworkRoutes } from '../../artwork/routes.js';
 import { evidenceRoutes } from '../../evidence/routes.js';
 import { moderationRoutes } from '../../moderation/routes.js';
+import { adminToolsRoutes } from '../../admin-tools/routes.js';
 import { tournamentRoutes } from '../../tournaments/routes.js';
 import { AUDIT_PAGE_LIMIT, type Capability, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
 import { sessionCapabilities } from '../commands.js';
@@ -112,7 +113,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       ...(options.artwork ? { artwork: true as const } : {}),
       ...(options.tournaments ? { tournaments: true as const } : {}),
       ...(options.evidence ? { evidence: true as const } : {}),
-      ...(options.moderation ? { moderation: true as const } : {})
+      ...(options.moderation ? { moderation: true as const } : {}),
+      ...(options.adminTools ? { adminTools: true as const } : {})
     };
   }
 
@@ -237,6 +239,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       }, options.openSignup, options.signupChannels, options.deleteTournament) : []),
     ...(options.evidence ? evidenceRoutes({ ...options.evidence, sessionLive: session => sessions.isLive(session) }) : []),
     ...(options.moderation ? moderationRoutes(options.moderation) : []),
+    ...(options.adminTools ? adminToolsRoutes({ ...options.adminTools, snapshot: eventId => runtime.snapshot(eventId),
+      listEvents: () => runtime.listEvents() }) : []),
     ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
   ];
 

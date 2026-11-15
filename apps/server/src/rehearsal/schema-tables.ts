@@ -1,5 +1,5 @@
 // Exact public-schema table lists accepted by the guarded setup commands. Dependency-free so every
-// setup module (rehearsal, directory, evidence) can share it without import cycles.
+// setup module (rehearsal, directory, evidence, admin tools) can share it without import cycles.
 
 export const TABLES_V1 = ['tcg_rehearsal_audit', 'tcg_rehearsal_events', 'tcg_rehearsal_meta'] as const;
 export const TABLES_V2 = [...TABLES_V1, 'tcg_rehearsal_sessions'] as const;
@@ -9,12 +9,19 @@ export const TABLES_V2_DIRECTORY = [...TABLES_V2, ...DIRECTORY_TABLES] as const;
 export const EVIDENCE_TABLES = ['tcg_evidence', 'tcg_moderation_flags', 'tcg_moderation_flags_id_seq',
   'tcg_moderation_settings', 'tcg_ops_audit', 'tcg_ops_audit_id_seq'] as const;
 export const TABLES_V2_DIRECTORY_EVIDENCE = [...TABLES_V2_DIRECTORY, ...EVIDENCE_TABLES] as const;
+/** Migration 013 (admin tools). Includes the bigserial sequences of cases, notes, member events and the message log. */
+export const ADMIN_TOOLS_TABLES = ['tcg_admin_counters', 'tcg_admin_tools_settings', 'tcg_announcements', 'tcg_bulk_role_jobs',
+  'tcg_button_role_panels', 'tcg_member_events', 'tcg_member_events_id_seq', 'tcg_message_log', 'tcg_message_log_id_seq',
+  'tcg_message_store', 'tcg_mod_cases', 'tcg_mod_cases_id_seq', 'tcg_mod_notes', 'tcg_mod_notes_id_seq',
+  'tcg_sticky_messages', 'tcg_ticket_messages', 'tcg_tickets'] as const;
+export const TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS = [...TABLES_V2_DIRECTORY_EVIDENCE, ...ADMIN_TOOLS_TABLES] as const;
 
 /** The pg_class query every guard uses: tables, views, sequences and foreign tables in public. */
 export const PUBLIC_RELATIONS_SQL =
   "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY c.relname";
 
-export type PublicSchemaShape = 'empty' | 'v1' | 'v2' | 'v2_directory' | 'v2_directory_evidence' | 'unexpected';
+export type PublicSchemaShape = 'empty' | 'v1' | 'v2' | 'v2_directory' | 'v2_directory_evidence' | 'v2_directory_evidence_admin_tools'
+  | 'unexpected';
 
 /** Order-insensitive exact comparison, so database collation cannot change the answer. */
 export function sameTables(names: readonly string[], expected: readonly string[]): boolean {
@@ -30,6 +37,7 @@ export function classifyPublicSchema(names: readonly string[]): PublicSchemaShap
   if (sameTables(names, TABLES_V2)) return 'v2';
   if (sameTables(names, TABLES_V2_DIRECTORY)) return 'v2_directory';
   if (sameTables(names, TABLES_V2_DIRECTORY_EVIDENCE)) return 'v2_directory_evidence';
+  if (sameTables(names, TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS)) return 'v2_directory_evidence_admin_tools';
   return 'unexpected';
 }
 
@@ -47,20 +55,29 @@ export function rehearsalSetupDecision(names: readonly string[], marker: string 
 export function privateDiscordSetupDecision(names: readonly string[], marker: string | null):
   'upgrade' | 'already_ready' | 'refuse' {
   const shape = classifyPublicSchema(names);
-  if ((shape === 'v2' || shape === 'v2_directory' || shape === 'v2_directory_evidence') && marker === '2') return 'already_ready';
+  if ((shape === 'v2' || shape === 'v2_directory' || shape === 'v2_directory_evidence' ||
+       shape === 'v2_directory_evidence_admin_tools') && marker === '2') return 'already_ready';
   return shape === 'v1' && marker === '1' ? 'upgrade' : 'refuse';
 }
 
-/** setupTournamentDirectory: v2 gets the full directory chain; a directory (with or without evidence) reapplies 004+. */
+/** setupTournamentDirectory: v2 gets the full directory chain; a directory (with or without later additions) reapplies 004+. */
 export function directorySetupDecision(names: readonly string[]): 'create' | 'already_ready' | 'refuse' {
   const shape = classifyPublicSchema(names);
   if (shape === 'v2') return 'create';
-  return shape === 'v2_directory' || shape === 'v2_directory_evidence' ? 'already_ready' : 'refuse';
+  return shape === 'v2_directory' || shape === 'v2_directory_evidence' || shape === 'v2_directory_evidence_admin_tools'
+    ? 'already_ready' : 'refuse';
 }
 
 /** setupEvidenceSchema: needs the directory first; reapplying idempotent 012 on the evidence shape is safe. */
 export function evidenceSetupDecision(names: readonly string[]): 'create' | 'already_ready' | 'refuse' {
   const shape = classifyPublicSchema(names);
   if (shape === 'v2_directory') return 'create';
-  return shape === 'v2_directory_evidence' ? 'already_ready' : 'refuse';
+  return shape === 'v2_directory_evidence' || shape === 'v2_directory_evidence_admin_tools' ? 'already_ready' : 'refuse';
+}
+
+/** setupAdminToolsSchema: needs evidence (012) first; reapplying idempotent 013 on its own shape is safe. */
+export function adminToolsSetupDecision(names: readonly string[]): 'create' | 'already_ready' | 'refuse' {
+  const shape = classifyPublicSchema(names);
+  if (shape === 'v2_directory_evidence') return 'create';
+  return shape === 'v2_directory_evidence_admin_tools' ? 'already_ready' : 'refuse';
 }

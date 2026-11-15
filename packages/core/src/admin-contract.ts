@@ -19,7 +19,13 @@ export type MatchPhase = 'setup' | 'running' | 'paused' | 'expired' | 'final';
 
 export const CAPABILITIES = ['dashboard.read', 'event.publish', 'signup.manage',
   'match.judge', 'match.correct', 'panels.refresh',
-  'evidence.read', 'evidence.manage', 'moderation.manage'] as const;
+  'evidence.read', 'evidence.manage', 'moderation.manage',
+  /** Admin tools: member search/profiles, ban list, cases and logs (read). */
+  'members.read',
+  /** Admin tools: ban, kick, timeout, warn, notes, purge, lock and slowmode. */
+  'members.moderate',
+  /** Admin tools: settings, stickies, tickets, button roles, bulk roles and announcements. */
+  'server.manage'] as const;
 export type Capability = typeof CAPABILITIES[number];
 
 export interface PrincipalDto { kind: 'local'; id: 'local-admin'; label: string }
@@ -41,6 +47,8 @@ export interface SessionDto {
   evidence?: true;
   /** Moderation settings, flags and voice bot routes are mounted in this runtime. */
   moderation?: true;
+  /** Admin tools routes (members, cases, stickies, tickets, roles, announcements, logs) are mounted. */
+  adminTools?: true;
 }
 export interface SessionGrantDto { token: string; session: SessionDto }   // bearer token; kept in sessionStorage
 

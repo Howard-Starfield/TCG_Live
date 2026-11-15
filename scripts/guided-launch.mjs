@@ -310,6 +310,8 @@ async function prepareSchema() {
     await setupTournamentDirectory();
     const { setupEvidenceSchema } = await import('../apps/server/dist/evidence/schema.js');
     await setupEvidenceSchema();
+    const { setupAdminToolsSchema } = await import('../apps/server/dist/admin-tools/schema.js');
+    await setupAdminToolsSchema();
   } catch {
     throw new Error('Local database setup could not complete. Existing data was kept; check free disk space and the local PostgreSQL log before retrying. No database reset was attempted.');
   }
