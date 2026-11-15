@@ -2,18 +2,10 @@ import { ChannelType, PermissionFlagsBits, type Client, type Guild, type GuildBa
   type GuildMember, type TextChannel } from 'discord.js';
 import { filenameFromThumbnail, retainedVisual, visualFile, visualThumbnail } from '../discord/visuals.js';
 import type { DiscoveredChannel, SetupDiscovery } from './service.js';
+import { SETUP_DISCOVERY_FLAGS } from '../permissions/table.js';
 
-const FLAGS: Record<string, bigint> = {
-  'View Channel': PermissionFlagsBits.ViewChannel,
-  'Send Messages': PermissionFlagsBits.SendMessages,
-  'Read Message History': PermissionFlagsBits.ReadMessageHistory,
-  'Embed Links': PermissionFlagsBits.EmbedLinks,
-  'Attach Files': PermissionFlagsBits.AttachFiles,
-  Connect: PermissionFlagsBits.Connect,
-  'Manage Permissions': PermissionFlagsBits.ManageRoles,
-  'Manage Channels': PermissionFlagsBits.ManageChannels,
-  'Move Members': PermissionFlagsBits.MoveMembers
-};
+/** Channel permissions the wizard reports, from the shared permission table. */
+const FLAGS: Readonly<Record<string, bigint>> = SETUP_DISCOVERY_FLAGS;
 
 /** Only Discord's own guild/channel IDs are accepted; no browser-provided URL is fetched. */
 export function discordSetupDiscovery(client: Client): SetupDiscovery {

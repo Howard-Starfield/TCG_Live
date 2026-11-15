@@ -17,6 +17,7 @@ import { ADMIN_TOOLS_SETUP_HINT } from './schema.js';
 import { AdminToolsVersionConflictError, adminToolsBody, parseAdminToolsSettings, reservedChannelProblem,
   type AdminToolsSettingsStore } from './settings.js';
 import type { AdminToolsRuntimeState } from './status.js';
+import type { PermissionReportSource } from '../permissions/source.js';
 
 export const ADMIN_TOOLS_UNAVAILABLE = `Admin tools storage is unavailable. Check PostgreSQL. ${ADMIN_TOOLS_SETUP_HINT}`;
 export const ADMIN_TOOLS_ROUTE_PREFIX = /^\^\\\/api\\\/v1\\\/admin-tools\\\//;
@@ -42,6 +43,8 @@ export interface AdminToolsRouteOptions {
   onSettingsSaved?(settings: AdminToolsSettingsDto): void;
   /** After a module's committed change (deps.notify). */
   onChanged?(area: string, id: string | null): void;
+  /** Bot permission check (GET /permissions, POST /permissions/recheck); 503 when absent. */
+  permissions?: PermissionReportSource;
   /** Defaults to adminToolsRouteModules; tests pass their own. */
   modules?: readonly AdminToolsRouteModule[];
   now?(): number;
@@ -118,7 +121,7 @@ export function adminToolsRoutes(options: AdminToolsRouteOptions): OpsRoute[] {
     snapshot: async eventId => { if (!options.snapshot) return null; try { return await options.snapshot(eventId); } catch { return null; } },
     currentSettings: () => guarded(() => options.settings.get(guildId())),
     recordAudit: (kind, payload, actor = LOCAL_ADMIN) => guarded(() => options.audit.append({ kind, actor, guildId: guildId(), payload })),
-    notify: (area, id = null) => safely(() => options.onChanged?.(area, id)),
+    notify: (area, id = null) => { safely(() => options.onChanged?.(area, id)); safely(() => options.permissions?.schedule?.()); },
     guarded, now
   };
 
@@ -146,6 +149,7 @@ export function adminToolsRoutes(options: AdminToolsRouteOptions): OpsRoute[] {
           return mapOpsError(error, ADMIN_TOOLS_UNAVAILABLE);
         }
         safely(() => options.onSettingsSaved?.(saved));
+        safely(() => options.permissions?.schedule?.());
         sendJson(response, 200, saved);
       } }
     } },
@@ -154,6 +158,20 @@ export function adminToolsRoutes(options: AdminToolsRouteOptions): OpsRoute[] {
         const id = guildId();
         const settings = await guarded(() => options.settings.get(id));
         sendJson(response, 200, options.status.describe(adminToolsBody(settings)));
+      } }
+    } },
+    { pattern: /^\/api\/v1\/admin-tools\/permissions$/, methods: {
+      GET: { access: 'members.read', run: async ({ response }) => {
+        guildId();
+        if (!options.permissions) throw new HttpError(503, 'unavailable', 'The permission check is not available in this runtime.');
+        sendJson(response, 200, options.permissions.current() ?? await options.permissions.recheck());
+      } }
+    } },
+    { pattern: /^\/api\/v1\/admin-tools\/permissions\/recheck$/, methods: {
+      POST: { access: 'members.read', run: async ({ response }) => {
+        guildId();
+        if (!options.permissions) throw new HttpError(503, 'unavailable', 'The permission check is not available in this runtime.');
+        sendJson(response, 200, await options.permissions.recheck());
       } }
     } },
     { pattern: /^\/api\/v1\/admin-tools\/guild$/, methods: {

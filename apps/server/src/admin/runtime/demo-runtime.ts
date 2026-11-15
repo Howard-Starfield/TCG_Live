@@ -12,6 +12,7 @@ import type { DemoPlayMode } from '../config.js';
 import { AdminConflictError, AdminNotFoundError, AdminRuleError, AdminUnavailableError, type AdminPrincipal,
   type AdminRuntime, type AdminRuntimeChange, type AdminRuntimeListener } from '../runtime-types.js';
 import { defaultBuildId, ListenerSet } from './listeners.js';
+import type { PermissionSummarySource } from '../../permissions/source.js';
 import { mapAuditRow, mapSnapshot, type AdminAuditRow, type AdminSessionRow } from './mappers.js';
 
 export const DEMO_ADMIN_ID: Snowflake = '910000000000000001';
@@ -280,12 +281,23 @@ export class DemoAdminRuntime implements AdminRuntime {
     return true;
   }
 
+  private permissionSource: PermissionSummarySource | undefined;
+  private detachPermissions: (() => void) | undefined;
+
+  /** Pushes the demo's bot permission summary in status(); each finished check notifies streams. */
+  attachPermissions(source: PermissionSummarySource): void {
+    this.detachPermissions?.();
+    this.permissionSource = source;
+    this.detachPermissions = source.subscribe(() => this.listeners.emit({ type: 'status' }));
+  }
+
   status(): RuntimeStatusDto {
     return {
       mode: 'demo', bootId: this.bootId, buildId: this.buildId,
       serverTimeMs: this.clock.now(), startedAtMs: this.startedAtMs,
       gateway: 'not_applicable', database: 'not_configured', lease: 'not_applicable',
-      cards: { updatePending: false }, rooms: { enabled: false, warning: null }, commandsEnabled: true
+      cards: { updatePending: false }, rooms: { enabled: false, warning: null }, commandsEnabled: true,
+      ...(this.permissionSource ? { permissions: this.permissionSource.summary() } : {})
     };
   }
 
@@ -365,6 +377,8 @@ export class DemoAdminRuntime implements AdminRuntime {
     if (this.timer !== undefined) this.clock.clearTimeout(this.timer);
     this.timer = undefined;
     this.clearPauseTimers();
+    this.detachPermissions?.();
+    this.detachPermissions = undefined;
     this.listeners.clear();
   }
 

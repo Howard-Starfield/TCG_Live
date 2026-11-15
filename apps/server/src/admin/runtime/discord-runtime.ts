@@ -12,6 +12,7 @@ import { IdentityCache, type MemberFetcher } from './identity.js';
 import { defaultBuildId, ListenerSet } from './listeners.js';
 import { mapAuditRow, mapSnapshot, mapSummary, memberIdsFor } from './mappers.js';
 import { pgAdminStore, type AdminStore } from './queries.js';
+import type { PermissionSummarySource } from '../../permissions/source.js';
 
 export type GatewayState = 'ready' | 'connecting' | 'reconnecting' | 'offline';
 
@@ -94,6 +95,8 @@ export class DiscordAdminRuntime implements AdminRuntime {
   private controller: AdminController | undefined;
   private unsubscribeController: (() => void) | undefined;
   private roomWarning: string | null = null;
+  private permissionSource: PermissionSummarySource | undefined;
+  private detachPermissions: (() => void) | undefined;
   private pollHandle: unknown;
   private polling = false;
   private lastVersionKey: string | undefined;
@@ -150,6 +153,15 @@ export class DiscordAdminRuntime implements AdminRuntime {
     };
   }
 
+  /** Pushes the bot permission summary in status() so streams refresh the dashboard after each check. */
+  attachPermissions(source: PermissionSummarySource): void {
+    if (this.closed) return;
+    this.detachPermissions?.();
+    this.permissionSource = source;
+    this.detachPermissions = source.subscribe(() => { if (!this.closed) this.statusMaybeChanged(); });
+    this.statusMaybeChanged();
+  }
+
   private setRoomWarning(warning: string | null): void {
     if (this.closed) return;
     try {
@@ -172,8 +184,13 @@ export class DiscordAdminRuntime implements AdminRuntime {
       gateway: this.closed ? 'offline' : this.gatewayState,
       database: this.database, lease, cards,
       rooms: { enabled: this.options.publicMatchRooms, warning: this.roomWarning },
-      commandsEnabled: this.options.commandsEnabled
+      commandsEnabled: this.options.commandsEnabled,
+      ...(this.permissionSource ? { permissions: this.permissionSummary() } : {})
     };
+  }
+
+  private permissionSummary() {
+    try { return this.permissionSource?.summary() ?? null; } catch { return null; }
   }
 
   async listEvents(): Promise<EventSummaryDto[]> {
@@ -265,6 +282,8 @@ export class DiscordAdminRuntime implements AdminRuntime {
     this.listeners.clear();
     this.detachGateway?.();
     this.detachGateway = undefined;
+    this.detachPermissions?.();
+    this.detachPermissions = undefined;
     this.identities.attach(null);
     this.identities.clear();
   }

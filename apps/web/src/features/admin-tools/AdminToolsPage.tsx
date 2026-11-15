@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from '../../data';
 import { TabPanel, TabStrip } from '../../ui';
 import { useAdminToolsAccess } from './api';
-import { AdminToolsNavigationContext, readStoredTab, storeTab, type AdminToolsNavigation } from './navigation';
+import { ADMIN_TOOLS_TAB_EVENT, AdminToolsNavigationContext, readStoredTab, storeTab, type AdminToolsNavigation } from './navigation';
 import { adminToolsTabs, visibleAdminToolsTabs, type AdminToolsTab } from './registry';
 import { useWheelScrollX } from './useWheelScrollX';
 import './admin-tools.css';
@@ -23,6 +23,15 @@ export function AdminToolsPage({ tabs = adminToolsTabs, initialTab }: { tabs?: r
     memberId, setMemberId,
     openMember: membersVisible ? id => { setMemberId(id); select('members'); } : null
   }), [memberId, membersVisible, select, visible]);
+  // Requests from outside the page (the permission banner) switch tabs while the page is open.
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const tab = (event as CustomEvent<string>).detail;
+      if (typeof tab === 'string' && visible.some(item => item.id === tab)) setSelected(tab);
+    };
+    window.addEventListener(ADMIN_TOOLS_TAB_EVENT, onRequest);
+    return () => window.removeEventListener(ADMIN_TOOLS_TAB_EVENT, onRequest);
+  }, [visible]);
   const tabRow = useRef<HTMLDivElement>(null);
   const ready = !!access && !!current;
   useWheelScrollX(tabRow, ready);

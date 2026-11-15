@@ -24,3 +24,11 @@ export function useAdminToolsNavigation(): AdminToolsNavigation {
 
 export function readStoredTab(): string | null { return browserLocalStorage().getItem(ADMIN_TOOLS_TAB_KEY); }
 export function storeTab(tab: string): void { browserLocalStorage().setItem(ADMIN_TOOLS_TAB_KEY, tab); }
+
+export const ADMIN_TOOLS_TAB_EVENT = 'tcg-admin-tools:select-tab';
+
+/** Opens `tab` on the Admin tools page, now if it is mounted and on its next mount otherwise (banners, links). */
+export function requestAdminToolsTab(tab: string): void {
+  storeTab(tab);
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent<string>(ADMIN_TOOLS_TAB_EVENT, { detail: tab }));
+}

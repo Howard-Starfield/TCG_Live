@@ -1,4 +1,4 @@
-// Foundation Settings tab: privileged-intent status with Developer Portal guidance, restart notice, and the
+// Foundation Settings tab: bot permission check (top), privileged-intent status, the bot setup guide with Developer Portal guidance, restart notice, and the
 // shared "cases" section (DM members, case log channel) saved through the 409-aware section editor.
 import { PRIVILEGED_INTENT_NAMES, PRIVILEGED_INTENT_PORTAL_LABELS, type AdminToolsStatusDto, type PrivilegedIntentName,
   type PrivilegedIntentState } from '@tcg-live/core';
@@ -8,6 +8,9 @@ import { describeError } from '../evidence/api';
 import { useAdminToolsCapability, useAdminToolsSection, useAdminToolsStatus } from './api';
 import { ChannelSelect } from './shared/ChannelSelect';
 import { SectionFrame } from './shared/SectionFrame';
+import { BotPermissionsCard } from '../bot-permissions/BotPermissionsCard';
+import { BotSetupGuide } from '../bot-permissions/BotSetupGuide';
+import { usePermissionReport } from '../bot-permissions/api';
 
 const NEEDED_BY = { guildMembers: 'join/leave log, welcome messages and auto-role', messageContent: 'the message edit/delete log' } as const;
 const FEATURE_STATE = { running: 'running', 'intent-missing': 'missing an intent', failed: 'failed to start', stopped: 'stopped' } as const;
@@ -63,11 +66,14 @@ export function SettingsTab() {
   const status = useAdminToolsStatus();
   const cases = useAdminToolsSection('cases');
   const canEdit = useAdminToolsCapability('server.manage');
+  const permissions = usePermissionReport();
   return <div className="flex flex-col gap-4">
+    <BotPermissionsCard />
     {status.data ? <IntentStatusCard status={status.data} />
       : status.error ? <p role="alert" className="text-xs text-danger">{describeError(status.error, 'Status could not be loaded.')}{' '}
         <Button size="sm" variant="ghost" onClick={() => { void status.refetch(); }}>Try again</Button></p>
       : <p role="status" className="text-xs text-fg-muted">Loading status…</p>}
+    <BotSetupGuide inviteUrl={permissions.data?.inviteUrl ?? null} />
     <SectionFrame editor={cases} title="Cases" canEdit={canEdit}
       description="Applies to warn, timeout, kick and ban from the dashboard and from Discord.">
       {cases.value && <>

@@ -5,3 +5,4 @@ export * from './evidence-contract.js';
 export * from './moderation-contract.js';
 export * from './admin-tools-contract.js';
 export * from './clock.js';
+export * from './permissions-contract.js';

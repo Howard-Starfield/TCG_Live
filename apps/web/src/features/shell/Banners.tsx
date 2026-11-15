@@ -1,8 +1,10 @@
-import { Archive, Database, KeyRound, LoaderCircle, RefreshCw, Snowflake, TriangleAlert, WifiOff } from 'lucide-react';
+import { Archive, Database, KeyRound, LoaderCircle, RefreshCw, ShieldAlert, Snowflake, TriangleAlert, WifiOff, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import type { ReactNode } from 'react';
-import { useServerNow, useStreamConnection } from '../../data';
-import { Button, cx, springs, useSafeTransition } from '../../ui';
+import { useState, type ReactNode } from 'react';
+import { browserSessionStorage, useServerNow, useStreamConnection } from '../../data';
+import { Button, cx, IconButton, springs, useSafeTransition } from '../../ui';
+import { useAdminToolsAccess } from '../admin-tools/api';
+import { requestAdminToolsTab } from '../admin-tools/navigation';
 import { hasInterruptedClock } from './labels';
 import { useShell } from './model';
 
@@ -17,6 +19,16 @@ export interface BannerSpec {
   /** Changing detail (a countdown): shown, but kept out of the live region so it is not re-announced. */
   ticker?: string;
   action?: { label: string; onClick: () => void };
+  /** Shows a close button. */
+  onDismiss?: () => void;
+}
+
+export const PERMISSION_BANNER_KEY = 'tcg-admin.permission-banner.dismissed.v1';
+
+/** Dismissed for this browser tab's session; it returns when more blocking issues appear than were dismissed. */
+function usePermissionBannerDismissal(): [number, (count: number) => void] {
+  const [dismissedAt, setDismissedAt] = useState(() => Number(browserSessionStorage().getItem(PERMISSION_BANNER_KEY) ?? '0') || 0);
+  return [dismissedAt, count => { browserSessionStorage().setItem(PERMISSION_BANNER_KEY, String(count)); setDismissedAt(count); }];
 }
 
 /** Status banners under the top bar: stream, lease, database, clocks, cards, retired view. */
@@ -26,6 +38,8 @@ export function Banners() {
   useServerNow(connection.retryAtMs ? 1000 : null);
   const transition = useSafeTransition(springs.pane);
   const { status, viewed } = shell;
+  const adminTools = useAdminToolsAccess();
+  const [dismissedAt, dismissPermissions] = usePermissionBannerDismissal();
   const banners: BannerSpec[] = [];
 
   if (connection.state === 'offline') {
@@ -60,6 +74,14 @@ export function Banners() {
   if (status?.rooms.warning) {
     banners.push({ id: 'rooms', tone: 'warning', icon: <TriangleAlert />, title: 'Match rooms need attention.', body: status.rooms.warning });
   }
+  const blocking = status?.permissions?.blocking ?? 0;
+  if (adminTools && blocking > dismissedAt) {
+    banners.push({ id: 'permissions', tone: 'warning', icon: <ShieldAlert />,
+      title: `The bot is missing permissions (${blocking} blocking).`,
+      body: 'Some enabled features cannot work until it is fixed in Discord.',
+      action: { label: 'Review in Admin tools', onClick: () => { requestAdminToolsTab('settings'); shell.showAdminTools(); } },
+      onDismiss: () => dismissPermissions(blocking) });
+  }
   if (viewed.retired) {
     banners.push({ id: 'retired', tone: 'neutral', icon: <Archive />, title: 'Retired event · read-only history.',
       body: 'Nothing here changes any more.',
@@ -92,6 +114,7 @@ function Banner({ banner }: { banner: BannerSpec }) {
         {banner.ticker && <span aria-hidden className="text-fg-muted tabular-nums" data-banner-ticker=""> {banner.ticker}</span>}
       </p>
       {banner.action && <Button size="sm" variant="ghost" onClick={banner.action.onClick}>{banner.action.label}</Button>}
+      {banner.onDismiss && <IconButton size="sm" aria-label="Dismiss for this session" icon={<X />} onClick={banner.onDismiss} />}
     </div>
   );
 }

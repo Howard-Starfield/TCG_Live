@@ -39,6 +39,44 @@ npm.cmd run dev
 
 Use a disposable local PostgreSQL database and its own credentials for a connectivity check. The URL must contain an explicit user, password, port, database name, and exactly one loopback host (`localhost`, `127.0.0.1`, or `[::1]`). `postgres:` and `postgresql:` are accepted. Query parameters and fragments are rejected; the application does not accept remote database hosts. The health probe performs only `SELECT 1` and never provisions or migrates a database. Do not point it at another application's database.
 
+## Creating the Discord bot
+
+1. Create an application at <https://discord.com/developers/applications> (New Application).
+2. Open **Bot** → **Reset Token**, copy it and paste it into the local `.env` as `DISCORD_BOT_TOKEN=` (or `TCG_DISCORD_TOKEN=`). Never share it, paste it in chat or commit it; if it leaks, reset it again.
+3. On the same page, **Privileged Gateway Intents**: switch on **Server Members Intent** only if you use the join/leave log, welcome messages or auto-role, and **Message Content Intent** only for the message log and full ticket transcripts. Presence Intent is not needed.
+4. Invite the bot with the **Grant permissions** link (scopes `bot` and `applications.commands`) instead of ticking permissions by hand, then press Authorize. The setup wizard's Readiness step and **Admin tools → Settings → Bot permissions** show the link; it asks only for what your enabled features need (a second link covers every feature). Re-authorizing an installed bot updates its role.
+5. After inviting, open **Server Settings → Roles** and drag the bot's role above every role it should give (button roles, auto-role, bulk role jobs). The invite cannot change role order, and roles managed by an integration can never be given by a bot.
+6. Optional helper voice bots: invite each helper application the same way with its own client ID; they only need View Channel and Connect in the match rooms (`permissions=1049600`).
+
+The dashboard re-checks permissions after role, channel, server and settings changes, shows blocking problems in a banner, and lists each gap with what breaks and how to fix it. A channel's own permission settings can still deny something the server grants; fix those in the channel's Permissions. The table below mirrors the list the checker uses (`apps/server/src/permissions/table.ts`); change both together.
+
+| Feature | When | Permissions | Where |
+| --- | --- | --- | --- |
+| Tournament | Signup/control text channel | View Channel, Send Messages, Read Message History, Embed Links, Attach Files | That channel |
+| Tournament | Signup tournaments | Pin Messages | Signup channel |
+| Tournament | Each match voice room | View Channel, Send Messages, Read Message History, Embed Links, Attach Files, Connect | Each room |
+| Tournament | Public match rooms | Manage Permissions, Manage Channels, Move Members | Each room |
+| Tournament | Rounds with more than two matches | Manage Channels, Manage Roles | Server |
+| AutoMod keyword filters | Text moderation enabled | Manage Server | Server |
+| AutoMod keyword filters | A keyword list uses the timeout action | Timeout Members | Server |
+| Voice monitoring | `TCG_DISCORD_VOICE=1` and monitoring on | View Channel, Connect (joins self-muted; no Speak) | Each match room |
+| Voice monitoring | Same | Send Messages (monitoring notice) | Each match room |
+| Voice monitoring | Discord notice channel set | View Channel, Send Messages | Notice channel |
+| Evidence | Discord submissions | None beyond the slash command | — |
+| Moderation tools | Always | Ban Members; Kick Members; Timeout Members; View Audit Log (outside actions in history) | Server |
+| Moderation tools | Always | Manage Roles (channel lock), Manage Channels (slowmode), Manage Messages + Read Message History (purge) | Server |
+| Cases | Case log channel set | View Channel, Send Messages | Case log channel |
+| Sticky messages | Each enabled sticky | View Channel, Send Messages, Read Message History (+ Embed Links with an embed) | Each sticky channel |
+| Tickets | Tickets enabled | View Channel, Send Messages, Embed Links, Read Message History | Support channel |
+| Tickets | Tickets enabled | View Channel, Manage Channels, Send Messages, Read Message History, Embed Links, Attach Files | Ticket category |
+| Roles | Button roles, bulk role jobs or auto-role | Manage Roles, and the bot's highest role above each role it gives | Server / role order |
+| Roles | Each button role panel | View Channel, Send Messages (+ Embed Links with an embed) | Panel channel |
+| Announcements | Each scheduled announcement | View Channel, Send Messages (+ Embed Links with an embed) | Target channel |
+| Announcements | @everyone switch or a non-mentionable role ping | Mention @everyone, @here, and All Roles | Target channel |
+| Logging | Join/leave log enabled | View Channel, Send Messages, Embed Links (+ Server Members Intent) | Log channel |
+| Logging | Welcome message enabled | View Channel, Send Messages (+ Server Members Intent) | Welcome channel |
+| Logging | Message log enabled | View Channel, Send Messages, Embed Links in its channel; View Channel in every logged channel (+ Message Content Intent) | Log channel / logged channels |
+
 ## Guided Discord startup
 
 After installing dependencies and preparing the local rehearsal database, double-click **Start TCG Live.bat** in the project root, or use `npm.cmd start`. The Windows launcher selects a supported Node/npm installation. An initial launch builds the dashboard and server, loads the root `.env`, connects the bot, and opens the authenticated dashboard in your default browser without typing a token. Repeated launches verify and reuse this project's instance before building; an open dashboard stays single. Closing the browser leaves the bot running, and another launch reopens the dashboard after the short ten-second launch cooldown. Use `npm.cmd start -- --no-browser` to disable browser opening; a private login link remains in the terminal. Treat that link like a password.
