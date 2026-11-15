@@ -4,12 +4,15 @@ import { HttpError } from '../admin/http/respond.js';
 import { type PrivateDiscordConfig, sameIdentityMap } from '../discord/config.js';
 import type { SessionRow } from '../discord/session.js';
 import { SetupProfileStore, validSelection, type SetupProfile } from './profile.js';
+import { setupPermissionReport } from '../permissions/setup.js';
+import { SETUP_CHANNEL_PERMISSIONS } from '../permissions/table.js';
 
 export const SETUP_GUIDE = 'Edit each named match channel → Permissions → add/select the bot member itself → '
   + 'Manage Permissions: green Allow → Save Changes.';
-const TEXT = ['View Channel', 'Send Messages', 'Read Message History', 'Embed Links', 'Attach Files'];
-const VOICE = [...TEXT, 'Connect'];
-const PUBLIC = [...VOICE, 'Manage Permissions', 'Manage Channels', 'Move Members'];
+// One source of truth: the permission table in permissions/table.ts.
+const TEXT: readonly string[] = SETUP_CHANNEL_PERMISSIONS.text;
+const VOICE: readonly string[] = SETUP_CHANNEL_PERMISSIONS.voice;
+const PUBLIC: readonly string[] = SETUP_CHANNEL_PERMISSIONS.public;
 
 export interface DiscoveredChannel extends SetupChannelDto { permissions: string[]; afk: boolean }
 export interface SetupDiscovery {
@@ -163,7 +166,8 @@ export class SetupService {
       profile.guide.pending ? 'pending' : profile.guide.messageId ? 'posted' : 'none' : 'none';
     return { valid: issues.every(issue => issue.startsWith('This saved event uses private rooms')),
       frozen, botName: discovery.botName, capabilities, issues, guide: SETUP_GUIDE,
-      notice };
+      notice, permissions: setupPermissionReport({ applicationId: discovery.applicationId, guildId: guild?.id ?? null,
+        publicMatchRooms: selection.publicMatchRooms, capabilities, checkedAtMs: Date.now() }) };
   }
 
   private parseSelection(body: unknown): SetupSelectionDto {

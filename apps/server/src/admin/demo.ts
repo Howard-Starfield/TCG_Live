@@ -18,6 +18,8 @@ import { createDemoGuild } from '../admin-tools/demo-guild.js';
 import { MemoryAdminToolsSettingsStore } from '../admin-tools/settings.js';
 import { AdminToolsRuntimeState } from '../admin-tools/status.js';
 import { discordFeatures } from '../discord/feature-registry.js';
+import { demoPermissionMonitor } from '../permissions/demo.js';
+import { PermissionMonitor } from '../permissions/monitor.js';
 
 /** Synthetic Discord server for the demo's in-memory moderation settings. */
 export const DEMO_GUILD_ID = '100000000000000001';
@@ -25,6 +27,8 @@ export const DEMO_GUILD_ID = '100000000000000001';
 /** In-memory evidence, moderation and admin-tools routes for the demo: nothing touches PostgreSQL or data/. */
 export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'moderation' | 'adminTools'> {
   const audit = new MemoryOpsAuditStore();
+  const settings = new MemoryAdminToolsSettingsStore(audit);
+  const demo = createDemoGuild(DEMO_GUILD_ID);
   return {
     // Demo uploads go to a per-process OS temp directory, never data/evidence.
     evidence: { store: new MemoryEvidenceStore(audit), audit,
@@ -32,8 +36,10 @@ export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'modera
     moderation: { settings: new MemoryModerationSettingsStore(audit), flags: new MemoryModerationFlagStore(audit), audit,
       voiceBots: new MemoryVoiceBotRegistry(), guildId: () => DEMO_GUILD_ID },
     // Admin tools act on a synthetic server (members, bans, roles, channels); route modules use Memory* stores.
-    adminTools: { settings: new MemoryAdminToolsSettingsStore(audit), audit, storage: 'memory', guildId: () => DEMO_GUILD_ID,
-      status: new AdminToolsRuntimeState(discordFeatures(), 'demo'), demo: createDemoGuild(DEMO_GUILD_ID) }
+    adminTools: { settings, audit, storage: 'memory', guildId: () => DEMO_GUILD_ID,
+      status: new AdminToolsRuntimeState(discordFeatures(), 'demo'), demo,
+      // A synthetic bot with a couple of missing permissions, so the permission card and banner have something to show.
+      permissions: demoPermissionMonitor(demo, settings) }
   };
 }
 
@@ -72,9 +78,15 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
   try {
     server = await startServer({ port: requestedPort, database: null }, { admin: adapter });
+    const ops = demoOpsOptions();
+    const permissions = ops.adminTools?.permissions;
+    if (permissions instanceof PermissionMonitor) {
+      runtime.attachPermissions(permissions);
+      void permissions.recheck();
+    }
     handler = (options.createHandler ?? createAdminHandler)({
       runtime, port: server.port, mode: 'demo', commandsEnabled: true, webDist: options.webDist ?? adminConfig.webDist,
-      ...demoOpsOptions(),
+      ...ops,
       ...(options.ephemeral ? {} : { devOrigin: adminConfig.devOrigin, fixedLoginToken: adminConfig.fixedLoginToken })
     });
     runtime.start();

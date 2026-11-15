@@ -1,6 +1,8 @@
 // Admin API contract v1, shared by apps/server and apps/web.
 // Changes during a wave go through the contract-change procedure in docs/ADMIN_DASHBOARD_PLAN.md.
 
+import type { PermissionReportDto, PermissionSummaryDto } from './permissions-contract.js';
+
 export const ADMIN_API_VERSION = 1 as const;
 
 export type Snowflake = string;               // Discord IDs never become numbers
@@ -70,6 +72,8 @@ export interface SetupCheckDto {
   valid: boolean; frozen: boolean; botName: string | null;
   capabilities: SetupCapabilityDto[]; issues: string[]; guide: string;
   notice: 'none' | 'posted' | 'pending' | 'cannot_post';
+  /** The same issues the Admin tools permission card shows, limited to what setup needs, plus the invite links. */
+  permissions?: PermissionReportDto | null;
 }
 export interface SetupStatusDto {
   prerequisite: string | null; activeEventId: string | null;
@@ -88,6 +92,8 @@ export interface RuntimeStatusDto {
   cards: { updatePending: boolean };
   rooms: { enabled: boolean; warning: string | null };
   commandsEnabled: boolean;
+  /** Bot permission check summary (Discord runtime with admin tools, and the demo); absent or null otherwise. */
+  permissions?: PermissionSummaryDto | null;
 }
 
 export interface EventSummaryDto {            // session-backed events only; CLI rehearsal events are not listed

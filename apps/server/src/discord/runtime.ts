@@ -37,6 +37,12 @@ import { loginWithIntentFallback, planIntents } from './intents.js';
 import { HttpError } from '../admin/http/respond.js';
 import { adminToolsBody, defaultAdminToolsSettings, pgAdminToolsSettingsStore } from '../admin-tools/settings.js';
 import { AdminToolsRuntimeState } from '../admin-tools/status.js';
+import { pgAnnouncementStore } from '../admin-tools/announcements/announcements.js';
+import { pgStickyStore } from '../admin-tools/channels/sticky-store.js';
+import { pgBulkRoleJobStore } from '../admin-tools/roles/bulk.js';
+import { pgButtonRolePanelStore } from '../admin-tools/roles/panels.js';
+import { livePermissionMonitor, watchPermissionEvents } from '../permissions/live.js';
+import { voiceRuntimeEnabled } from '../voice/feature.js';
 
 function safeError(error: unknown): string {
   return error instanceof RuleError ? error.message : 'Private Discord operation failed.';
@@ -419,6 +425,22 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   const featureEvents = new DiscordFeatureEvents();
   const voicePool = new VoicePoolState();
   let featureHandle: Awaited<ReturnType<typeof startDiscordFeatures>> | undefined;
+  // Bot permission check for the enabled features (GET /api/v1/admin-tools/permissions, status push, banner).
+  const permissionMonitor = livePermissionMonitor({
+    client: () => client, guildId: config.guildId, applicationId: config.applicationId,
+    tournament: () => ({ signupChannelId: signupChannelId ?? config.channelId,
+      matchChannelIds: Object.values(config.matchChannels ?? {}).filter((id): id is string => !!id),
+      publicMatchRooms: !!config.publicMatchRooms, signupMode: config.mode === 'signup' }),
+    moderation: () => moderationSettings.get(config.guildId),
+    voiceRuntime: (() => { try { return voiceRuntimeEnabled(); } catch { return false; } })(),
+    adminToolsSettings: async () => adminToolsBody(await adminToolsSettings.get(config.guildId).catch(() => defaultAdminToolsSettings(config.guildId))),
+    intents: settings => {
+      const status = adminToolsState.describe(settings);
+      return status.runtime === 'running' ? { wanted: status.wantedIntents, state: status.privilegedIntents } : null;
+    },
+    stores: { stickies: pgStickyStore(), panels: pgButtonRolePanelStore(), bulk: pgBulkRoleJobStore(), announcements: pgAnnouncementStore() }
+  });
+  let stopPermissionWatch: (() => void) | undefined;
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
   let deletedCardRetry: ReturnType<typeof setInterval> | undefined;
@@ -445,6 +467,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       try {
         // Ends console streams and polling first, so open streams cannot hold the watchdog budget.
         await admin?.close();
+        stopPermissionWatch?.();
+        permissionMonitor.close();
         await featureHandle?.stop();
         adminToolsState.recordStopped();
         await controller?.stop();
@@ -504,7 +528,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
           botUserId: () => client.user?.id ?? null
         },
         onSettingsSaved: settings => featureEvents.emit({ type: 'adminToolsSettingsChanged', settings }),
-        onChanged: (area, id) => featureEvents.emit({ type: 'adminToolsChanged', area, id }) },
+        onChanged: (area, id) => featureEvents.emit({ type: 'adminToolsChanged', area, id }),
+        permissions: permissionMonitor },
       ...(guided ? { persistentSessions: true, ...(guided.launcher ? { launcher: guided.launcher } : {}) } : {}) });
     health = await startServer(healthConfig, admin ? { admin: admin.handler } : {});
     admin?.announce();
@@ -748,6 +773,15 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       adminToolsState.recordFeatures(featureHandle);
       ensureActive();
     }
+    // Re-check permissions after role, channel, server and moderation-settings changes (debounced); admin-tools
+    // settings and feature data schedule a re-check from the routes. The first check runs now.
+    admin?.runtime.attachPermissions(permissionMonitor);
+    const scheduleCheck = () => { if (!stopping && !lease?.isLost()) permissionMonitor.schedule(); };
+    const unwatch = watchPermissionEvents(client, config.guildId, scheduleCheck);
+    const offModeration = featureEvents.on('moderationSettingsChanged', scheduleCheck);
+    const offVoiceBots = featureEvents.on('voiceBotsChanged', scheduleCheck);
+    stopPermissionWatch = () => { unwatch(); offModeration(); offVoiceBots(); };
+    void permissionMonitor.recheck();
     process.stdout.write(`Private Discord runtime ready; health on 127.0.0.1:${health.port}.\n`);
     if (onReady) onReady(guided?.launcher ?
       guided.browserAutoOpen === false ? null : admin?.handler.claimLauncherOpen?.() ?? null :

@@ -1,11 +1,12 @@
 // The top-level Admin tools page: a tab strip over the registry. The selected tab is remembered per browser,
 // and AdminToolsNavigationContext lets tabs open each other (e.g. Logs -> a member's profile).
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from '../../data';
 import { TabPanel, TabStrip } from '../../ui';
 import { useAdminToolsAccess } from './api';
-import { AdminToolsNavigationContext, readStoredTab, storeTab, type AdminToolsNavigation } from './navigation';
+import { ADMIN_TOOLS_TAB_EVENT, AdminToolsNavigationContext, readStoredTab, storeTab, type AdminToolsNavigation } from './navigation';
 import { adminToolsTabs, visibleAdminToolsTabs, type AdminToolsTab } from './registry';
+import { useWheelScrollX } from './useWheelScrollX';
 import './admin-tools.css';
 
 export function AdminToolsPage({ tabs = adminToolsTabs, initialTab }: { tabs?: readonly AdminToolsTab[]; initialTab?: string }) {
@@ -22,6 +23,24 @@ export function AdminToolsPage({ tabs = adminToolsTabs, initialTab }: { tabs?: r
     memberId, setMemberId,
     openMember: membersVisible ? id => { setMemberId(id); select('members'); } : null
   }), [memberId, membersVisible, select, visible]);
+  // Requests from outside the page (the permission banner) switch tabs while the page is open.
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const tab = (event as CustomEvent<string>).detail;
+      if (typeof tab === 'string' && visible.some(item => item.id === tab)) setSelected(tab);
+    };
+    window.addEventListener(ADMIN_TOOLS_TAB_EVENT, onRequest);
+    return () => window.removeEventListener(ADMIN_TOOLS_TAB_EVENT, onRequest);
+  }, [visible]);
+  const tabRow = useRef<HTMLDivElement>(null);
+  const ready = !!access && !!current;
+  useWheelScrollX(tabRow, ready);
+  // Keep the selected tab visible when it is chosen from elsewhere (keyboard, Logs -> Members, restored tab).
+  useEffect(() => {
+    if (!ready) return;
+    const active = tabRow.current?.querySelector<HTMLElement>('[role=tab][aria-selected=true]');
+    active?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [ready, current?.id]);
   if (!access || !current) {
     return <section className="p-6"><h1 className="text-lg font-semibold text-fg">Admin tools</h1>
       <p className="mt-2 text-xs text-fg-muted">This session cannot use the admin tools.</p></section>;
@@ -32,9 +51,11 @@ export function AdminToolsPage({ tabs = adminToolsTabs, initialTab }: { tabs?: r
       <h1 id="admin-tools-title" className="text-lg font-semibold text-fg">Admin tools</h1>
       <p className="text-xs text-fg-muted">Members, cases, channels, tickets, roles, announcements and logs for this Discord server.</p>
     </header>
-    <TabStrip label="Admin tools sections" idBase="admin-tools" value={current.id} onChange={select}
-      tabs={visible.map(tab => ({ value: tab.id, label: tab.label, icon: <tab.icon /> }))}
-      className="admin-tools-tabs w-max max-w-full shrink-0 overflow-x-auto overflow-y-hidden rounded-[9px] bg-line-faint p-0.5" />
+    <div ref={tabRow} data-testid="admin-tools-tab-row" className="admin-tools-tabs max-w-full shrink-0 overflow-x-auto overflow-y-hidden pb-1">
+      <TabStrip label="Admin tools sections" idBase="admin-tools" value={current.id} onChange={select}
+        tabs={visible.map(tab => ({ value: tab.id, label: tab.label, icon: <tab.icon /> }))}
+        className="w-max rounded-[9px] bg-line-faint p-0.5" />
+    </div>
     <TabPanel idBase="admin-tools" value={current.id} className="min-h-0 flex-1 overflow-y-auto">
       <AdminToolsNavigationContext.Provider value={navigation}>
         <Current />

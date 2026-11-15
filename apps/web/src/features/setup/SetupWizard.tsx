@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAdminData } from '../../data';
 import { Button, Field, Input, Select, Switch } from '../../ui';
 import { BrandMark } from '../shell/BrandMark';
+import { BotSetupGuide } from '../bot-permissions/BotSetupGuide';
+import { GRANT_EXPLANATION, GrantPermissionsLink, PermissionIssueList } from '../bot-permissions/PermissionIssues';
 
 const EMPTY: SetupSelectionDto = { guildId: '', channelId: '', matchChannels: { M1: '', M2: '' },
   adminId: '', publicMatchRooms: true };
@@ -107,6 +109,7 @@ export function SetupWizard() {
           <h1 id="setup-title" className="text-xl font-semibold">Connect your tournament</h1></div>
       </div>
       <p className="mt-3 text-sm text-fg-muted">Choose where players sign up and where each practice match happens.</p>
+      <BotSetupGuide inviteUrl={check?.permissions?.inviteUrl ?? null} defaultOpen={!!status?.prerequisite} className="mt-4" />
       <ol aria-label="Setup progress" className="mt-6 grid grid-cols-3 gap-2">
         {STEPS.map((name, index) => <li key={name} aria-current={index === step ? 'step' : undefined}
           className={`rounded-md border px-2 py-2 text-center text-xs font-medium ${index === step ?
@@ -170,6 +173,17 @@ export function SetupWizard() {
               </div>;
             })}
           </div>
+          {check?.permissions && <section aria-label="Bot permissions" className="space-y-3 rounded-lg border border-line p-3">
+            <h2 className="text-sm font-semibold">Bot permissions</h2>
+            {check.permissions.issues.length ? <PermissionIssueList issues={check.permissions.issues} />
+              : <p className="text-sm text-fg-muted">The bot has every permission these channels need.</p>}
+            {check.permissions.inviteUrl && <div className="space-y-1.5">
+              <GrantPermissionsLink href={check.permissions.inviteUrl}
+                label={check.permissions.issues.length ? 'Grant missing permissions in Discord' : 'Open the invite link'}
+                variant={check.permissions.issues.length ? 'primary' : 'secondary'} />
+              <p className="text-xs text-fg-subtle">{GRANT_EXPLANATION} Then press Recheck.</p>
+            </div>}
+          </section>}
           {check && <><p className="text-sm text-fg-muted">Bot: {check.botName ?? status.botName ?? 'Not connected'}</p>
             {check.issues.length > 0 && <ul className="list-disc space-y-1 pl-5 text-sm text-fg-muted">
               {check.issues.map(issue => <li key={issue}>{issue}</li>)}</ul>}
