@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PermissionFlagsBits, type Client } from 'discord.js';
-import { DEFAULT_ADMIN_TOOLS_SETTINGS, type AdminToolsSettingsBodyDto, type PermissionReportDto } from '@tcg-live/core';
+import { DEFAULT_ADMIN_TOOLS_SETTINGS, DEFAULT_LFG_SETTINGS, type AdminToolsSettingsBodyDto, type LfgSettingsBodyDto,
+  type PermissionReportDto } from '@tcg-live/core';
 import { call, login, startHarness } from '../admin/http/test-support.js';
 import { demoOpsOptions, DEMO_GUILD_ID } from '../admin/demo.js';
 import { createDemoGuild, DEMO_CHANNEL_IDS } from '../admin-tools/demo-guild.js';
@@ -12,7 +13,7 @@ import { channelPermissions, checkPermissions, hasPermission, MESSAGE_SOURCE_ISS
   type PermissionConfig } from './checker.js';
 import { DEMO_APPLICATION_ID, demoPermissionMonitor } from './demo.js';
 import { DemoAdminRuntime } from '../admin/runtime/demo-runtime.js';
-import { livePermissionReport } from './live.js';
+import { lfgNeeds, livePermissionReport } from './live.js';
 import { PermissionMonitor } from './monitor.js';
 import { setupPermissionReport } from './setup.js';
 import { ALL_FEATURE_PERMISSIONS, FEATURE_PERMISSIONS, inviteUrl, permissionBits, permissionLabel, SETUP_CHANNEL_PERMISSIONS,
@@ -100,6 +101,35 @@ test('only enabled features are checked, and the invite integer covers exactly t
     { ...off, moderation: { textEnabled: true, timeoutRules: true, voiceEnabled: false, voiceNoticeChannelId: null } });
   assert.deepEqual(automod.issues.map(issue => [issue.featureId, issue.permission, issue.severity]),
     [['automod.manage', 'Manage Server', 'blocking'], ['automod.timeout', 'Timeout Members', 'blocking']]);
+});
+
+test('LFG: each LFG channel is checked while LFG is on, and an unmentionable ping role needs Mention Everyone', () => {
+  const lfg = (patch: Partial<LfgSettingsBodyDto>): LfgSettingsBodyDto => ({ ...structuredClone(DEFAULT_LFG_SETTINGS) as LfgSettingsBodyDto, ...patch });
+  const channelOf = (id: string, pingRoleId: string | null = null, games: string[] = []) => ({ channelId: id, panel: null, games, pingRoleId, voiceChannelIds: null });
+  // Off, or on without channels: nothing to check.
+  assert.equal(lfgNeeds(null), null);
+  assert.equal(lfgNeeds(lfg({ enabled: false, channels: [channelOf(ch(3))] })), null);
+  assert.equal(lfgNeeds(lfg({ enabled: true, channels: [] })), null);
+  // Ping roles follow pingRoleFor(): a game's role wins, else the channel's, else the global one.
+  const games = [{ name: 'Pokemon', emoji: null, pingRoleId: role(3) }, { name: 'Lorcana', emoji: null, pingRoleId: null }];
+  const needs = lfgNeeds(lfg({ enabled: true, games, pingRoleId: role(1),
+    channels: [channelOf(ch(3)), channelOf(ch(4), role(2), ['Pokemon'])] }));
+  assert.deepEqual(needs, { channels: [{ channelId: ch(3), pingRoleIds: [role(3), role(1)] }, { channelId: ch(4), pingRoleIds: [role(3)] }] });
+
+  const quiet = view({ channels: [{ id: ch(3), name: 'general', type: 'text', permissions: F.ViewChannel },
+    { id: ch(4), name: 'staff', type: 'text', permissions: F.ViewChannel | F.SendMessages | F.EmbedLinks | F.ReadMessageHistory }],
+    guildPermissions: F.ViewChannel });
+  const report = checkPermissions(quiet, { ...off, lfg: needs });
+  assert.deepEqual(report.issues.map(issue => [issue.featureId, issue.scope.kind === 'channel' ? issue.scope.id : null, issue.permission]), [
+    ['lfg.channel', ch(3), 'Send Messages, Embed Links, Read Message History'],
+    ['lfg.mention', ch(3), 'Mention @everyone, @here, and All Roles'],
+    ['lfg.mention', ch(4), 'Mention @everyone, @here, and All Roles']]);
+  assert.notEqual(report.enabledBits & F.MentionEveryone, 0n);
+  // Mentionable roles only: no Mention Everyone needed; LFG off: nothing at all.
+  const mentionable = checkPermissions(quiet, { ...off, lfg: { channels: [{ channelId: ch(4), pingRoleIds: [role(1)] }] } });
+  assert.deepEqual(mentionable.issues, []);
+  assert.equal(mentionable.enabledBits & F.MentionEveryone, 0n);
+  assert.deepEqual(checkPermissions(quiet, { ...off, lfg: null }).issues, []);
 });
 
 test('a channel overwrite that denies a permission the server grants is an overwrite issue', () => {

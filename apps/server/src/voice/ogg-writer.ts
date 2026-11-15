@@ -105,6 +105,11 @@ export interface OggOpusWriterOptions {
   pageMs?: number;
   /** Lag behind wall-clock tolerated as jitter before silence is inserted. */
   gapToleranceMs?: number;
+  /**
+   * The longest silence one fill writes. A longer jump (for example a clock step) shifts the timeline
+   * instead of writing hours of silence; fillTo and writePacket return the skipped milliseconds.
+   */
+  maxFillMs?: number;
 }
 
 /** One logical Ogg Opus stream (one player). */
@@ -116,7 +121,8 @@ export class OggOpusWriter {
   private pendingSamples = 0;
   private closed = false;
   readonly serial: number;
-  private readonly startMs: number;
+  private startMs: number;
+  private readonly maxFillSamples: number;
   private readonly pageSamples: number;
   private readonly toleranceSamples: number;
   private bytes = 0;
@@ -126,6 +132,7 @@ export class OggOpusWriter {
     this.startMs = options.startMs;
     this.pageSamples = Math.max(1, Math.round((options.pageMs ?? 1000) * SAMPLES_PER_MS));
     this.toleranceSamples = Math.round((options.gapToleranceMs ?? 100) * SAMPLES_PER_MS);
+    this.maxFillSamples = options.maxFillMs === undefined ? Number.POSITIVE_INFINITY : Math.max(0, Math.round(options.maxFillMs * SAMPLES_PER_MS));
     this.emit(buildOggPage(this.serial, this.sequence++, 0n, PAGE_BOS, [opusHead(options.channels ?? 2)]));
     this.emit(buildOggPage(this.serial, this.sequence++, 0n, 0, [opusTags(options.vendor ?? 'tcg-live voice recorder', options.comments)]));
   }
@@ -135,21 +142,31 @@ export class OggOpusWriter {
   get durationMs(): number { return Number(this.granulePosition) / SAMPLES_PER_MS; }
   get bytesWritten(): number { return this.bytes; }
 
-  /** Writes one original Opus packet that arrived at wall-clock `atMs`. */
-  writePacket(packet: Uint8Array, atMs: number): void {
+  /** Writes one original Opus packet that arrived at wall-clock `atMs`; returns milliseconds skipped (see maxFillMs). */
+  writePacket(packet: Uint8Array, atMs: number): number {
     if (this.closed) throw new Error('Ogg writer is closed.');
     const samples = opusPacketSamples(packet);
-    if (samples === 0) return;
-    this.fillTo(atMs);
+    if (samples === 0) return 0;
+    const skipped = this.fillTo(atMs);
     this.append(packet, samples);
+    return skipped;
   }
 
-  /** Inserts silence so the stream reaches wall-clock `atMs` (minus jitter tolerance). */
-  fillTo(atMs: number): void {
+  /** Inserts silence so the stream reaches wall-clock `atMs` (minus jitter tolerance); returns milliseconds skipped. */
+  fillTo(atMs: number): number {
     const target = BigInt(Math.max(0, Math.round((atMs - this.startMs) * SAMPLES_PER_MS)));
-    if (target - this.granulePosition <= BigInt(this.toleranceSamples)) return;
-    const missing = Number(target - this.granulePosition) / SILENCE_SAMPLES;
-    for (let index = 0; index < Math.floor(missing); index += 1) this.append(OPUS_SILENCE_FRAME, SILENCE_SAMPLES);
+    if (target - this.granulePosition <= BigInt(this.toleranceSamples)) return 0;
+    let missingSamples = Number(target - this.granulePosition);
+    let skippedMs = 0;
+    if (missingSamples > this.maxFillSamples) {
+      const skipSamples = missingSamples - this.maxFillSamples;
+      skippedMs = skipSamples / SAMPLES_PER_MS;
+      this.startMs += skippedMs;
+      missingSamples = this.maxFillSamples;
+    }
+    const frames = Math.floor(missingSamples / SILENCE_SAMPLES);
+    for (let index = 0; index < frames; index += 1) this.append(OPUS_SILENCE_FRAME, SILENCE_SAMPLES);
+    return skippedMs;
   }
 
   private append(packet: Uint8Array, samples: number): void {

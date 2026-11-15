@@ -5,10 +5,12 @@ import { Button, Field, Input, Select, Switch } from '../../ui';
 import { BrandMark } from '../shell/BrandMark';
 import { BotSetupGuide } from '../bot-permissions/BotSetupGuide';
 import { GRANT_EXPLANATION, GrantPermissionsLink, PermissionIssueList } from '../bot-permissions/PermissionIssues';
+import { LocalSettingsPanel } from './DashboardActionsSwitch';
+import { WhatsNext } from './WhatsNext';
 
 const EMPTY: SetupSelectionDto = { guildId: '', channelId: '', matchChannels: { M1: '', M2: '' },
   adminId: '', publicMatchRooms: true };
-const STEPS = ['Server', 'Channels', 'Readiness'] as const;
+const STEPS = ['Server', 'Channels', 'Readiness', 'What’s next'] as const;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : 'Setup could not complete. Refresh and try again.';
@@ -94,7 +96,7 @@ export function SetupWizard() {
   };
   const finish = async () => {
     setBusy(true); setError(null);
-    try { await api.finishSetup(selection); setOpening(true); }
+    try { await api.finishSetup(selection); setOpening(true); setStep(3); }
     catch (cause) { setError(errorText(cause)); setBusy(false); }
   };
   const frozen = status?.frozen ?? false;
@@ -110,7 +112,7 @@ export function SetupWizard() {
       </div>
       <p className="mt-3 text-sm text-fg-muted">Choose where players sign up and where each practice match happens.</p>
       <BotSetupGuide inviteUrl={check?.permissions?.inviteUrl ?? null} defaultOpen={!!status?.prerequisite} className="mt-4" />
-      <ol aria-label="Setup progress" className="mt-6 grid grid-cols-3 gap-2">
+      <ol aria-label="Setup progress" className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
         {STEPS.map((name, index) => <li key={name} aria-current={index === step ? 'step' : undefined}
           className={`rounded-md border px-2 py-2 text-center text-xs font-medium ${index === step ?
             'border-accent bg-accent-soft text-accent' : 'border-line text-fg-muted'}`}>
@@ -191,10 +193,15 @@ export function SetupWizard() {
             {check.notice === 'pending' && <p role="status" className="text-sm text-fg-muted">Signup-channel guide delivery is uncertain. Review the channel before trying again.</p>}
             {check.notice === 'cannot_post' && <p role="status" className="text-sm text-fg-muted">The bot cannot post the guide in the signup channel yet.</p>}
           </>}
+          <LocalSettingsPanel setup className="rounded-lg border border-line p-3" />
+        </section>}
+        {step === 3 && <section aria-label="What’s next" className="space-y-4">
           {opening && <p role="status" className="text-sm font-medium text-accent">Setup complete. Opening dashboard…</p>}
+          <WhatsNext inviteUrl={check?.permissions?.inviteUrl ?? null} />
         </section>}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5">
           <Button variant="ghost" onClick={() => setStep(value => Math.max(0, value - 1))} disabled={step === 0 || busy || opening}>Back</Button>
+          {step === 3 ? null : <>
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" onClick={() => { setRefreshCount(count => count + 1); void refresh(); }} disabled={busy || opening}>Refresh</Button>
             {step === 0 && <Button variant="primary" onClick={() => setStep(1)} disabled={!selection.guildId || !selection.adminId}>Next: channels</Button>}
@@ -204,7 +211,7 @@ export function SetupWizard() {
             {step === 2 && <><Button variant="secondary" onClick={() => void review()} loading={busy}>Recheck</Button>
               <Button variant="primary" onClick={() => void finish()} loading={busy}
                 disabled={!check?.valid || opening}>Save and Start</Button></>}
-          </div>
+          </div></>}
         </div>
       </div>}
     </main>

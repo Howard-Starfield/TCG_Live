@@ -15,12 +15,21 @@ export const ADMIN_TOOLS_TABLES = ['tcg_admin_counters', 'tcg_admin_tools_settin
   'tcg_message_store', 'tcg_mod_cases', 'tcg_mod_cases_id_seq', 'tcg_mod_notes', 'tcg_mod_notes_id_seq',
   'tcg_sticky_messages', 'tcg_ticket_messages', 'tcg_tickets'] as const;
 export const TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS = [...TABLES_V2_DIRECTORY_EVIDENCE, ...ADMIN_TOOLS_TABLES] as const;
+/** Migration 014 (LFG), applied by setupAdminToolsSchema after 013. uuid keys, so no sequences. */
+export const LFG_TABLES = ['tcg_lfg_players', 'tcg_lfg_posts', 'tcg_lfg_settings'] as const;
+export const TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS_LFG = [...TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS, ...LFG_TABLES] as const;
+
+/** 013 alone or 013 + 014: every later guard treats both as the admin tools shape. */
+export function isAdminToolsShape(shape: string): boolean {
+  return shape === 'v2_directory_evidence_admin_tools' || shape === 'v2_directory_evidence_admin_tools_lfg';
+}
 
 /** The pg_class query every guard uses: tables, views, sequences and foreign tables in public. */
 export const PUBLIC_RELATIONS_SQL =
   "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY c.relname";
 
 export type PublicSchemaShape = 'empty' | 'v1' | 'v2' | 'v2_directory' | 'v2_directory_evidence' | 'v2_directory_evidence_admin_tools'
+  | 'v2_directory_evidence_admin_tools_lfg'
   | 'unexpected';
 
 /** Order-insensitive exact comparison, so database collation cannot change the answer. */
@@ -38,6 +47,7 @@ export function classifyPublicSchema(names: readonly string[]): PublicSchemaShap
   if (sameTables(names, TABLES_V2_DIRECTORY)) return 'v2_directory';
   if (sameTables(names, TABLES_V2_DIRECTORY_EVIDENCE)) return 'v2_directory_evidence';
   if (sameTables(names, TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS)) return 'v2_directory_evidence_admin_tools';
+  if (sameTables(names, TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS_LFG)) return 'v2_directory_evidence_admin_tools_lfg';
   return 'unexpected';
 }
 
@@ -56,7 +66,7 @@ export function privateDiscordSetupDecision(names: readonly string[], marker: st
   'upgrade' | 'already_ready' | 'refuse' {
   const shape = classifyPublicSchema(names);
   if ((shape === 'v2' || shape === 'v2_directory' || shape === 'v2_directory_evidence' ||
-       shape === 'v2_directory_evidence_admin_tools') && marker === '2') return 'already_ready';
+       isAdminToolsShape(shape)) && marker === '2') return 'already_ready';
   return shape === 'v1' && marker === '1' ? 'upgrade' : 'refuse';
 }
 
@@ -64,7 +74,7 @@ export function privateDiscordSetupDecision(names: readonly string[], marker: st
 export function directorySetupDecision(names: readonly string[]): 'create' | 'already_ready' | 'refuse' {
   const shape = classifyPublicSchema(names);
   if (shape === 'v2') return 'create';
-  return shape === 'v2_directory' || shape === 'v2_directory_evidence' || shape === 'v2_directory_evidence_admin_tools'
+  return shape === 'v2_directory' || shape === 'v2_directory_evidence' || isAdminToolsShape(shape)
     ? 'already_ready' : 'refuse';
 }
 
@@ -72,12 +82,12 @@ export function directorySetupDecision(names: readonly string[]): 'create' | 'al
 export function evidenceSetupDecision(names: readonly string[]): 'create' | 'already_ready' | 'refuse' {
   const shape = classifyPublicSchema(names);
   if (shape === 'v2_directory') return 'create';
-  return shape === 'v2_directory_evidence' || shape === 'v2_directory_evidence_admin_tools' ? 'already_ready' : 'refuse';
+  return shape === 'v2_directory_evidence' || isAdminToolsShape(shape) ? 'already_ready' : 'refuse';
 }
 
 /** setupAdminToolsSchema: needs evidence (012) first; reapplying idempotent 013 on its own shape is safe. */
 export function adminToolsSetupDecision(names: readonly string[]): 'create' | 'already_ready' | 'refuse' {
   const shape = classifyPublicSchema(names);
   if (shape === 'v2_directory_evidence') return 'create';
-  return shape === 'v2_directory_evidence_admin_tools' ? 'already_ready' : 'refuse';
+  return isAdminToolsShape(shape) ? 'already_ready' : 'refuse';
 }

@@ -14,12 +14,13 @@ import { ADMIN_COMMAND_NAME, adminSubcommands } from './admin-command.js';
 export const FEATURE_INTERACTION_PREFIXES = {
   adminTools: 'at:',
   tickets: 'tk:',
-  buttonRoles: 'br:'
+  buttonRoles: 'br:',
+  lfg: 'lfg:'
 } as const;
 export type FeatureInteractionPrefix = typeof FEATURE_INTERACTION_PREFIXES[keyof typeof FEATURE_INTERACTION_PREFIXES];
 
 /** Custom-id prefixes the controller owns; never registrable. */
-export const CONTROLLER_INTERACTION_PREFIXES = ['p1:', 'judge:'] as const;
+export const CONTROLLER_INTERACTION_PREFIXES = ['p1:', 'judge:', 'evd:'] as const;  // evd: the match-card evidence form (runtime.ts)
 
 const PREFIXES: readonly string[] = Object.values(FEATURE_INTERACTION_PREFIXES);
 

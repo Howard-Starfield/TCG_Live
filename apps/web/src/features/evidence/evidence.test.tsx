@@ -285,3 +285,109 @@ describe('validateEvidenceUrl', () => {
     expect(validateEvidenceUrl('https://user:pw@x.test/')).toMatch(/user name/);
   });
 });
+
+describe('playback robustness', () => {
+  const key = 'POST /evidence/00000000-0000-4000-8000-00000000000a/playback';
+  const failWith = (element: HTMLElement, code: number) => {
+    Object.defineProperty(element, 'error', { configurable: true, value: { code } });
+    fireEvent.error(element);
+  };
+
+  it('switches to download only on an unsupported codec, without more tickets', async () => {
+    const head = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', head);
+    try {
+      const { server } = mount({ items: [clip] });
+      failWith(await screen.findByTestId('evidence-media'), 4);
+      expect(await screen.findByTestId('evidence-download-only')).toHaveTextContent(/HEVC or ProRes/);
+      expect(head).toHaveBeenCalledWith('/api/v1/media/ticket-one', expect.objectContaining({ method: 'HEAD' }));
+      expect(server.callsTo(key)).toHaveLength(1);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('treats "not supported" from a refused ticket as expiry and fetches a new one', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 404 })));
+    try {
+      let issued = 0;
+      const { server } = mount({ items: [clip], setup: server => {
+        server.always(key, () => { issued += 1; return json(200, { url: `/api/v1/media/t-${issued}`, expiresAtMs: FIXTURE_NOW_MS + 15 * 60_000 }); });
+      } });
+      failWith(await screen.findByTestId('evidence-media'), 4);
+      await waitFor(() => expect(screen.getByTestId('evidence-media')).toHaveAttribute('src', '/api/v1/media/t-2'));
+      expect(server.callsTo(key)).toHaveLength(2);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('keeps playing on the old ticket and swaps the early-fetched one in at the next pause', async () => {
+    let issued = 0;
+    mount({ items: [clip], setup: server => {
+      server.always(key, () => {
+        issued += 1;
+        return json(200, { url: `/api/v1/media/p-${issued}`,
+          expiresAtMs: FIXTURE_NOW_MS + (issued === 1 ? TICKET_REFRESH_MARGIN_MS + 40 : 15 * 60_000) });
+      });
+    } });
+    const media = await screen.findByTestId('evidence-media');
+    // Playing: the refresh due in 40 ms must not replace src mid-playback.
+    Object.defineProperty(media, 'paused', { configurable: true, value: false });
+    Object.defineProperty(media, 'currentSrc', { configurable: true, value: 'http://127.0.0.1/api/v1/media/p-1' });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 150)); });
+    expect(issued).toBe(2);
+    expect(screen.getByTestId('evidence-media')).toHaveAttribute('src', '/api/v1/media/p-1');
+    Object.defineProperty(media, 'paused', { configurable: true, value: true });
+    fireEvent.pause(media);
+    await waitFor(() => expect(screen.getByTestId('evidence-media')).toHaveAttribute('src', '/api/v1/media/p-2'));
+  });
+});
+
+describe('upload feedback', () => {
+  it('says when the same file was already uploaded for the match', async () => {
+    mount({ setup: server => {
+      server.always(`POST ${PATH}`, () => json(200, { item: clip, duplicate: true }));
+    } });
+    const form = await screen.findByRole('form', { name: 'Add evidence' });
+    fireEvent.change(within(form).getByLabelText('Choose evidence file'),
+      { target: { files: [new File([new Uint8Array([0, 0, 0, 0x18])], 'turn.mp4', { type: 'video/mp4' })] } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Upload' }));
+    expect(await within(form).findByRole('status')).toHaveTextContent(/already uploaded for this match/);
+  });
+
+  it('maps upload failures to clear messages', async () => {
+    const { ApiError } = await import('../../data');
+    const { describeUploadError } = await import('./api');
+    expect(describeUploadError(new ApiError({ code: 'network', status: 0, message: 'Network request failed' })))
+      .toMatch(/connection dropped/);
+    expect(describeUploadError(new ApiError({ code: 'bad_request', status: 413, message: '' }))).toMatch(/too large/);
+    expect(describeUploadError(new ApiError({ code: 'bad_request', status: 415, message: '' }))).toMatch(/MP4/);
+    expect(describeUploadError(new ApiError({ code: 'bad_request', status: 507, message: 'The evidence disk is full.' })))
+      .toBe('The evidence disk is full.');
+    expect(describeUploadError(new ApiError({ code: 'unavailable', status: 504, message: '' }))).toMatch(/timed out/);
+  });
+
+  it('estimates speed and time left from recent progress', async () => {
+    const { uploadRate } = await import('./api');
+    expect(uploadRate([{ atMs: 0, loaded: 0 }], 100)).toBeNull();
+    expect(uploadRate([{ atMs: 0, loaded: 0 }, { atMs: 2_000, loaded: 2_000_000 }], 10_000_000))
+      .toEqual({ bytesPerSecond: 1_000_000, etaMs: 8_000 });
+  });
+
+  it('asks before the tab closes while an upload is running', async () => {
+    let finish!: () => void;
+    mount({ setup: server => {
+      server.always(`POST ${PATH}`, () => new Promise(resolve => { finish = () => resolve(json(201, { item: clip })); }));
+    } });
+    const form = await screen.findByRole('form', { name: 'Add evidence' });
+    fireEvent.change(within(form).getByLabelText('Choose evidence file'),
+      { target: { files: [new File([new Uint8Array([0, 0, 0, 0x18])], 'turn.mp4', { type: 'video/mp4' })] } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Upload' }));
+    await within(form).findByText(/Keep this tab open/);
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    await act(async () => { finish(); });
+    await waitFor(() => expect(within(form).queryByText(/Keep this tab open/)).not.toBeInTheDocument());
+    const after = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(after);
+    expect(after.defaultPrevented).toBe(false);
+  });
+});

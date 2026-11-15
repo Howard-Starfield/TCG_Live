@@ -3,7 +3,7 @@ import type pg from 'pg';
 import { DEFAULT_MODERATION_SETTINGS, KEYWORD_ACTIONS, KEYWORD_PRESETS, MODERATION_LIMITS as L, RECORDING_MODES,
   VOICE_MONITOR_SCOPES, VOICE_SENSITIVITIES, VOICE_SENSITIVITY_PRESETS, type CustomKeywordListDto, type KeywordAction,
   type ModerationSettingsBodyDto, type ModerationSettingsDto, type TextModerationSettingsDto,
-  type VoiceLoudnessSettingsDto } from '@tcg-live/core';
+  type VoiceLoudnessSettingsDto, type VoiceRoomPolicyDto, VOICE_ROOM_COVERAGES, VOICE_ROOM_PRIORITIES, VOICE_ROOM_RECORDINGS } from '@tcg-live/core';
 import { transaction, withClient } from '../rehearsal/store.js';
 import { requireEvidenceSchema } from '../evidence/schema.js';
 import { insertOpsAudit, type OpsActor, type OpsAuditStore } from '../ops/audit.js';
@@ -30,11 +30,11 @@ export interface ModerationSettingsStore {
 
 const fail = (message: string): never => { throw new OpsInputError(message); };
 
-function object(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+function object(value: unknown, keys: readonly string[], label: string, optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} must be an object.`);
   const record = value as Record<string, unknown>;
   const actual = Object.keys(record);
-  if (actual.some(key => !keys.includes(key))) fail(`${label} has unknown fields.`);
+  if (actual.some(key => !keys.includes(key) && !optional.includes(key))) fail(`${label} has unknown fields.`);
   if (keys.some(key => !Object.hasOwn(record, key))) fail(`${label} is missing fields.`);
   return record;
 }
@@ -118,7 +118,8 @@ function parseText(value: unknown): TextModerationSettingsDto {
 }
 
 function parseVoice(value: unknown): VoiceLoudnessSettingsDto {
-  const voice = object(value, ['enabled', 'scope', 'sensitivity', 'thresholdDbfs', 'sustainMs', 'cooldownMs', 'notifyDiscord', 'notifyChannelId'], 'Voice monitoring');
+  const voice = object(value, ['enabled', 'scope', 'sensitivity', 'thresholdDbfs', 'sustainMs', 'cooldownMs', 'notifyDiscord', 'notifyChannelId'],
+    'Voice monitoring', ['rooms']);
   const sensitivity = choice(voice.sensitivity, VOICE_SENSITIVITIES, 'sensitivity');
   const thresholdDbfs = integer(voice.thresholdDbfs, L.thresholdDbfsMin, L.thresholdDbfsMax, 'Loudness threshold (dBFS)');
   const sustainMs = integer(voice.sustainMs, L.sustainMsMin, L.sustainMsMax, 'Sustain time (ms)');
@@ -127,14 +128,37 @@ function parseVoice(value: unknown): VoiceLoudnessSettingsDto {
   return {
     enabled: boolean(voice.enabled, 'Voice monitoring enabled'), scope: choice(voice.scope, VOICE_MONITOR_SCOPES, 'monitoring scope'),
     sensitivity, ...tuned, cooldownMs: integer(voice.cooldownMs, L.cooldownMsMin, L.cooldownMsMax, 'Cooldown (ms)'),
-    notifyDiscord: boolean(voice.notifyDiscord, 'Discord notice'), notifyChannelId: snowflakeOrNull(voice.notifyChannelId, 'Notice channel')
+    notifyDiscord: boolean(voice.notifyDiscord, 'Discord notice'), notifyChannelId: snowflakeOrNull(voice.notifyChannelId, 'Notice channel'),
+    rooms: parseVoiceRooms(voice.rooms)
   };
+}
+
+const BOT_ID = /^(main|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+
+/** Per voice room policies keyed by voice channel ID; absent means {}. Pins to a missing bot fall back to auto at runtime. */
+export function parseVoiceRooms(value: unknown): Record<string, VoiceRoomPolicyDto> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Room settings must be an object keyed by voice channel ID.');
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > L.voiceRoomPolicies) fail(`At most ${L.voiceRoomPolicies} voice rooms can have their own settings.`);
+  const rooms: Record<string, VoiceRoomPolicyDto> = {};
+  for (const [channelId, raw] of entries) {
+    if (!SNOWFLAKE.test(channelId)) fail('Room settings must be keyed by voice channel ID.');
+    const room = object(raw, ['coverage', 'recording', 'priority', 'pinnedBotId'], 'Room setting');
+    if (room.pinnedBotId !== null && (typeof room.pinnedBotId !== 'string' || !BOT_ID.test(room.pinnedBotId)))
+      fail('A room can only be pinned to the main bot or a helper bot.');
+    rooms[channelId] = { coverage: choice(room.coverage, VOICE_ROOM_COVERAGES, 'room coverage'),
+      recording: choice(room.recording, VOICE_ROOM_RECORDINGS, 'room recording'),
+      priority: choice(room.priority, VOICE_ROOM_PRIORITIES, 'room priority'),
+      pinnedBotId: room.pinnedBotId === null ? null : (room.pinnedBotId as string).toLowerCase() };
+  }
+  return rooms;
 }
 
 /** Strict parse of a full settings body. Throws OpsInputError with a message safe to show. */
 export function parseModerationSettings(input: unknown): ModerationSettingsBodyDto {
   const value = object(input, ['text', 'voice', 'recording', 'retention', 'noticeText'], 'Moderation settings');
-  const recording = object(value.recording, ['mode'], 'Recording');
+  const recording = object(value.recording, ['mode'], 'Recording', ['optOutUserIds']);
   const retention = object(value.retention, ['days'], 'Retention');
   if (value.noticeText !== null && (typeof value.noticeText !== 'string' || !value.noticeText.trim() ||
       !readableText(value.noticeText.trim(), L.noticeTextLength, true)))
@@ -142,7 +166,8 @@ export function parseModerationSettings(input: unknown): ModerationSettingsBodyD
   return {
     text: parseText(value.text),
     voice: parseVoice(value.voice),
-    recording: { mode: choice(recording.mode, RECORDING_MODES, 'recording mode') },
+    recording: { mode: choice(recording.mode, RECORDING_MODES, 'recording mode'),
+      optOutUserIds: recording.optOutUserIds === undefined ? [] : snowflakes(recording.optOutUserIds, L.recordingOptOuts, 'Recording opt-outs') },
     retention: { days: retention.days === null ? null : integer(retention.days, L.retentionDaysMin, L.retentionDaysMax, 'Retention days') },
     noticeText: value.noticeText === null ? null : (value.noticeText as string).trim()
   };
@@ -164,6 +189,14 @@ function expected(version: unknown): number {
 export function changedSections(before: ModerationSettingsBodyDto, after: ModerationSettingsBodyDto): string[] {
   return (['text', 'voice', 'recording', 'retention', 'noticeText'] as const)
     .filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+}
+/** Recording opt-out changes for the settings audit (Discord user IDs, never anything secret); {} when unchanged. */
+export function optOutChanges(before: ModerationSettingsBodyDto, after: ModerationSettingsBodyDto): { optOut?: { added: string[]; removed: string[] } } {
+  const was = new Set(before.recording.optOutUserIds ?? []);
+  const now = new Set(after.recording.optOutUserIds ?? []);
+  const added = [...now].filter(id => !was.has(id));
+  const removed = [...was].filter(id => !now.has(id));
+  return added.length || removed.length ? { optOut: { added: added.slice(0, 50), removed: removed.slice(0, 50) } } : {};
 }
 /** A saved row that no longer validates (for example after a downgrade) falls back to defaults until saved. */
 function fromRow(guildId: string, row: { version: number; settings: unknown; updated_at_ms: string } | undefined): ModerationSettingsDto {
@@ -201,7 +234,7 @@ export function pgModerationSettingsStore(now: () => number = Date.now): Moderat
             settings = EXCLUDED.settings, updated_at_ms = EXCLUDED.updated_at_ms, updated_by = EXCLUDED.updated_by`,
           [guildId, version + 1, JSON.stringify(body), updatedAtMs, actor.id]);
           await insertOpsAudit(client, { kind: 'moderation.settings', actor, guildId,
-            payload: { version: version + 1, sections: changedSections(current, body) }, occurredAtMs: updatedAtMs }, now);
+            payload: { version: version + 1, sections: changedSections(current, body), ...optOutChanges(current, body) }, occurredAtMs: updatedAtMs }, now);
           return { guildId, version: version + 1, updatedAtMs, ...body };
         });
       });
@@ -243,7 +276,7 @@ export class MemoryModerationSettingsStore implements ModerationSettingsStore {
     if (current.version !== version) throw new ModerationVersionConflictError(current);
     const next: ModerationSettingsDto = { guildId, version: version + 1, updatedAtMs: this.now(), ...body };
     this.saved.set(guildId, next);
-    await this.audit.append({ kind: 'moderation.settings', actor, guildId, payload: { version: next.version, sections: changedSections(current, body) } });
+    await this.audit.append({ kind: 'moderation.settings', actor, guildId, payload: { version: next.version, sections: changedSections(current, body), ...optOutChanges(current, body) } });
     return structuredClone(next);
   }
   async getAutoModRuleIds(guildId: string) { guild(guildId); return { ...this.rules.get(guildId) }; }

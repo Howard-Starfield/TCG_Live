@@ -34,7 +34,7 @@ export function permissionFlagByLabel(label: string): bigint | null {
 }
 
 export type FeatureGroup = 'Tournament' | 'AutoMod keyword filters' | 'Voice monitoring' | 'Moderation tools' | 'Cases' |
-  'Sticky messages' | 'Tickets' | 'Roles' | 'Announcements' | 'Logging';
+  'Sticky messages' | 'Tickets' | 'Roles' | 'Announcements' | 'Logging' | 'LFG';
 
 /**
  * Where a requirement is checked: server-wide, in each target channel (overwrites apply), or for each
@@ -90,7 +90,7 @@ export const FEATURE_PERMISSIONS: readonly FeatureRequirement[] = [
 
   // ---- On-demand moderation tools (always available on the dashboard)
   { id: 'members.ban', group: 'Moderation tools', scope: 'guild', permissions: ['BanMembers'], severity: 'warning',
-    when: 'Always (Members, Bans)', why: 'Ban, unban and the bans list do not work.' },
+    when: 'Always (Members, Bans)', why: 'Ban, unban, temporary-ban expiry and the bans list do not work.' },
   { id: 'members.kick', group: 'Moderation tools', scope: 'guild', permissions: ['KickMembers'], severity: 'warning',
     when: 'Always (Members)', why: 'Kick does not work.' },
   { id: 'members.timeout', group: 'Moderation tools', scope: 'guild', permissions: ['ModerateMembers'], severity: 'warning',
@@ -150,7 +150,13 @@ export const FEATURE_PERMISSIONS: readonly FeatureRequirement[] = [
     severity: 'blocking', when: 'Message log channel set', why: 'Edit and delete entries are not posted to the message log channel.' },
   // Gateway edit/delete events only arrive for channels the bot can see.
   { id: 'logging.messageSources', group: 'Logging', scope: 'channel', permissions: ['ViewChannel'], severity: 'warning',
-    when: 'Message log enabled (each logged channel)', why: 'Edits and deletions in this channel are not logged.' }
+    when: 'Message log enabled (each logged channel)', why: 'Edits and deletions in this channel are not logged.' },
+
+  // ---- LFG: the panel is a sticky (the bot deletes only its own previous copy); cards are edited, never deleted by others.
+  { id: 'lfg.channel', group: 'LFG', scope: 'channel', permissions: ['ViewChannel', 'SendMessages', 'EmbedLinks', 'ReadMessageHistory'],
+    severity: 'blocking', when: 'LFG enabled (each LFG channel)', why: 'The LFG panel and game cards cannot be posted or updated.' },
+  { id: 'lfg.mention', group: 'LFG', scope: 'channel', permissions: ['MentionEveryone'], severity: 'warning',
+    when: 'An LFG ping role that is not mentionable', why: 'The LFG ping is sent but notifies nobody.' }
 ];
 
 export function requirement(id: string): FeatureRequirement {
@@ -161,6 +167,11 @@ export function requirement(id: string): FeatureRequirement {
 
 /** Every permission any feature may need: the "all features" invite. */
 export const ALL_FEATURE_PERMISSIONS: bigint = permissionBits(FEATURE_PERMISSIONS.flatMap(item => item.permissions));
+
+/** A helper voice bot's invite: only what joining a match room needs (the voice.rooms requirement). Helpers never speak or post. */
+export function voiceHelperInviteBits(): bigint {
+  return permissionBits(requirement('voice.rooms').permissions);
+}
 
 /** The setup wizard's per-slot lists (human names), from the same table. */
 export const SETUP_CHANNEL_PERMISSIONS = {

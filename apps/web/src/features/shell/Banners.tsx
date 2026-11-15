@@ -1,10 +1,11 @@
-import { Archive, Database, KeyRound, LoaderCircle, RefreshCw, ShieldAlert, Snowflake, TriangleAlert, WifiOff, X } from 'lucide-react';
+import { Archive, Database, KeyRound, LoaderCircle, Lock, Mic, RefreshCw, ShieldAlert, Snowflake, TriangleAlert, WifiOff, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useState, type ReactNode } from 'react';
 import { browserSessionStorage, useServerNow, useStreamConnection } from '../../data';
 import { Button, cx, IconButton, springs, useSafeTransition } from '../../ui';
 import { useAdminToolsAccess } from '../admin-tools/api';
 import { requestAdminToolsTab } from '../admin-tools/navigation';
+import { useLocalSettings } from '../setup/localSettings';
 import { hasInterruptedClock } from './labels';
 import { useShell } from './model';
 
@@ -40,6 +41,7 @@ export function Banners() {
   const { status, viewed } = shell;
   const adminTools = useAdminToolsAccess();
   const [dismissedAt, dismissPermissions] = usePermissionBannerDismissal();
+  const local = useLocalSettings();
   const banners: BannerSpec[] = [];
 
   if (connection.state === 'offline') {
@@ -81,6 +83,22 @@ export function Banners() {
       body: 'Some enabled features cannot work until it is fixed in Discord.',
       action: { label: 'Review in Admin tools', onClick: () => { requestAdminToolsTab('settings'); shell.showAdminTools(); } },
       onDismiss: () => dismissPermissions(blocking) });
+  }
+  const session = shell.session;
+  if (session.mode === 'discord' && !session.commandsEnabled && !session.setup) {
+    const hidden = 'Publishing, signup changes, judging and corrections, creating or opening tournaments and server tools are hidden; '
+      + 'you can still watch events and audit history.';
+    banners.push({ id: 'dashboard-actions', tone: 'neutral', icon: <Lock />, title: 'Dashboard actions are off.',
+      body: session.localSettings ? `${hidden} Turn on "Allow dashboard actions" to use them; it applies at once.`
+        : `${hidden} Set TCG_ADMIN_COMMANDS=1 in .env and restart, or start with npm start to use the switch.`,
+      ...(session.localSettings ? { action: { label: local.saving ? 'Turning on…' : 'Turn on',
+        onClick: () => { if (!local.saving) void local.save({ dashboardActions: true }); } } } : {}) });
+  }
+  const voice = local.settings?.voiceMonitoring;
+  if (voice?.restartRequired) {
+    banners.push({ id: 'voice-restart', tone: 'warning', icon: <Mic />, title: 'Restart to apply voice monitoring.',
+      body: `It was turned ${voice.saved ? 'on' : 'off'}. Close TCG Live and run npm start again; until then the bot keeps `
+        + `voice monitoring ${voice.running ? 'on' : 'off'}.` });
   }
   if (viewed.retired) {
     banners.push({ id: 'retired', tone: 'neutral', icon: <Archive />, title: 'Retired event · read-only history.',

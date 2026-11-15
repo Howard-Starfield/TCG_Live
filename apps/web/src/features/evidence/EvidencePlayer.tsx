@@ -1,8 +1,9 @@
 // Evidence playback. <video>/<audio> cannot send an Authorization header, so the player asks for a
 // short-lived playback ticket and uses its URL as `src`. Before the ticket expires, or when playback
 // fails (an expired or revoked ticket answers 401/403/404, which the element reports only as an error),
-// it fetches a new ticket and resumes at the same position.
-import type { EvidenceItemDto, PlaybackTicketDto } from '@tcg-live/core';
+// it fetches a new ticket and resumes at the same position. A file the browser cannot decode (an
+// unsupported codec) switches to the download-only view at once instead of re-requesting tickets.
+import { EVIDENCE_DOWNLOAD_ONLY_MIME, type EvidenceItemDto, type PlaybackTicketDto } from '@tcg-live/core';
 import { Download, ExternalLink, Pause, Play, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref, type RefObject } from 'react';
 import { useAdminData, useServerClock } from '../../data';
@@ -57,20 +58,49 @@ interface TicketedSource {
   ticket: PlaybackTicketDto | null;
   error: string | null;
   loading: boolean;
+  /** The browser cannot decode this file (for example HEVC or ProRes): show the download-only view. */
+  unsupported: boolean;
   handlers: {
     onLoadedMetadata(): void;
     onError(): void;
     onPlaying(): void;
+    onPause(): void;
+    onSeeking(): void;
   };
 }
 
-/** A playback ticket for `itemId` kept fresh, plus the media handlers that resume after a swap. */
+/** HTMLMediaElement error codes (MediaError.MEDIA_ERR_*). */
+const MEDIA_ERR_DECODE = 3;
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
+/**
+ * True when the ticket URL itself still answers, so a "source not supported" error means the codec and
+ * not an expired or revoked ticket (the element reports both with the same code). HEAD is not audited.
+ */
+export async function ticketStillServes(url: string): Promise<boolean> {
+  if (typeof fetch !== 'function') return false;
+  try {
+    const response = await fetch(url, { method: 'HEAD', cache: 'no-store', credentials: 'omit' });
+    return response.ok;
+  } catch { return false; }
+}
+
+/**
+ * A playback ticket for `itemId` kept fresh, plus the media handlers that resume after a swap.
+ *
+ * Refreshing does not interrupt playback: the next ticket is fetched TICKET_REFRESH_MARGIN_MS early and
+ * kept as a spare. It replaces `src` at once only when nothing is playing; otherwise at the next pause
+ * or seek (which rebuffer anyway), or when the old ticket fails. A progressive download already under
+ * way keeps streaming on the old ticket, because the server checks a ticket only when a request starts.
+ */
 function useTicketedSource(itemId: string, media: RefObject<HTMLMediaElement | null>, enabled: boolean): TicketedSource {
   const { api } = useAdminData();
   const clock = useServerClock();
   const [ticket, setTicket] = useState<PlaybackTicketDto | null>(null);
+  const [spare, setSpare] = useState<PlaybackTicketDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [unsupported, setUnsupported] = useState(false);
   const resume = useRef<{ time: number; playing: boolean } | null>(null);
   const failures = useRef(0);
   const live = useRef(true);
@@ -78,46 +108,75 @@ function useTicketedSource(itemId: string, media: RefObject<HTMLMediaElement | n
   /** Consecutive tickets that arrived already inside the refresh margin. */
   const shortTickets = useRef(0);
 
-  const refresh = useCallback(async (keepPosition: boolean) => {
+  const rememberPosition = useCallback(() => {
     const element = media.current;
-    if (keepPosition && element && element.currentSrc) {
-      resume.current = { time: element.currentTime, playing: !element.paused && !element.ended };
-    }
-    if (inFlight.current) return;
+    if (element && element.currentSrc) resume.current = { time: element.currentTime, playing: !element.paused && !element.ended };
+  }, [media]);
+
+  const fetchTicket = useCallback(async (): Promise<PlaybackTicketDto | null> => {
+    if (inFlight.current) return null;
     inFlight.current = true;
     setLoading(true);
     try {
       const next = await requestPlayback(api, itemId);
-      if (!live.current) return;
-      setTicket(next);
+      if (!live.current) return null;
       setError(null);
+      return next;
     } catch (cause) {
       if (live.current) setError(describeError(cause, 'Playback could not start.'));
+      return null;
     } finally {
       inFlight.current = false;
       if (live.current) setLoading(false);
     }
-  }, [api, itemId, media]);
+  }, [api, itemId]);
+
+  const swapIn = useCallback((next: PlaybackTicketDto) => {
+    rememberPosition();
+    setSpare(null);
+    setTicket(next);
+  }, [rememberPosition]);
+
+  /** Replaces the source now (first load, or the current ticket failed), resuming at the same position. */
+  const refresh = useCallback(async (keepPosition: boolean) => {
+    if (keepPosition) rememberPosition();
+    const next = await fetchTicket();
+    if (next) { setSpare(null); setTicket(next); }
+  }, [fetchTicket, rememberPosition]);
+
+  /** Fetches the next ticket early and swaps it in only while nothing is playing. */
+  const prefetch = useCallback(async () => {
+    const next = await fetchTicket();
+    if (!next) return;
+    const element = media.current;
+    if (!element || element.paused || element.ended || !element.currentSrc) swapIn(next);
+    else setSpare(next);
+  }, [fetchTicket, media, swapIn]);
 
   useEffect(() => {
     live.current = true;
     failures.current = 0;
     resume.current = null;
     setTicket(null);
+    setSpare(null);
     setError(null);
+    setUnsupported(false);
     if (enabled) void refresh(false);
     return () => { live.current = false; };
   }, [enabled, refresh]);
 
+  // The newest ticket held (the spare, while one waits) decides when to fetch the next.
+  const latest = spare ?? ticket;
   useEffect(() => {
-    if (!ticket) return;
-    const due = ticket.expiresAtMs - clock.now() - TICKET_REFRESH_MARGIN_MS;
+    if (!latest || unsupported) return;
+    const due = latest.expiresAtMs - clock.now() - TICKET_REFRESH_MARGIN_MS;
     shortTickets.current = due < MIN_TICKET_REFRESH_DELAY_MS ? shortTickets.current + 1 : 0;
     const delay = shortTickets.current > 1 ? MIN_TICKET_REFRESH_DELAY_MS : Math.max(0, due);
-    const timer = setTimeout(() => { void refresh(true); }, delay);
+    const timer = setTimeout(() => { void prefetch(); }, delay);
     return () => clearTimeout(timer);
-  }, [clock, refresh, ticket]);
+  }, [clock, latest, prefetch, unsupported]);
 
+  const giveUp = () => setError('This recording could not be played. Try downloading it instead.');
   const handlers = {
     onLoadedMetadata: () => {
       const element = media.current;
@@ -128,17 +187,32 @@ function useTicketedSource(itemId: string, media: RefObject<HTMLMediaElement | n
       if (pending.playing) void element.play()?.catch(() => {});
     },
     onError: () => {
-      if (!ticket) return;
-      if (failures.current >= MAX_TICKET_RETRIES) {
-        setError('This recording could not be played. Try downloading it instead.');
+      if (!ticket || unsupported) return;
+      // A spare is ready: the old ticket most likely expired mid-stream. Swap without counting a failure.
+      if (spare) { swapIn(spare); return; }
+      const code = media.current?.error?.code;
+      // The data arrived but cannot be decoded: retrying with new tickets cannot help.
+      if (code === MEDIA_ERR_DECODE) { setUnsupported(true); return; }
+      if (code === MEDIA_ERR_SRC_NOT_SUPPORTED) {
+        void ticketStillServes(ticket.url).then(serves => {
+          if (!live.current) return;
+          if (serves) { setUnsupported(true); return; }
+          if (failures.current >= MAX_TICKET_RETRIES) { giveUp(); return; }
+          failures.current += 1;
+          void refresh(true);
+        });
         return;
       }
+      // Network errors and expired or revoked tickets: a fresh ticket, a bounded number of times.
+      if (failures.current >= MAX_TICKET_RETRIES) { giveUp(); return; }
       failures.current += 1;
       void refresh(true);
     },
-    onPlaying: () => { failures.current = 0; }
+    onPlaying: () => { failures.current = 0; },
+    onPause: () => { if (spare) swapIn(spare); },
+    onSeeking: () => { if (spare) swapIn(spare); }
   };
-  return { src: ticket?.url ?? null, ticket, error, loading, handlers };
+  return { src: ticket?.url ?? null, ticket, error, loading, unsupported, handlers };
 }
 
 function DownloadButton({ item, label = 'Download' }: { item: EvidenceItemDto; label?: string }) {
@@ -233,9 +307,14 @@ export function EvidencePlayer({ item, markers = [], ref }: EvidencePlayerProps)
         : item.status === 'failed' ? 'This file could not be stored.' : `Deleted${item.deleteReason ? `: ${item.deleteReason}` : '.'}`}
     </p>;
   }
-  if (!item.playable) {
+  if (!item.playable || source.unsupported) {
+    // A container browsers cannot play (MKV), a codec flagged at upload (HEVC or ProRes, stored with
+    // EVIDENCE_DOWNLOAD_ONLY_MIME), or a file this browser just failed to decode.
+    const codec = source.unsupported || item.mime === EVIDENCE_DOWNLOAD_ONLY_MIME;
     return <div className="flex flex-col items-start gap-2 rounded-lg bg-sunken p-3" data-testid="evidence-download-only">
-      <p className="text-xs text-fg-muted">This file type{item.mime ? ` (${item.mime})` : ''} cannot play in the browser. Download it to watch it in a desktop player.</p>
+      <p className="text-xs text-fg-muted">{codec
+        ? 'This video uses a format your browser cannot play (for example HEVC or ProRes). Download it to watch it in a desktop player such as VLC.'
+        : `This file type${item.mime ? ` (${item.mime})` : ''} cannot play in the browser. Download it to watch it in a desktop player.`}</p>
       <DownloadButton item={item} />
     </div>;
   }

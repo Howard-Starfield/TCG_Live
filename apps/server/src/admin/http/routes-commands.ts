@@ -9,8 +9,8 @@ import { HttpError, sendJson } from './respond.js';
 
 export interface CommandRouteOptions {
   runtime: AdminRuntime;
-  /** Decision 4: TCG_ADMIN_COMMANDS=1 in Discord mode, always in the demo. */
-  commandsEnabled: boolean;
+  /** Decision 4: TCG_ADMIN_COMMANDS=1 in Discord mode, always in the demo; a getter follows the guided switch. */
+  commandsEnabled: boolean | (() => boolean);
   /** Whether the signed-in principal holds a capability. */
   can(capability: Capability): boolean;
 }
@@ -44,11 +44,12 @@ async function refuse(response: ServerResponse, runtime: AdminRuntime, error: un
 
 export function commandRoutes(options: CommandRouteOptions): CommandRoute[] {
   const { runtime } = options;
+  const enabled = () => typeof options.commandsEnabled === 'function' ? options.commandsEnabled() : options.commandsEnabled;
   return [
     { pattern: /^\/api\/v1\/commands$/, methods: {
       // The capability depends on the command type, so it is checked after validation.
       POST: { access: 'session', run: async ({ request, response }) => {
-        if (!options.commandsEnabled) throw forbidden(DISABLED);
+        if (!enabled()) throw forbidden(DISABLED);
         const command = parseCommandRequest(await readJsonBody(request));
         if (!options.can(requiredCapability(command.command))) throw forbidden('This session may not do that.');
         let result;
@@ -59,7 +60,7 @@ export function commandRoutes(options: CommandRouteOptions): CommandRoute[] {
     } },
     { pattern: /^\/api\/v1\/panels\/refresh$/, methods: {
       POST: { access: 'panels.refresh', run: async ({ request, response }) => {
-        if (!options.commandsEnabled) throw forbidden(DISABLED);
+        if (!enabled()) throw forbidden(DISABLED);
         const { eventId } = parsePanelRefreshRequest(await readJsonBody(request));
         let result;
         try { result = await runtime.refreshPanels(eventId); }

@@ -11,6 +11,28 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   return !['button', 'checkbox', 'radio', 'range', 'reset', 'submit', 'color', 'file', 'image'].includes(type);
 }
 
+/**
+ * "?" (Shift+/ on most layouts) anywhere, ignored while typing, with Ctrl/Alt/⌘ held, on repeats, while a
+ * dialog or menu is open, or when another handler has taken the key.
+ */
+export function useHelpShortcut(handler: () => void): void {
+  const ref = useRef(handler);
+  ref.current = handler;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== '?' || event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.defaultPrevented) return;
+      if (isTypingTarget(event.target)) return;
+      // While a modal dialog is open, or inside a menu or popover, the key belongs to it (the shortcuts dialog closes with Esc).
+      if (document.querySelector('[aria-modal="true"]')) return;
+      if (event.target instanceof Element && event.target.closest('[role="dialog"],[role="alertdialog"],[role="menu"]')) return;
+      event.preventDefault();
+      ref.current();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+}
+
 /** Alt+<digit> handlers, ignored while typing; uses `code` so layouts that remap Alt+digit still work. */
 export function useAltDigitShortcuts(handlers: Partial<Record<'1' | '2', () => void>>): void {
   const ref = useRef(handlers);

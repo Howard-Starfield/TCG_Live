@@ -73,3 +73,11 @@ CREATE TABLE IF NOT EXISTS public.tcg_moderation_flags (
   detail jsonb NOT NULL CHECK (jsonb_typeof(detail) = 'object'),
   occurred_at_ms bigint NOT NULL CHECK (occurred_at_ms > 0)
 );
+
+-- Flag triage (additive, next wave): acknowledged / dismissed with when and who. NULL = still open.
+ALTER TABLE public.tcg_moderation_flags ADD COLUMN IF NOT EXISTS review_state text
+  CHECK (review_state IS NULL OR review_state IN ('acknowledged', 'dismissed'));
+ALTER TABLE public.tcg_moderation_flags ADD COLUMN IF NOT EXISTS reviewed_at_ms bigint
+  CHECK (reviewed_at_ms IS NULL OR reviewed_at_ms > 0);
+ALTER TABLE public.tcg_moderation_flags ADD COLUMN IF NOT EXISTS reviewed_by text
+  CHECK (reviewed_by IS NULL OR char_length(reviewed_by) BETWEEN 1 AND 64);

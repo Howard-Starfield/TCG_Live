@@ -50,7 +50,11 @@ export interface EvidenceListDto { eventId: string; matchId: MatchId; items: Evi
 /** POST /api/v1/events/:id/matches/:m/evidence with Content-Type application/json. */
 export interface CreateLinkEvidenceRequestDto { url: string; note?: string }
 /** Answer to link creation and to a binary upload (POST same path with a media Content-Type). */
-export interface CreateEvidenceResponseDto { item: EvidenceItemDto }
+export interface CreateEvidenceResponseDto {
+  item: EvidenceItemDto;
+  /** Uploads only: true when the same file (same SHA-256) was already stored for this match; `item` is that earlier item. */
+  duplicate?: boolean;
+}
 export type EvidenceUploadResponseDto = CreateEvidenceResponseDto;
 /** Answer to PATCH and DELETE /api/v1/evidence/:id. */
 export type EvidenceItemResponseDto = CreateEvidenceResponseDto;
@@ -86,6 +90,11 @@ export const EVIDENCE_FILE_TYPES = {
   mkv: { mime: 'video/x-matroska', playable: false }
 } as const;
 export type EvidenceFileExtension = keyof typeof EVIDENCE_FILE_TYPES;
+/**
+ * Stored `mime` of an MP4/MOV whose video codec browsers cannot decode (HEVC, ProRes): such items are
+ * download-only (`playable` false) even though their container type is normally playable.
+ */
+export const EVIDENCE_DOWNLOAD_ONLY_MIME = 'application/octet-stream';
 export function isEvidenceFileExtension(value: unknown): value is EvidenceFileExtension {
   return typeof value === 'string' && Object.hasOwn(EVIDENCE_FILE_TYPES, value);
 }

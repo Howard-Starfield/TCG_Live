@@ -109,6 +109,23 @@ test('auto-role skips bots, audits unmanageable roles and failures', async () =>
   assert.match(String(failing.audits[0]?.payload.error), /Missing Permissions/);
 });
 
+test('auto-role "Skip bots" off gives bots the roles but never a welcome; the setting parses and stays optional', async () => {
+  const off = harness(logging(value => { value.autoRole.skipBots = false; }));
+  await off.processor.memberJoined(join({ bot: true }));
+  assert.deepEqual(off.added, [{ userId: USER, roleIds: [ROLE_A] }]);
+  assert.equal(off.posts.some(post => post.channelId === WELCOME), false);
+  const on = harness(logging(value => { value.autoRole.skipBots = true; }));
+  await on.processor.memberJoined(join({ bot: true }));
+  assert.equal(on.added.length, 0);
+
+  const body = structuredClone(DEFAULT_ADMIN_TOOLS_SETTINGS) as AdminToolsSettingsBodyDto;
+  assert.equal(parseAdminToolsSettings(body).logging.autoRole.skipBots, undefined);
+  body.logging.autoRole = { enabled: false, roleIds: [], skipBots: false };
+  assert.equal(parseAdminToolsSettings(body).logging.autoRole.skipBots, false);
+  body.logging.autoRole = { enabled: false, roleIds: [], skipBots: 'no' as unknown as boolean };
+  assert.throws(() => parseAdminToolsSettings(body), /Skip bots/);
+});
+
 test('welcome failures are audited; leave messages ping nobody', async () => {
   const failing = harness(logging(), { postFails: true });
   await failing.processor.memberJoined(join());

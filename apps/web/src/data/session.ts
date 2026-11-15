@@ -178,6 +178,19 @@ export class SessionController {
     this.setState({ status: 'signed-out', reason: 'expired' });
   }
 
+  /**
+   * Re-reads the signed-in session in place (no signing-in state), e.g. after a local setting changed
+   * its capabilities. Failures keep the current session; a 401 signs out as usual.
+   */
+  async refresh(): Promise<void> {
+    if (this.state.status !== 'signed-in') return;
+    const attempt = this.attempt;
+    try {
+      const session = await this.options.api.getSession();
+      if (attempt === this.attempt && this.state.status === 'signed-in') this.setState({ status: 'signed-in', session });
+    } catch { /* The next request reports any real problem. */ }
+  }
+
   /** True when signed in with `capability`. */
   hasCapability(capability: Capability): boolean {
     return this.state.status === 'signed-in' && this.state.session.capabilities.includes(capability);

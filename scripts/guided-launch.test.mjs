@@ -6,24 +6,46 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { claimOrReuse, ownedRecord, parseLauncherArgs, probeOwned, recoveryPorts, runOwnedLaunch, supportedNode,
-  prepareApplication, withRecoveryMutex } from './guided-launch.mjs';
+  prepareApplication, withRecoveryMutex, prepareSchema, externalSchemaReason, SCHEMA_SETUP_STEPS } from './guided-launch.mjs';
 
-test('application preparation installs before database imports, builds before migrations, and leaves external schemas alone', async () => {
+test('application preparation installs before database imports, builds before migrations, and migrates user databases too', async () => {
   const calls = [];
   let managed = true;
   const options = { root: '/app', cli: '/npm-cli',
     dependencies: async (_root, install) => { calls.push('dependencies'); await install(); },
     run: async (_cli, args) => { calls.push(args.join(' ')); },
     database: async () => { calls.push('database'); return { managed }; },
-    migrate: async () => { calls.push('migrate'); } };
+    migrate: async local => { calls.push(local.managed ? 'migrate' : 'migrate external'); } };
   await prepareApplication(options);
   assert.deepEqual(calls, ['dependencies', 'ci --no-audit --no-fund', 'database', 'run build:all', 'migrate']);
   managed = false; calls.length = 0;
   await prepareApplication(options);
-  assert.equal(calls.includes('migrate'), false);
+  assert.deepEqual(calls, ['dependencies', 'ci --no-audit --no-fund', 'database', 'run build:all', 'migrate external']);
   calls.length = 0;
   await prepareApplication({ ...options, isStopping: () => true });
   assert.deepEqual(calls, ['dependencies', 'ci --no-audit --no-fund']);
+});
+
+test('schema setup runs every idempotent step for a user DATABASE_URL and explains failures with root npm scripts', async () => {
+  const ran = [];
+  const steps = async () => ['base', 'discord', 'directory', 'evidence', 'admin-tools'].map(name => async () => { ran.push(name); });
+  const written = [];
+  await prepareSchema({ managed: false }, { steps, write: text => written.push(text) });
+  assert.deepEqual(ran, ['base', 'discord', 'directory', 'evidence', 'admin-tools']);
+  assert.match(written.join(''), /your DATABASE_URL/);
+  const secretUrl = 'postgres://owner:hunter2@127.0.0.1:5432/other';
+  const failing = async () => [async () => { throw Object.assign(new Error(`password failed for ${secretUrl}`), { code: '28P01' }); }];
+  await assert.rejects(prepareSchema({ managed: false }, { steps: failing, write: () => {} }), error => {
+    assert.match(error.message, /refused the DATABASE_URL credentials/);
+    assert.ok(error.message.includes(SCHEMA_SETUP_STEPS));
+    assert.match(error.message, /npm run db:evidence-setup/);
+    assert.doesNotMatch(error.message, /hunter2|-w @tcg-live/);
+    return true;
+  });
+  await assert.rejects(prepareSchema({ managed: true }, { steps: failing, write: () => {} }), /Local database setup could not complete/);
+  assert.equal(externalSchemaReason(new Error('Schema setup requires the exact tcg_rehearsal database.')),
+    'DATABASE_URL must name the tcg_rehearsal database.');
+  assert.equal(externalSchemaReason(Object.assign(new Error('x'), { code: 'ECONNREFUSED' })), 'PostgreSQL at DATABASE_URL did not answer.');
 });
 
 const withFiles = async run => {

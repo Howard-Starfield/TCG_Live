@@ -134,7 +134,7 @@ export async function requireDirectorySchema(client: pg.Client): Promise<void> {
   const result = await client.query<{ present: string | null }>(
     "SELECT to_regclass('public.tcg_tournament_directory')::text AS present");
   if (!result.rows[0]?.present) throw new DirectoryUnavailableError(
-    'Tournament directory is not set up. Run npm run db:directory-setup -w @tcg-live/server.');
+    'Tournament directory is not set up. Restart with npm start or run npm run db:directory-setup.');
 }
 
 interface DirectoryRow {

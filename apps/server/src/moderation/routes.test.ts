@@ -163,3 +163,27 @@ test('flags filter by eventId and matchId; malformed filters are 400', async () 
       assert.equal((await call(harness.port, `/api/v1/moderation/flags${bad}`, { token })).status, 400, bad);
   } finally { await harness.stop(); }
 });
+
+test('PATCH /moderation/flags/:id acknowledges, dismisses and reopens a flag, audited; bad input is 400/404', async () => {
+  const audit = new MemoryOpsAuditStore();
+  const flags = new MemoryModerationFlagStore(audit);
+  await flags.append({ kind: 'keyword', guildId: guild, detail: { ruleId: null, ruleName: 'Slurs', action: 'block', matchedKeyword: 'x', matchedContent: null } });
+  const harness = await startHarness({ moderation: moderation({ flags, audit }, audit) });
+  try {
+    const token = await login(harness);
+    const patch = (id: string, body: unknown) => call(harness.port, `/api/v1/moderation/flags/${id}`, { method: 'PATCH', token, body: json(body) });
+    const acked = await patch('1', { state: 'acknowledged' });
+    assert.equal(acked.status, 200, acked.text);
+    assert.equal(acked.json().review.state, 'acknowledged');
+    assert.equal(acked.json().review.by, 'local-admin');
+    assert.equal((await patch('1', { state: 'dismissed' })).json().review.state, 'dismissed');
+    assert.equal((await patch('1', { state: null })).json().review, null);
+    const listed = (await call(harness.port, '/api/v1/moderation/flags', { token })).json().flags[0];
+    assert.equal(listed.review, null);
+    const kinds = (await audit.list({ after: 0, limit: 100, eventId: null })).entries.map(entry => entry.kind);
+    assert.equal(kinds.filter(kind => kind === 'moderation.flag.reviewed').length, 3);
+    assert.equal((await patch('1', { state: 'maybe' })).status, 400);
+    assert.equal((await patch('1', { state: 'dismissed', extra: 1 })).status, 400);
+    assert.equal((await patch('9', { state: 'dismissed' })).status, 404);
+  } finally { await harness.stop(); }
+});

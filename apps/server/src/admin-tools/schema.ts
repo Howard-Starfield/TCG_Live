@@ -2,15 +2,17 @@ import { readFile } from 'node:fs/promises';
 import type pg from 'pg';
 import { requireEvidenceSchema } from '../evidence/schema.js';
 import { RuleError } from '../rehearsal/domain.js';
-import { ADMIN_TOOLS_TABLES, adminToolsSetupDecision, PUBLIC_RELATIONS_SQL } from '../rehearsal/schema-tables.js';
+import { ADMIN_TOOLS_TABLES, adminToolsSetupDecision, classifyPublicSchema, LFG_TABLES, PUBLIC_RELATIONS_SQL } from '../rehearsal/schema-tables.js';
 import { transaction, withClient } from '../rehearsal/store.js';
 
 /** A RuleError, so the shared isDatabaseUnavailable() maps it to a 503 with this setup hint. */
 export class AdminToolsSchemaUnavailableError extends RuleError {}
 
-export const ADMIN_TOOLS_SETUP_HINT = 'Admin tools storage is not set up. Restart with the launcher or run npm run db:admin-tools-setup.';
+export const ADMIN_TOOLS_SETUP_HINT = 'Admin tools storage is not set up. Restart with npm start or run npm run db:admin-tools-setup.';
 
 export const ADMIN_TOOLS_MIGRATION = new URL('../../../../database/migrations/013_admin_tools.sql', import.meta.url);
+/** Migration 014 (LFG), applied right after 013 by setupAdminToolsSchema. */
+export const LFG_MIGRATION = new URL('../../../../database/migrations/014_lfg.sql', import.meta.url);
 
 /** Tables only (sequences are implied by their bigserial owners). */
 const REQUIRED = ADMIN_TOOLS_TABLES.filter(name => !name.endsWith('_seq'));
@@ -23,8 +25,16 @@ export async function requireAdminToolsSchema(client: pg.Client): Promise<void> 
   if ((result.rows[0]?.missing ?? 1) !== 0) throw new AdminToolsSchemaUnavailableError(ADMIN_TOOLS_SETUP_HINT);
 }
 
+/** LFG queries check this first (013 tables plus 014). */
+export async function requireLfgSchema(client: pg.Client): Promise<void> {
+  await requireAdminToolsSchema(client);
+  const result = await client.query<{ missing: number }>(
+    `SELECT count(*)::int AS missing FROM unnest($1::text[]) AS name WHERE to_regclass('public.' || name) IS NULL`, [[...LFG_TABLES]]);
+  if ((result.rows[0]?.missing ?? 1) !== 0) throw new AdminToolsSchemaUnavailableError(ADMIN_TOOLS_SETUP_HINT);
+}
+
 /**
- * Explicit additive migration 013, run after setupEvidenceSchema(). Uses its own advisory lock and the
+ * Explicit additive migrations 013 and 014 (LFG), run after setupEvidenceSchema(). Uses its own advisory lock and the
  * exact-table-list guard: it runs only on the known evidence shape (or reapplies on its own shape).
  */
 export async function setupAdminToolsSchema(): Promise<'created' | 'already_ready'> {
@@ -35,7 +45,9 @@ export async function setupAdminToolsSchema(): Promise<'created' | 'already_read
     const decision = adminToolsSetupDecision(objects.rows.map(row => row.relname));
     if (decision === 'refuse') throw new AdminToolsSchemaUnavailableError('Admin tools setup refused: unexpected public schema.');
     await client.query(await readFile(ADMIN_TOOLS_MIGRATION, 'utf8'));
-    return decision === 'already_ready' ? 'already_ready' : 'created';
+    const hadLfg = classifyPublicSchema(objects.rows.map(row => row.relname)) === 'v2_directory_evidence_admin_tools_lfg';
+    await client.query(await readFile(LFG_MIGRATION, 'utf8'));
+    return decision === 'already_ready' && hadLfg ? 'already_ready' : 'created';
   }));
 }
 

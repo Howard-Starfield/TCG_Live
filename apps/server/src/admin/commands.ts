@@ -39,7 +39,7 @@ const ANY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
 const PHASES: readonly MatchPhase[] = ['setup', 'running', 'paused', 'expired', 'final'];
 /** Fields each command type carries besides `type`, in contract order. */
 const COMMAND_FIELDS: Record<AdminCommandDto['type'], readonly string[]> = {
-  publish: [], delayStart: ['delayMinutes'], signupClose: [], signupReopen: [], signupRemove: ['memberId'],
+  publish: [], delayStart: ['delayMinutes'], signupClose: [], signupReopen: [], signupRemove: ['memberId'], signupAdd: ['memberId'], checkinFor: ['seat'],
   judgeResume: ['matchId', 'reason'], resolve: ['matchId', 'winner', 'reason'], correct: ['matchId', 'winner', 'reason']
 };
 /** The fixture's fixed pairings (domain.ts createFixture): M1 is A v B, M2 is C v D. */
@@ -96,10 +96,11 @@ function parseCommand(value: unknown): AdminCommandDto {
   switch (kind) {
     case 'delayStart': return { type: kind, delayMinutes: integer(source.delayMinutes, 'command.delayMinutes', 1) };
     case 'publish': case 'signupClose': case 'signupReopen': return { type: kind };
-    case 'signupRemove': {
+    case 'signupRemove': case 'signupAdd': {
       if (typeof source.memberId !== 'string' || !SNOWFLAKE.test(source.memberId)) throw bad('command.memberId must be a Discord member ID.');
       return { type: kind, memberId: source.memberId };
     }
+    case 'checkinFor': return { type: kind, seat: seat(source.seat, 'command.seat') };
     case 'judgeResume': return { type: kind, matchId: matchId(source.matchId, 'command.matchId'), reason: reason(source.reason) };
     case 'resolve': case 'correct':
       return { type: kind, matchId: matchId(source.matchId, 'command.matchId'), winner: seat(source.winner, 'command.winner'),
@@ -129,7 +130,7 @@ function parsePrecondition(value: unknown, command: AdminCommandDto): CommandPre
     precondition.signup = { status: signup.status, rosterSize: integer(signup.rosterSize, 'precondition.signup.rosterSize', 0, MAX_SIGNUP_CAPACITY) };
   }
   switch (command.type) {
-    case 'publish': case 'delayStart':
+    case 'publish': case 'delayStart': case 'checkinFor':
       if (precondition.eventVersion === undefined) throw bad(`${command.type} needs precondition.eventVersion.`);
       break;
     case 'judgeResume': case 'resolve': case 'correct':
@@ -191,6 +192,10 @@ export function toDomainCommand(command: AdminCommandDto, adminId: string): Comm
     case 'signupClose': return { type: 'signupClose', adminId };
     case 'signupReopen': return { type: 'signupReopen' };
     case 'signupRemove': return { type: 'signupRemove', memberId: command.memberId };
+    case 'signupAdd':
+      if (command.memberId === adminId) throw new RuleError('Signup admin cannot play.');
+      return { type: 'signupAdd', memberId: command.memberId };
+    case 'checkinFor': return { type: 'checkinFor', seat: command.seat };
     case 'judgeResume': return { type: 'judgeResume', matchId: command.matchId, reason: command.reason };
     case 'resolve': case 'correct':
       if (!command.winner.startsWith('P') && MATCH_SEATS[command.matchId] && !MATCH_SEATS[command.matchId]!.includes(command.winner)) throw new RuleError('Winner is not in the selected match.');

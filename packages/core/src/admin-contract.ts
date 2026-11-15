@@ -51,6 +51,8 @@ export interface SessionDto {
   moderation?: true;
   /** Admin tools routes (members, cases, stickies, tickets, roles, announcements, logs) are mounted. */
   adminTools?: true;
+  /** Guided start: GET/PUT /api/v1/settings/local (Allow dashboard actions, voice monitoring) is mounted. */
+  localSettings?: true;
 }
 export interface SessionGrantDto { token: string; session: SessionDto }   // bearer token; kept in sessionStorage
 
@@ -187,6 +189,8 @@ export interface CommandDto {
   judgeRequest?: JudgeRequestInput;
   delayMinutes?: number;
   type: string; matchId?: MatchId; winner?: Seat; reason?: string; memberId?: Snowflake;
+  /** checkinFor: the seat checked in by the organizer. */
+  seat?: Seat;
   revision?: number; expectedRevision?: number; pauseGeneration?: number;
 }
 
@@ -238,6 +242,10 @@ export type AdminCommandDto =
   | { type: 'signupClose' }
   | { type: 'signupReopen' }
   | { type: 'signupRemove'; memberId: Snowflake }
+  /** Organizer adds a member to the open signup (next wave). */
+  | { type: 'signupAdd'; memberId: Snowflake }
+  /** Organizer checks a seated player in (next wave). */
+  | { type: 'checkinFor'; seat: Seat }
   | { type: 'judgeResume'; matchId: MatchId; reason: string }
   | { type: 'resolve'; matchId: MatchId; winner: Seat; reason: string }
   | { type: 'correct'; matchId: MatchId; winner: Seat; reason: string };
@@ -263,7 +271,7 @@ export const ADMIN_REASON_MAX_LENGTH = 500;                    // after trimming
 
 export const COMMAND_CAPABILITY: Record<AdminCommandDto['type'], Capability> = {
   publish: 'event.publish', delayStart: 'event.publish', signupClose: 'signup.manage', signupReopen: 'signup.manage',
-  signupRemove: 'signup.manage', judgeResume: 'match.judge', resolve: 'match.judge',
+  signupRemove: 'signup.manage', signupAdd: 'signup.manage', checkinFor: 'signup.manage', judgeResume: 'match.judge', resolve: 'match.judge',
   correct: 'match.correct'
 };
 

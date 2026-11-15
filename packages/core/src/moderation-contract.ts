@@ -1,6 +1,8 @@
 // Moderation contract v1, shared by apps/server and apps/web. See docs/VIDEO_EVIDENCE_AND_MODERATION_PLAN.md.
 import type { MatchId, Snowflake } from './admin-contract.js';
 import { ADMIN_TOOLS_AUDIT_KINDS } from './admin-tools-contract.js';
+import { LOCAL_SETTINGS_AUDIT_KINDS } from './local-settings-contract.js';
+import { LFG_AUDIT_KINDS } from './lfg-contract.js';
 
 // ---- Text moderation (Discord AutoMod-backed) ----
 
@@ -71,14 +73,41 @@ export interface VoiceLoudnessSettingsDto {
   notifyDiscord: boolean;
   /** Where the notice goes; null uses the organizer's signup channel. */
   notifyChannelId: Snowflake | null;
+  /** Per voice room policy keyed by voice channel ID (rooms outlive events). Absent or {} = every room 'auto'. */
+  rooms?: Record<Snowflake, VoiceRoomPolicyDto>;
 }
+
+// ---- Per-room voice policy ----
+
+/** 'auto' follows the global scope and recording rules; 'always' keeps a bot there; 'never' never covers it. */
+export const VOICE_ROOM_COVERAGES = ['auto', 'always', 'never'] as const;
+export type VoiceRoomCoverage = typeof VOICE_ROOM_COVERAGES[number];
+/** 'inherit' uses settings.recording.mode; anything else overrides it for this room (it may record more). */
+export const VOICE_ROOM_RECORDINGS = ['inherit', 'off', 'judge-call', 'always'] as const;
+export type VoiceRoomRecording = typeof VOICE_ROOM_RECORDINGS[number];
+export const VOICE_ROOM_PRIORITIES = ['normal', 'high'] as const;
+export type VoiceRoomPriority = typeof VOICE_ROOM_PRIORITIES[number];
+export interface VoiceRoomPolicyDto {
+  coverage: VoiceRoomCoverage;
+  recording: VoiceRoomRecording;
+  /** 'high' rooms are covered before 'normal' ones, after judge calls. */
+  priority: VoiceRoomPriority;
+  /** Preferred bot ('main' or a helper ID); free for other rooms while this one needs none. */
+  pinnedBotId: string | null;
+}
+export const DEFAULT_VOICE_ROOM_POLICY: Readonly<VoiceRoomPolicyDto> = Object.freeze<VoiceRoomPolicyDto>(
+  { coverage: 'auto', recording: 'inherit', priority: 'normal', pinnedBotId: null });
 
 // ---- Audio recording and retention ----
 
 export const RECORDING_MODES = ['off', 'judge-call', 'always'] as const;
 export type RecordingMode = typeof RECORDING_MODES[number];
 /** Stored as the original Opus packets in Ogg, one file per player, without re-encoding. */
-export interface RecordingSettingsDto { mode: RecordingMode }
+export interface RecordingSettingsDto {
+  mode: RecordingMode;
+  /** Players who declined recording: never subscribed, recorded or loudness-checked. Absent means []. */
+  optOutUserIds?: Snowflake[];
+}
 
 /** null keeps evidence until deleted by hand. Held items are never deleted automatically. */
 export interface RetentionSettingsDto { days: number | null }
@@ -148,10 +177,19 @@ interface ModerationFlagBase {
   matchId: MatchId | null;
   userId: Snowflake | null;
   occurredAtMs: number;
+  /** The admin's triage; absent or null while the flag is still open. */
+  review?: ModerationFlagReviewDto | null;
 }
 export type ModerationFlagDto =
   | ModerationFlagBase & { kind: 'keyword'; detail: KeywordFlagDetailDto }
   | ModerationFlagBase & { kind: 'volume'; detail: VolumeFlagDetailDto };
+
+/** Triage states: acknowledged (seen, handled) or dismissed (not a problem). */
+export const MODERATION_FLAG_REVIEW_STATES = ['acknowledged', 'dismissed'] as const;
+export type ModerationFlagReviewState = typeof MODERATION_FLAG_REVIEW_STATES[number];
+export interface ModerationFlagReviewDto { state: ModerationFlagReviewState; atMs: number; by: string }
+/** PATCH /api/v1/moderation/flags/:id — null reopens the flag. Answers the updated ModerationFlagDto; audited as moderation.flag.reviewed. */
+export interface UpdateModerationFlagRequestDto { state: ModerationFlagReviewState | null }
 
 /** GET /api/v1/moderation/flags?after=&limit= — oldest first after the cursor. */
 export interface ModerationFlagPageDto { flags: ModerationFlagDto[]; nextAfter: number }
@@ -171,7 +209,22 @@ export interface VoiceBotStatusDto {
   addedAtMs: number | null;
   /** Runtime detail; 'login failed' affects only that bot. Absent while the runtime is disabled. */
   status?: VoiceBotRuntimeStatus;
+  /** Helpers only: a disabled helper is never logged in or assigned. The main bot is always enabled. */
+  enabled?: boolean;
+  /** Public application ID (from GET /applications/@me when the helper was added or verified). */
+  applicationId?: Snowflake | null;
+  /** OAuth2 invite with only the voice-room permissions; null until the application ID is known. */
+  inviteUrl?: string | null;
+  /** Per-server nickname the helper sets on itself; null keeps its username. */
+  nickname?: string | null;
+  lastReadyAtMs?: number | null;
+  lastErrorCode?: VoiceBotErrorCode | null;
+  consecutiveFailures?: number;
 }
+/** Fixed error codes: never library text, never anything derived from a token. */
+export const VOICE_BOT_ERROR_CODES = ['invalid-token', 'network', 'timeout', 'not-in-server', 'join-failed', 'disconnected',
+  'missing-permissions', 'rate-limited', 'unknown'] as const;
+export type VoiceBotErrorCode = typeof VOICE_BOT_ERROR_CODES[number];
 export const VOICE_BOT_RUNTIME_STATUSES = ['idle', 'logging-in', 'ready', 'connecting', 'connected', 'login failed',
   'not in server', 'error'] as const;
 export type VoiceBotRuntimeStatus = typeof VOICE_BOT_RUNTIME_STATUSES[number];
@@ -187,6 +240,33 @@ export interface VoiceBotPoolDto {
 }
 /** POST /api/v1/moderation/voice-bots. The token is stored only in data/voice-bots.json. */
 export interface AddVoiceBotRequestDto { label: string; token: string }
+/** PATCH /api/v1/moderation/voice-bots/:id (helpers only); every field optional. */
+export interface UpdateVoiceBotRequestDto { label?: string; enabled?: boolean; nickname?: string | null }
+/** PUT /api/v1/moderation/voice-bots/:id/token: a new token for the SAME bot user (rotation). */
+export interface ReplaceVoiceBotTokenRequestDto { token: string }
+/** POST /api/v1/moderation/voice-bots/:id/verify. channelIds default to the current and configured match rooms. */
+export interface VerifyVoiceBotRequestDto { channelIds?: Snowflake[] }
+export type VoiceBotCheckState = 'ok' | 'problem' | 'unknown';
+export interface VoiceBotChannelCheckDto { channelId: Snowflake; viewChannel: boolean; connect: boolean; state: VoiceBotCheckState }
+/** Token-free answer to verify. */
+export interface VoiceBotVerifyReportDto {
+  botId: string;
+  checkedAtMs: number;
+  tokenValid: boolean;
+  applicationId: Snowflake | null;
+  inServer: boolean;
+  /** null when unknown or unset. */
+  nickname: string | null;
+  channels: VoiceBotChannelCheckDto[];
+  /** Short fixed explanations (Public Bot on, Administrator or Manage Server granted, ...). */
+  warnings: string[];
+  problems: string[];
+  errorCode: VoiceBotErrorCode | null;
+  inviteUrl: string | null;
+}
+/** POST /api/v1/moderation/recording-opt-outs { userId, optedOut } answers the current list. */
+export interface RecordingOptOutRequestDto { userId: Snowflake; optedOut: boolean }
+export interface RecordingOptOutListDto { userIds: Snowflake[]; version: number }
 
 // ---- Operations audit (evidence and moderation; separate from the domain audit) ----
 
@@ -194,7 +274,9 @@ export const OPS_AUDIT_KINDS = ['evidence.submitted', 'evidence.viewed', 'eviden
   'evidence.failed', 'evidence.retention', 'moderation.settings', 'moderation.voice_bot.added',
   'moderation.voice_bot.removed', 'automod.synced', 'automod.executed', 'voice.spike',
   'voice.recording.start', 'voice.recording.stop', 'voice.notice_failed', 'voice.recording.stopped_storage',
-  ...ADMIN_TOOLS_AUDIT_KINDS] as const;
+  'moderation.voice_bot.updated', 'voice.recording.gap', 'voice.recording.partial', 'voice.recording.opt_out',
+  'moderation.flag.reviewed',
+  ...ADMIN_TOOLS_AUDIT_KINDS, ...LOCAL_SETTINGS_AUDIT_KINDS, ...LFG_AUDIT_KINDS] as const;
 export type OpsAuditKind = typeof OPS_AUDIT_KINDS[number];
 export type OpsActorKind = 'admin' | 'player' | 'bot' | 'system';
 
@@ -237,7 +319,10 @@ export const MODERATION_LIMITS = {
   retentionDaysMax: 365,
   noticeTextLength: 300,
   voiceBotLabelLength: 40,
-  voiceHelperBots: 10
+  voiceHelperBots: 10,
+  voiceRoomPolicies: 50,
+  recordingOptOuts: 500,
+  voiceBotNicknameLength: 32
 } as const;
 export const MODERATION_FLAG_PAGE_LIMIT = 200;
 export const OPS_AUDIT_PAGE_LIMIT = 500;
@@ -257,9 +342,9 @@ export const DEFAULT_MODERATION_SETTINGS: Readonly<ModerationSettingsBodyDto> = 
   },
   voice: {
     enabled: false, scope: 'judge-call', sensitivity: 'medium',
-    ...VOICE_SENSITIVITY_PRESETS.medium, cooldownMs: 60_000, notifyDiscord: false, notifyChannelId: null
+    ...VOICE_SENSITIVITY_PRESETS.medium, cooldownMs: 60_000, notifyDiscord: false, notifyChannelId: null, rooms: {}
   },
-  recording: { mode: 'judge-call' },
+  recording: { mode: 'judge-call', optOutUserIds: [] },
   retention: { days: 30 },
   noticeText: null
 });

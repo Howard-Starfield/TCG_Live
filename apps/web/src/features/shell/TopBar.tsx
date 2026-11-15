@@ -17,9 +17,11 @@ export function TopBar() {
     id: 'root', label: 'TCG Live',
     ...(!shell.home ? { onSelect: shell.showHome } : {})
   }];
-  if (shell.draft) crumbs.push({ id: 'draft-name', label: shell.draft.name }, { id: 'draft-stage', label: 'Draft' });
+  if (shell.capabilities) crumbs.push({ id: 'capabilities', label: 'Capabilities & shortcuts' });
+  else if (shell.draft) crumbs.push({ id: 'draft-name', label: shell.draft.name }, { id: 'draft-stage', label: 'Draft' });
   else if (source) crumbs.push({ id: 'event', label: named?.name || eventLabel(source) });
-  if (!shell.home && !shell.draft && viewed.snapshot) crumbs.push({ id: 'stage', label: viewed.retired ? 'History' : STAGE_LABEL[viewed.snapshot.stage] });
+  if (shell.capabilities) { /* no event crumbs */ }
+  else if (!shell.home && !shell.draft && viewed.snapshot) crumbs.push({ id: 'stage', label: viewed.retired ? 'History' : STAGE_LABEL[viewed.snapshot.stage] });
   else if (!shell.home && !shell.draft && viewed.waitingForDatabase) crumbs.push({ id: 'none', label: 'Waiting for the database' });
   else if (!shell.home && !shell.draft && viewed.status === 'none') crumbs.push({ id: 'none', label: 'No active event' });
 
@@ -32,7 +34,7 @@ export function TopBar() {
         <span className="home-icon">{shell.draftsOpen ? <FileClock aria-hidden /> : <House aria-hidden />}</span>
         {shell.draftsOpen ? 'Drafts' : 'Home'}
       </h1> : <Breadcrumb items={crumbs} className="shell-crumbs" />}
-      {!shell.home && !shell.draft && <><span aria-hidden className="shell-vsep" />
+      {!shell.home && !shell.draft && !shell.capabilities && <><span aria-hidden className="shell-vsep" />
       <div role="group" aria-label="Previews" className="shell-toggles">
         <span data-toggle="live" className="contents">
           <ToggleTab pressed={dock.visible.live} onPressedChange={() => dock.toggle('live')}

@@ -6,3 +6,5 @@ export * from './moderation-contract.js';
 export * from './admin-tools-contract.js';
 export * from './clock.js';
 export * from './permissions-contract.js';
+export * from './local-settings-contract.js';
+export * from './lfg-contract.js';

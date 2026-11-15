@@ -4,9 +4,11 @@ import type { DiscordFeature, DiscordFeatureContext } from '../discord/features.
 import { sharedEvidenceFiles } from '../evidence/files.js';
 import { HelperBotTransport, MainBotTransport, opusscriptDecoderFactory } from './connection.js';
 import { voicePoolIdentities } from './identities.js';
-import { VoiceMonitor, type VoiceRoomInfo } from './monitor.js';
+import { SHUTDOWN_RECORDING_BUDGET_MS, VoiceMonitor, type VoiceRoomInfo } from './monitor.js';
 import { MAIN_VOICE_BOT_ID } from './pool.js';
+import { pgPendingVoiceRows } from './pending.js';
 import { VoiceRecorder } from './recorder.js';
+import { voiceRuntimeControl } from './control.js';
 
 /** TCG_DISCORD_VOICE: unset or '0' is off, '1' is on; anything else is refused. */
 export function voiceRuntimeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -27,6 +29,8 @@ export function voiceFeature(env: NodeJS.ProcessEnv = process.env): DiscordFeatu
   const unsubscribe: Array<() => void> = [];
   return {
     name: 'voice',
+    // Recordings get SHUTDOWN_RECORDING_BUDGET_MS, then the bots leave; still inside the runtime's 5 s watchdog.
+    stopBudgetMs: SHUTDOWN_RECORDING_BUDGET_MS + 700,
     // Only an enabled runtime asks Discord for voice states.
     intents: (() => { try { return voiceRuntimeEnabled(env) ? [GatewayIntentBits.GuildVoiceStates] : []; } catch { return []; } })(),
     async start(context) {
@@ -40,7 +44,7 @@ export function voiceFeature(env: NodeJS.ProcessEnv = process.env): DiscordFeatu
         await admin.send({ content: text, allowedMentions: { parse: [] } });
       };
       const recorder = new VoiceRecorder({ evidence: context.evidence, audit: input => context.appendAudit(input),
-        guildId: context.guildId, log: message => context.log(message), storage: sharedEvidenceFiles(),
+        guildId: context.guildId, log: message => context.log(message), storage: sharedEvidenceFiles(), pendingVoiceRows: pgPendingVoiceRows(),
         notify: async text => organizer((await context.moderationSettings().catch(() => null))?.voice.notifyChannelId ?? null, `⚠️ ${text}`) });
       monitor = new VoiceMonitor({
         guildId: context.guildId,
@@ -49,7 +53,7 @@ export function voiceFeature(env: NodeJS.ProcessEnv = process.env): DiscordFeatu
         rooms: () => context.activeMatchRooms() as Promise<VoiceRoomInfo[]>,
         helpers: () => context.voiceBots.getTokens(),
         main: new MainBotTransport(MAIN_VOICE_BOT_ID, context.client, context.guildId),
-        createHelper: credential => new HelperBotTransport(credential.id, credential.token, context.guildId, credential.userId),
+        createHelper: credential => new HelperBotTransport(credential.id, credential.token, context.guildId, credential.userId, credential.nickname),
         decoder: opusscriptDecoderFactory(),
         recorder,
         appendFlag: input => context.appendFlag(input),
@@ -69,12 +73,14 @@ export function voiceFeature(env: NodeJS.ProcessEnv = process.env): DiscordFeatu
         context.on('matchRoomAssigned', event => { void active.roomAssigned(event.eventId, event.matchId); }),
         context.on('moderationSettingsChanged', event => { void active.settingsChanged(event.settings); }),
         context.on('voiceBotsChanged', () => { void active.helpersChanged(); }));
+      voiceRuntimeControl.attach(active);
       await monitor.start();
     },
     async stop() {
       for (const off of unsubscribe.splice(0)) off();
       const active = monitor;
       monitor = null;
+      if (active) voiceRuntimeControl.detach(active);
       await active?.stop();
     }
   };

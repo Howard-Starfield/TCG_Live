@@ -25,6 +25,8 @@ export interface SessionApi {
   rotateLink(): Promise<void>;
   /** Retries after an error state. */
   retry(): Promise<void>;
+  /** Re-reads the signed-in session in place (capabilities after a local setting changed). */
+  refresh(): Promise<void>;
   hasCapability(capability: Capability): boolean;
 }
 
@@ -41,6 +43,7 @@ export function useSession(): SessionApi {
     logout: () => session.logout(),
     rotateLink: () => session.rotateLink(),
     retry: () => session.retry(),
+    refresh: () => session.refresh(),
     hasCapability: capability => state.status === 'signed-in' && state.session.capabilities.includes(capability)
   }), [session, state]);
 }

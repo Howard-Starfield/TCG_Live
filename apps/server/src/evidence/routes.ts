@@ -11,7 +11,19 @@ import { mapOpsError } from '../ops/errors.js';
 import { badRequest, notImplemented, onlyParams, UUID, type OpsContext, type OpsRoute } from '../ops/http.js';
 import type { EvidenceRecord, EvidenceStore } from './store.js';
 
-export const EVIDENCE_UNAVAILABLE = 'Evidence storage is unavailable. Check PostgreSQL and run npm run db:evidence-setup -w @tcg-live/server.';
+const UPLOAD_PATH = /^\/api\/v1\/events\/[^/]+\/matches\/[^/]+\/evidence(?:\?.*)?$/;
+/**
+ * True for a dashboard evidence file upload (POST to a match's evidence with a non-JSON body). The HTTP
+ * server gives these an idle timeout instead of the total request deadline: a 2 GiB file can take far
+ * longer than five minutes on a slow link.
+ */
+export function isEvidenceUploadRequest(request: Pick<IncomingMessage, 'method' | 'url' | 'headers'>): boolean {
+  if (request.method !== 'POST' || !request.url || !UPLOAD_PATH.test(request.url)) return false;
+  const type = request.headers['content-type'];
+  return type !== undefined && type.split(';')[0]!.trim().toLowerCase() !== 'application/json';
+}
+
+export const EVIDENCE_UNAVAILABLE = 'Evidence storage is unavailable. Check PostgreSQL, then restart with npm start or run npm run db:evidence-setup.';
 const MATCH = /^M[1-9]\d{0,3}$/;
 const TICKET = /^[A-Za-z0-9_-]{43}$/;
 
@@ -43,7 +55,7 @@ export interface EvidenceMediaContext {
 /** Later-phase implementations plug in here without editing the route table. */
 export interface EvidenceRouteSeams {
   /** POST /api/v1/events/:id/matches/:m/evidence with a media Content-Type. Streams, sniffs, hashes, stores. */
-  upload?(context: EvidenceUploadContext): Promise<EvidenceItemDto>;
+  upload?(context: EvidenceUploadContext): Promise<EvidenceItemDto & { duplicate?: boolean }>;
   /** POST /api/v1/evidence/:id/playback for a stored file. The route audits evidence.viewed afterwards. */
   playback?(context: EvidencePlaybackContext): Promise<PlaybackTicketDto>;
   /** GET/HEAD /api/v1/media/:ticket (public: the ticket authenticates). Range requests, containment checks. */
@@ -96,9 +108,10 @@ export function evidenceRoutes(options: EvidenceRouteOptions): OpsRoute[] {
           onlyParams(query, ['note']);
           if (!seams.upload) { request.resume(); throw notImplemented('File upload'); }
           const upload = seams.upload;
-          const item = await guarded(() => upload({ request, ...where, actor: LOCAL_ADMIN, note: query.get('note') ?? undefined, store }));
-          const body: CreateEvidenceResponseDto = { item };
-          sendJson(response, 201, body);
+          const { duplicate, ...item } = await guarded(() => upload({ request, ...where, actor: LOCAL_ADMIN, note: query.get('note') ?? undefined, store }));
+          // A duplicate stores nothing: 200 with the earlier item instead of 201.
+          const body: CreateEvidenceResponseDto = duplicate ? { item, duplicate: true } : { item };
+          sendJson(response, duplicate ? 200 : 201, body);
           return;
         }
         onlyParams(query, []);

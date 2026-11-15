@@ -297,23 +297,47 @@ export async function prepareApplication({ root, cli, run = runNpm, database, mi
   if (isStopping()) return;
   await run(cli, ['run', 'build:all']);
   if (isStopping()) return;
-  if (local.managed) await migrate();
+  // Every step is idempotent, so a user-supplied DATABASE_URL gets the same schema setup and upgrades (012, 013, ...).
+  await migrate(local);
 }
 
-async function prepareSchema() {
-  process.stdout.write('Checking local database schema and application updates...\n');
+/** The manual equivalent of prepareSchema, in order; every message points at these root scripts. */
+export const SCHEMA_SETUP_STEPS = 'npm run db:setup, npm run db:discord-setup, npm run db:directory-setup, ' +
+  'npm run db:evidence-setup and npm run db:admin-tools-setup';
+
+/** Idempotent schema setup and upgrades, run in the order each step requires. */
+async function defaultSchemaSteps() {
+  const store = await import('../apps/server/dist/rehearsal/store.js');
+  const { setupTournamentDirectory } = await import('../apps/server/dist/tournaments/directory.js');
+  const { setupEvidenceSchema } = await import('../apps/server/dist/evidence/schema.js');
+  const { setupAdminToolsSchema } = await import('../apps/server/dist/admin-tools/schema.js');
+  return [store.setupRehearsalSchema, store.setupPrivateDiscordSchema, setupTournamentDirectory,
+    setupEvidenceSchema, setupAdminToolsSchema];
+}
+
+/** A safe reason for a failed setup against a user-supplied database; never the URL or the driver message. */
+export function externalSchemaReason(error) {
+  const code = error?.code ?? error?.cause?.code;
+  const message = error instanceof Error ? error.message : '';
+  if (['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH', 'EAI_AGAIN'].includes(code))
+    return 'PostgreSQL at DATABASE_URL did not answer.';
+  if (code === '28P01' || code === '28000') return 'PostgreSQL refused the DATABASE_URL credentials.';
+  if (code === '3D000') return 'The database named in DATABASE_URL does not exist.';
+  if (/tcg_rehearsal/.test(message)) return 'DATABASE_URL must name the tcg_rehearsal database.';
+  if (/refused|unexpected|incompatible/i.test(message)) return 'The database holds tables this application does not recognise.';
+  return 'The schema could not be set up.';
+}
+
+export async function prepareSchema(local = { managed: true }, { steps = defaultSchemaSteps,
+  write = text => process.stdout.write(text) } = {}) {
+  write(local.managed ? 'Checking local database schema and application updates...\n'
+    : 'Checking the schema of your DATABASE_URL database and applying application updates...\n');
   try {
-    const store = await import('../apps/server/dist/rehearsal/store.js');
-    await store.setupRehearsalSchema();
-    await store.setupPrivateDiscordSchema();
-    const { setupTournamentDirectory } = await import('../apps/server/dist/tournaments/directory.js');
-    await setupTournamentDirectory();
-    const { setupEvidenceSchema } = await import('../apps/server/dist/evidence/schema.js');
-    await setupEvidenceSchema();
-    const { setupAdminToolsSchema } = await import('../apps/server/dist/admin-tools/schema.js');
-    await setupAdminToolsSchema();
-  } catch {
-    throw new Error('Local database setup could not complete. Existing data was kept; check free disk space and the local PostgreSQL log before retrying. No database reset was attempted.');
+    for (const step of await steps()) await step();
+  } catch (error) {
+    if (local.managed) throw new Error('Local database setup could not complete. Existing data was kept; check free disk space and the local PostgreSQL log before retrying. No database reset was attempted.');
+    throw new Error(`Database setup for your DATABASE_URL could not complete: ${externalSchemaReason(error)} ` +
+      `Existing data was kept and no reset was attempted. Fix it and run npm start again, or run ${SCHEMA_SETUP_STEPS} yourself.`);
   }
 }
 

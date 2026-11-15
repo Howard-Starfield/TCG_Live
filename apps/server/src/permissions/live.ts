@@ -2,7 +2,7 @@
 // applies overwrites, Administrator and the owner), the enabled-features config from the stores, and the
 // gateway events that trigger a re-check.
 import { ChannelType, Events, type Client, type Guild, type GuildMember } from 'discord.js';
-import type { AdminToolsSettingsBodyDto, ModerationSettingsDto, PermissionReportDto } from '@tcg-live/core';
+import type { AdminToolsSettingsBodyDto, LfgSettingsBodyDto, ModerationSettingsDto, PermissionReportDto } from '@tcg-live/core';
 import type { AnnouncementStore } from '../admin-tools/announcements/announcements.js';
 import type { StickyStore } from '../admin-tools/channels/sticky-store.js';
 import type { BulkRoleJobStore } from '../admin-tools/roles/bulk.js';
@@ -38,6 +38,19 @@ export function moderationNeeds(settings: ModerationSettingsDto | null, voiceRun
     timeoutRules: text.enabled && text.customLists.some(list => list.enabled && list.action === 'timeout'),
     voiceEnabled: voiceRuntime && settings.voice.enabled,
     voiceNoticeChannelId: settings.voice.notifyDiscord ? settings.voice.notifyChannelId : null };
+}
+
+/** LFG needs: each LFG channel and the roles its cards may ping, while LFG is enabled. */
+export function lfgNeeds(settings: LfgSettingsBodyDto | null): PermissionConfig['lfg'] {
+  if (!settings?.enabled || !settings.channels.length) return null;
+  return { channels: settings.channels.map(channel => {
+    const games = channel.games.length ? settings.games.filter(game => channel.games.includes(game.name)) : settings.games;
+    const fallback = channel.pingRoleId ?? settings.pingRoleId;
+    // As lfgChannelConfig().pingRoleFor: a game's own role wins, else the channel's, else the global one.
+    // With no game list members type any game, which always uses the fallback.
+    const roles = games.length ? games.map(game => game.pingRoleId ?? fallback) : [fallback];
+    return { channelId: channel.channelId, pingRoleIds: [...new Set(roles.filter((id): id is string => !!id))] };
+  }) };
 }
 
 export interface AdminToolsNeedStores {
@@ -100,6 +113,8 @@ export interface LivePermissionDeps {
   /** Wanted vs granted privileged intents for these settings; null while the gateway is not running. */
   intents(settings: AdminToolsSettingsBodyDto): PermissionConfig['intents'];
   stores: AdminToolsNeedStores;
+  /** Saved LFG settings; null when unavailable (schema missing, database down). */
+  lfgSettings?(): Promise<LfgSettingsBodyDto | null>;
   now?(): number;
   debounceMs?: number;
 }
@@ -117,7 +132,8 @@ export async function livePermissionReport(deps: LivePermissionDeps): Promise<Pe
     tournament: deps.tournament(),
     moderation: moderationNeeds(moderation, deps.voiceRuntime),
     adminTools: await adminToolsNeeds(deps.guildId, settings, deps.stores),
-    intents: deps.intents(settings)
+    intents: deps.intents(settings),
+    lfg: lfgNeeds(await (deps.lfgSettings?.() ?? Promise.resolve(null)).catch(() => null))
   };
   return permissionReport(checkPermissions(view, config), { applicationId: deps.applicationId, guildId: deps.guildId,
     checkedAtMs: (deps.now ?? Date.now)(), botRoleName: view.botTopRole?.name ?? null });

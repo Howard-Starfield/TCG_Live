@@ -22,8 +22,9 @@ export function parseModAction(input: unknown): ModActionRequestDto {
   const optional = ['evidenceIds', 'eventId', 'matchId'];
   const peek = input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>).action : undefined;
   const action = oneOf(peek, ACTIONS, 'action');
-  const extra = action === 'timeout' ? ['durationMs'] : action === 'ban' ? ['deleteMessageSeconds', 'durationMs'] : [];
-  const record = shapedObject(input, [...base, ...extra], optional, 'Moderation action');
+  const extra = action === 'timeout' ? ['durationMs'] : action === 'ban' ? ['deleteMessageSeconds'] : [];
+  // A ban's durationMs is optional: absent (or null) is a permanent ban.
+  const record = shapedObject(input, [...base, ...extra], action === 'ban' ? [...optional, 'durationMs'] : optional, 'Moderation action');
   const common = { userId: snowflake(record.userId, 'Member'), reason: reason(record.reason), ...context(record) };
   switch (action) {
     case 'timeout': {
@@ -34,8 +35,12 @@ export function parseModAction(input: unknown): ModActionRequestDto {
     }
     case 'ban': {
       const deleteMessageSeconds = int(record.deleteMessageSeconds, 0, L.deleteMessageSecondsMax, 'Delete messages window (seconds)');
-      if (record.durationMs !== null) fail('Temporary bans are not available yet. Ban permanently and unban later.');
-      return { ...common, action, deleteMessageSeconds, durationMs: null };
+      // null = permanent; a number = tempban, lifted by the tempban scheduler (catch-up on restart).
+      const durationMs = record.durationMs === null || record.durationMs === undefined ? null : record.durationMs;
+      if (durationMs !== null && (typeof durationMs !== 'number' || !Number.isSafeInteger(durationMs)
+        || durationMs < L.tempbanMsMin || durationMs > L.tempbanMsMax))
+        fail('A temporary ban must last from 1 minute to 365 days, or be permanent.');
+      return { ...common, action, deleteMessageSeconds, durationMs: durationMs as number | null };
     }
     default: return { ...common, action };
   }

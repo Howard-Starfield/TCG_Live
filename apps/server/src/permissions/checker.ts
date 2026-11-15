@@ -28,6 +28,8 @@ export interface GuildPermissionView {
 export interface StickyNeed { channelId: string; embed: boolean }
 export interface PanelNeed { channelId: string; embed: boolean; roleIds: string[] }
 export interface AnnouncementNeed { channelId: string; embed: boolean; mentionEveryone: boolean; mentionRoleIds: string[] }
+/** An LFG channel and every role a card posted there may ping (game, channel and global ping roles). */
+export interface LfgChannelNeed { channelId: string; pingRoleIds: string[] }
 
 /** What is enabled or configured right now; null sections are off/unknown. */
 export interface PermissionConfig {
@@ -43,6 +45,8 @@ export interface PermissionConfig {
     announcements: AnnouncementNeed[];
   } | null;
   intents: { wanted: Record<PrivilegedIntentName, boolean>; state: Record<PrivilegedIntentName, PrivilegedIntentState> } | null;
+  /** LFG channels while LFG is enabled; null/absent when off or unknown. */
+  lfg?: { channels: LfgChannelNeed[] } | null;
 }
 
 /** Administrator bypasses every permission check (not the role hierarchy). */
@@ -124,6 +128,13 @@ function targetsFor(req: FeatureRequirement, config: PermissionConfig, view: Gui
       if (!a?.settings.logging.messageLog.enabled) return [];
       const ignored = new Set(a.settings.logging.messageLog.ignoredChannelIds);
       return view.channels.filter(item => item.type === 'text' && !ignored.has(item.id)).map(item => ({ kind: 'channel', id: item.id }));
+    }
+    case 'lfg.channel': return config.lfg ? unique(config.lfg.channels.flatMap(item => channel(item.channelId))) : [];
+    case 'lfg.mention': {
+      if (!config.lfg) return [];
+      // @everyone, or a role that is not mentionable: the ping notifies nobody without Mention Everyone.
+      const silent = (id: string) => { if (id === view.guildId) return true; const role = view.roles.find(item => item.id === id); return !!role && !role.mentionable; };
+      return unique(config.lfg.channels.filter(item => item.pingRoleIds.some(silent)).flatMap(item => channel(item.channelId)));
     }
     default: return [];
   }

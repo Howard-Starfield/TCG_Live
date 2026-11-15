@@ -3,9 +3,11 @@
 import { PRIVILEGED_INTENT_NAMES, PRIVILEGED_INTENT_PORTAL_LABELS, type AdminToolsStatusDto, type PrivilegedIntentName,
   type PrivilegedIntentState } from '@tcg-live/core';
 import { CircleCheck, RefreshCw, TriangleAlert } from 'lucide-react';
-import { Badge, Button, Field, Switch, type Tone } from '../../ui';
+import { useState } from 'react';
+import { X } from 'lucide-react';
+import { Badge, Button, Field, IconButton, Select, Switch, type Tone } from '../../ui';
 import { describeError } from '../evidence/api';
-import { useAdminToolsCapability, useAdminToolsSection, useAdminToolsStatus } from './api';
+import { useAdminToolsCapability, useAdminToolsSection, useAdminToolsStatus, useGuildMeta } from './api';
 import { ChannelSelect } from './shared/ChannelSelect';
 import { SectionFrame } from './shared/SectionFrame';
 import { BotPermissionsCard } from '../bot-permissions/BotPermissionsCard';
@@ -62,6 +64,34 @@ export function IntentStatusCard({ status }: { status: AdminToolsStatusDto }) {
   </section>;
 }
 
+const MAX_STAFF_ROLES = 10;
+
+/**
+ * Tournament staff roles (cases.staffRoleIds): members with one of them may run /tcg-staff and the
+ * /tcg-admin moderation subcommands. Any role can be chosen (the bot never assigns these).
+ */
+function StaffRolesField({ value, onChange, disabled }: { value: string[]; onChange(next: string[]): void; disabled: boolean }) {
+  const meta = useGuildMeta();
+  const [pick, setPick] = useState('');
+  const roles = (meta.data?.roles ?? []).filter(role => role.id !== meta.data?.guildId && !role.managed);
+  const name = (id: string) => roles.find(role => role.id === id)?.name ?? id;
+  return <div className="flex flex-col gap-2">
+    <ul className="flex flex-wrap gap-1.5" aria-label="Tournament staff roles">
+      {value.map(id => <li key={id}><Badge tone="accent">@{name(id)}
+        {!disabled && <IconButton aria-label={`Remove @${name(id)}`} size="sm" variant="ghost" icon={<X />}
+          onClick={() => onChange(value.filter(item => item !== id))} />}</Badge></li>)}
+      {!value.length && <li className="text-xs text-fg-subtle">No staff roles: only the organizer runs staff commands.</li>}
+    </ul>
+    {!disabled && value.length < MAX_STAFF_ROLES && <div className="flex gap-2">
+      <Select aria-label="Add a staff role" value={pick} disabled={meta.isPending} onChange={event => setPick(event.target.value)}>
+        <option value="">{meta.isPending ? 'Loading roles…' : 'Add a staff role'}</option>
+        {roles.filter(role => !value.includes(role.id)).map(role => <option key={role.id} value={role.id}>@{role.name}</option>)}
+      </Select>
+      <Button size="sm" variant="secondary" disabled={!pick} onClick={() => { onChange([...value, pick]); setPick(''); }}>Add</Button>
+    </div>}
+  </div>;
+}
+
 export function SettingsTab() {
   const status = useAdminToolsStatus();
   const cases = useAdminToolsSection('cases');
@@ -83,6 +113,10 @@ export function SettingsTab() {
         <Field label="Case log channel" description="Each new case is posted here. Leave empty to keep cases in the dashboard only.">
           <ChannelSelect value={cases.value.logChannelId} disabled={!canEdit}
             onChange={logChannelId => cases.setValue({ ...cases.value!, logChannelId })} />
+        </Field>
+        <Field label="Tournament staff roles" description="Members with one of these roles may run /tcg-staff (publish, resolve, check-in…) and the /tcg-admin moderation commands in Discord. Discord hides those commands from members without Manage Server: to show them to staff, open Server Settings > Integrations > TCG Live and allow these roles.">
+          <StaffRolesField value={cases.value.staffRoleIds ?? []} disabled={!canEdit}
+            onChange={staffRoleIds => cases.setValue({ ...cases.value!, staffRoleIds })} />
         </Field>
       </>}
     </SectionFrame>

@@ -14,9 +14,13 @@ export type Command =
   | { type: 'signupJoin' }
   | { type: 'signupWithdraw' }
   | { type: 'signupRemove'; memberId: string }
+  /** The organizer adds a member to the open signup (same capacity rule as Join). */
+  | { type: 'signupAdd'; memberId: string }
   | { type: 'signupClose'; adminId: string }
   | { type: 'signupReopen' }
   | { type: 'checkin' }
+  /** The organizer checks a seated player in on their behalf. */
+  | { type: 'checkinFor'; seat: Player }
   | { type: 'publish' }
   | { type: 'delayStart'; delayMinutes: number }
   | { type: 'ready'; matchId: MatchId }
@@ -53,6 +57,8 @@ export interface MatchState {
   proposal: Proposal | null;
   finalWinner: Player | null;
   confirmedBy?: Player;
+  /** When the match first reached its final result (absent on states saved before it existed). */
+  finalAtMs?: number;
 }
 
 export interface EventState {
@@ -199,7 +205,7 @@ export function transition(current: EventState, actor: ActorId, command: Command
   if (!Number.isSafeInteger(nowMs) || !runnerId) throw new RuleError('Invalid rehearsal clock or runner.');
   const state = structuredClone(current);
   let result = command.type as string;
-  if (command.type === 'signupJoin' || command.type === 'signupWithdraw' ||
+  if (command.type === 'signupJoin' || command.type === 'signupWithdraw' || command.type === 'signupAdd' ||
       command.type === 'signupRemove' || command.type === 'signupClose' || command.type === 'signupReopen') {
     const signup = state.signup;
     if (!signup) throw new RuleError('Signup action requires a signup session.');
@@ -218,6 +224,13 @@ export function transition(current: EventState, actor: ActorId, command: Command
         if (index === -1) return noChange('not_joined');
         signup.roster.splice(index, 1);
       }
+    } else if (command.type === 'signupAdd') {
+      requireAdmin(actor);
+      if (signup.status !== 'open') throw new RuleError('Signup is closed.');
+      if (!/^[1-9]\d{14,21}$/.test(command.memberId)) throw new RuleError('Invalid signup member ID.');
+      if (signup.roster.includes(command.memberId)) return noChange('already_joined');
+      if (signup.roster.length >= (signup.capacity ?? 4)) throw new RuleError('Signup is full.');
+      signup.roster.push(command.memberId);
     } else if (command.type === 'signupRemove') {
       requireAdmin(actor);
       if (signup.status !== 'open') throw new RuleError('Signup is closed.');
@@ -245,9 +258,14 @@ export function transition(current: EventState, actor: ActorId, command: Command
       delete signup.assignment;
       state.checkins = [];
     }
-  } else if (command.type === 'checkin') {
+  } else if (command.type === 'checkin' || command.type === 'checkinFor') {
     if (state.signup?.status !== undefined && state.signup.status !== 'assigned') throw new RuleError('Signup is still open.');
-    const player = playerActor(actor);
+    if (command.type === 'checkinFor') {
+      requireAdmin(actor);
+      if (!isSeatId(command.seat) || (!state.firstRound && !(PLAYERS as readonly string[]).includes(command.seat)))
+        throw new RuleError('Unknown player seat.');
+    }
+    const player = command.type === 'checkinFor' ? command.seat : playerActor(actor);
     if (!player || (state.firstRound && !state.signup?.assignment?.[player])) throw new RuleError('Fixture player action denied.');
     if (state.checkins.includes(player)) {
       return { state: current, outcome: { eventId: current.id, version: current.version, result: 'already_checked_in', applied: false } };
@@ -363,6 +381,7 @@ export function transition(current: EventState, actor: ActorId, command: Command
           match.finalWinner = proposal.winner;
           match.confirmedBy = player;
           match.phase = 'final';
+          match.finalAtMs = nowMs;
           match.startedAtMs = null;
           match.runnerId = null;
           match.judgeAttention = false;
@@ -381,6 +400,7 @@ export function transition(current: EventState, actor: ActorId, command: Command
         match.finalWinner = command.winner;
         delete match.confirmedBy;
         match.phase = 'final';
+        match.finalAtMs = nowMs;
         match.startedAtMs = null;
         match.runnerId = null;
         match.judgeAttention = false;

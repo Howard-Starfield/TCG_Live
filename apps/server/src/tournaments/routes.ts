@@ -40,7 +40,7 @@ function fail(error: unknown): never {
   if (error instanceof DirectoryConflictError) throw new HttpError(409, 'conflict', error.message);
   if (error instanceof DirectoryUnavailableError) throw new HttpError(503, 'unavailable', error.message);
   if (isDatabaseUnavailable(error))
-    throw new HttpError(503, 'unavailable', 'Tournament directory is unavailable. Check PostgreSQL and run npm run db:directory-setup -w @tcg-live/server.');
+    throw new HttpError(503, 'unavailable', 'Tournament directory is unavailable. Check PostgreSQL, then restart with npm start or run npm run db:directory-setup.');
   // Anything else is unexpected: the dispatcher logs it and answers a generic 500.
   throw error;
 }

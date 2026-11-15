@@ -12,6 +12,7 @@ import { useAltDigitShortcuts } from './useShortcuts';
 import { DraftDetails } from '../tournaments/DraftDetails';
 import { Home } from './Home';
 import { AdminToolsPage } from '../admin-tools';
+import { CapabilitiesPage, ShortcutsOverlay } from '../capabilities';
 
 /** Width of an element, kept current with ResizeObserver. */
 function useElementWidth(node: HTMLElement | null): number {
@@ -37,7 +38,7 @@ export function Shell({ session }: { session: SessionDto }) {
   const [body, setBody] = useState<HTMLDivElement | null>(null);
   const bodyWidth = useElementWidth(body);
 
-  const eventView = !model.draft && !model.home && !model.adminTools;
+  const eventView = !model.draft && !model.home && !model.adminTools && !model.capabilities;
   useAltDigitShortcuts({ 1: () => { if (eventView) model.dock.toggle('live'); },
     2: () => { if (eventView) model.dock.toggle('list'); } });
 
@@ -53,13 +54,14 @@ export function Shell({ session }: { session: SessionDto }) {
             <Banners />
             <div ref={setBody} className="shell-body">
               <main className="shell-main" aria-label="Console">
-                {model.adminTools ? <AdminToolsPage /> : model.home ? <Home />
+                {model.capabilities ? <CapabilitiesPage nav={model} /> : model.adminTools ? <AdminToolsPage /> : model.home ? <Home />
                   : model.draft ? <DraftDetails key={model.draft.eventId} draft={model.draft} /> : <MainControls />}
               </main>
               {eventView && <PreviewDock bodyWidth={bodyWidth} />}
             </div>
           </div>
           {eventView && <PreviewSheet />}
+          <ShortcutsOverlay onOpenPage={model.showCapabilities} />
         </div>
       </CommandsProvider>
     </ShellProvider>

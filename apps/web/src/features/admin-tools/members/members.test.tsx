@@ -79,7 +79,7 @@ describe('Members tab', () => {
     const dialog = await screen.findByRole('alertdialog', { name: 'Ban Ash TCG?' });
     const confirm = within(dialog).getByRole('button', { name: 'Ban' });
     expect(confirm).toBeDisabled();
-    await user.selectOptions(within(dialog).getByRole('combobox'), 'Previous 24 hours');
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Delete their recent messages' }), 'Previous 24 hours');
     await user.type(within(dialog).getByRole('textbox'), 'Cheating at table 3');
     await user.click(confirm);
     expect(await within(dialog).findByRole('alert')).toHaveTextContent(/highest role/);
@@ -105,6 +105,24 @@ describe('Members tab', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Timeout' }));
     await waitFor(() => expect(harness.server.callsTo('POST /admin-tools/actions')).toHaveLength(1));
     expect(harness.server.callsTo('POST /admin-tools/actions')[0]!.body).toMatchObject({ action: 'timeout', durationMs: 28 * 86_400_000 });
+  });
+
+  it('ban can be temporary: the chosen length is sent as durationMs', async () => {
+    const user = userEvent.setup();
+    const harness = mount(<AdminToolsPage initialTab="members" />, server => {
+      routes(server);
+      server.once('POST /admin-tools/actions', () => json(200, { case: modCase(1, { kind: 'ban', expiresAtMs: 1_700_604_800_000 }), dm: 'sent' }));
+    });
+    await user.type(await screen.findByRole('textbox', { name: 'Search members' }), 'a');
+    await user.click(await screen.findByRole('button', { name: /Ash TCG/ }));
+    await user.click(await screen.findByRole('button', { name: 'Ban' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Ban length' }), '7 days');
+    await user.type(within(dialog).getByRole('textbox'), 'Cooling off');
+    await user.click(within(dialog).getByRole('button', { name: 'Ban' }));
+    await waitFor(() => expect(harness.server.callsTo('POST /admin-tools/actions')).toHaveLength(1));
+    expect(harness.server.callsTo('POST /admin-tools/actions')[0]!.body).toMatchObject({ action: 'ban', durationMs: 7 * 86_400_000,
+      deleteMessageSeconds: 0 });
   });
 });
 

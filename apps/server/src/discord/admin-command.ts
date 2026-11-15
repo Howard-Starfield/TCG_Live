@@ -2,6 +2,7 @@
 // adminSubcommands and register the handler at runtime with ctx.interactions.onSubcommand(name, handler).
 // Registration (registerPrivateCommand) upserts this command next to `/tcg-test`.
 import { InteractionContextType, PermissionFlagsBits, SlashCommandBuilder, type SlashCommandSubcommandBuilder } from 'discord.js';
+import { MODERATION_SUBCOMMANDS } from '../admin-tools/members/subcommands.js';
 
 export const ADMIN_COMMAND_NAME = 'tcg-admin';
 
@@ -15,7 +16,9 @@ export interface AdminSubcommand {
 
 /** Append-only list (Discord allows 25). Handlers live in the owning feature. */
 export const adminSubcommands: AdminSubcommand[] = [
-  { name: 'status', description: 'Admin tools status: privileged intents and restart notices' }
+  { name: 'status', description: 'Admin tools status: privileged intents and restart notices' },
+  // Moderation (admin-tools/members/discord-feature.ts): warn, timeout, untimeout, kick, ban, unban, case, note.
+  ...MODERATION_SUBCOMMANDS
 ];
 
 /** Staff-only by default (Manage Server); server admins can widen it in Server Settings > Integrations. */

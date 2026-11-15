@@ -77,6 +77,9 @@ export function formatAuditEntry(entry: AuditEntryDto, names?: AuditNameSource):
     case 'signupRemove':
       return line(withReason(`${actorLabel} removed ${memberName(names, command.memberId)} from signup`, command.reason),
         'warning', 'user-x');
+    case 'signupAdd': return line(`${actorLabel} added ${memberName(names, command.memberId)} to signup`, 'neutral', 'user-plus');
+    case 'checkinFor':
+      return line(`${actorLabel} checked in ${command.seat ? seatLabel(command.seat) : 'a player'}`, 'success', 'check-in');
     case 'signupClose': return line(`${actorLabel} closed signup and assigned seats`, 'info', 'lock');
     case 'signupReopen': return line(`${actorLabel} reopened signup`, 'info', 'unlock');
     case 'checkin': return line(`${actorLabel} checked in`, 'success', 'check-in');

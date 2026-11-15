@@ -244,13 +244,18 @@ export class PreconditionFailedError extends RuleError {}
 const WEB_COMMAND_ID = /^web:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** A console principal issues admin commands only, the same set as the /tcg-test admin subcommands. */
 const WEB_COMMAND_TYPES: ReadonlySet<string> = new Set<Command['type']>(
-  ['publish', 'delayStart', 'signupClose', 'signupReopen', 'signupRemove', 'judgeResume', 'resolve', 'correct']);
+  ['publish', 'delayStart', 'signupClose', 'signupReopen', 'signupRemove', 'signupAdd', 'checkinFor', 'judgeResume', 'resolve', 'correct']);
 
 export interface DiscordCommandContext {
   config: PrivateDiscordConfig;
   eventId: string;
   principalId: string;
   interactionId?: string;
+  /**
+   * The caller verified this principal as tournament staff (a configured staff role). A staff slash command
+   * (never a card control) then acts as the organizer, while principal_id keeps the real Discord user.
+   */
+  staff?: boolean;
   message?: { slot: CardSlot; id: string; channelId: string };
   scheduledPublish?: { startsAtMs: number };
   timer?: { matchId: import('./domain.js').MatchId; pauseGeneration: number; deadlineMs: number };
@@ -374,7 +379,7 @@ export async function runPrincipalCommand(
   if (discord && !discord.timer && !discord.scheduledPublish) {
     const player = (Object.entries(players ?? {}) as Array<['A' | 'B' | 'C' | 'D', string]>)
       .find(([, id]) => id === context.principalId)?.[0];
-    if (context.principalId === session.identity_map.adminId) actor = 'admin:fixture';
+    if (context.principalId === session.identity_map.adminId || (discord.staff && !discord.message)) actor = 'admin:fixture';
     else if (command.type === 'signupJoin' || command.type === 'signupWithdraw') actor = `member:${context.principalId}`;
     else if (player) actor = `player:${player}`;
     else throw new RuleError('Discord actor is not in the private fixture.');
@@ -382,6 +387,7 @@ export async function runPrincipalCommand(
     if ((command.type === 'signupJoin' || command.type === 'signupWithdraw') && !discord.message)
       throw new RuleError('Signup action requires its canonical card.');
   }
+  if (command.type === 'signupAdd' && command.memberId === session.identity_map.adminId) throw new RuleError('Signup admin cannot play.');
   if ((web || (discord && !discord.timer)) && command.type === 'signupClose' && command.adminId !== session.identity_map.adminId)
     throw new RuleError('Signup admin identity differs from the saved session.');
   if (discord) {

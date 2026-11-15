@@ -49,8 +49,13 @@ export interface DiscordAdmin {
 /** Undefined when TCG_ADMIN_CONSOLE is off: the bot then runs exactly as before. */
 export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin | undefined {
   if (!options.adminConfig.console) return undefined;
+  // Guided start: the config's commandsEnabled is a live getter over the "Allow dashboard actions" switch.
+  const local = options.adminConfig.localSettings;
+  const live = local ? { commandsLive: () => options.adminConfig.commandsEnabled } : {};
+  local?.attachAudit(options.moderation?.audit ?? options.adminTools?.audit);
+  const actionsMounted = options.adminConfig.commandsEnabled || !!local;
   const runtime = (options.createRuntime ?? (settings => new DiscordAdminRuntime(settings)))({
-    runnerId: options.runnerId, commandsEnabled: options.adminConfig.commandsEnabled,
+    runnerId: options.runnerId, commandsEnabled: options.adminConfig.commandsEnabled, ...live,
     publicMatchRooms: options.publicMatchRooms, ...(options.lease ? { lease: options.lease } : {})
   });
   let attachedController: AdminController | undefined;
@@ -67,9 +72,10 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     return (await demo).handler.rotateLoginUrl();
   };
   const handler = (options.createHandler ?? createAdminHandler)({
-    runtime, port: options.port, mode: 'discord', commandsEnabled: options.adminConfig.commandsEnabled,
+    runtime, port: options.port, mode: 'discord', commandsEnabled: options.adminConfig.commandsEnabled, ...live,
+    ...(local ? { localSettings: local } : {}),
     webDist: options.adminConfig.webDist,
-    ...(options.adminConfig.commandsEnabled ? { launchDemo } : {}),
+    ...(actionsMounted ? { launchDemo } : {}),
     ...(options.artwork ? { artwork: options.artwork } : {}),
     ...(options.artwork ? { applyArtwork: () => {
       if (options.lease?.isLost()) return Promise.resolve({ status: 'pending' as const, message: 'Bot ownership was lost.' });
@@ -78,7 +84,7 @@ export function createDiscordAdmin(options: DiscordAdminOptions): DiscordAdmin |
     } } : {}),
     tournaments: options.tournaments ?? pgTournamentDirectory(() => !!options.lease && !options.lease.isLost()),
     ...(options.signupChannels ? { signupChannels: options.signupChannels } : {}),
-    ...(options.adminConfig.commandsEnabled ? { deleteTournament: async id => {
+    ...(actionsMounted ? { deleteTournament: async id => {
       if (runtime.status().gateway !== 'ready' || !attachedController?.deleteTournament)
         throw new ControllerUnavailableError('Discord is not ready. Retry when the bot reconnects.');
       return attachedController.deleteTournament(id);

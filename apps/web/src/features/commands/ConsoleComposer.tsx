@@ -100,6 +100,10 @@ function Composer({ commands, snapshot }: { commands: CommandsApi; snapshot: Eve
         return finish(await commands.refreshPanels(snapshot, { inline: true }));
       case 'event':
         return finish(await commands.run(snapshot, { type: intent.type }, { inline: true }));
+      case 'signupAdd':
+        return finish(await commands.run(snapshot, { type: 'signupAdd', memberId: intent.memberId }, { inline: true }));
+      case 'checkinFor':
+        return finish(await commands.run(snapshot, { type: 'checkinFor', seat: intent.seat }, { inline: true }));
     }
   };
 

@@ -21,7 +21,7 @@ const rooms = (): VoiceRoomInfo[] => [
 ];
 const credential = (id: string, user: string, tail = 'x'): VoiceBotCredential => {
   const token = syntheticToken(user, tail);
-  return { id, label: `Helper ${id}`, token, userId: tokenUserId(token), addedAtMs: 1 };
+  return { id, label: `Helper ${id}`, token, userId: tokenUserId(token), addedAtMs: 1, applicationId: null, enabled: true, nickname: null };
 };
 const settingsWith = (patch: { recording?: ModerationSettingsBodyDto['recording']; voice?: Partial<ModerationSettingsBodyDto['voice']>;
   noticeText?: string | null }): ModerationSettingsBodyDto =>

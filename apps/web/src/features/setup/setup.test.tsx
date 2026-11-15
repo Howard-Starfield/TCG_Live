@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it } from 'vitest';
 import type { SetupCheckDto, SetupSelectionDto } from '@tcg-live/core';
@@ -97,4 +97,50 @@ it('Refresh reloads the channel list without overwriting choices in progress', a
   expect(await screen.findByRole('option', { name: 'late-signups' })).toBeInTheDocument();
   expect(server.callsTo('GET /setup/channels')).toHaveLength(2);
   expect(screen.getByRole('combobox', { name: /Signup text channel/ })).toHaveValue(ids[1]);
+});
+
+const localSettings = (dashboardActions: boolean, voice = false) => ({
+  dashboardActions: { enabled: dashboardActions, saved: dashboardActions, forcedByEnv: false },
+  voiceMonitoring: { saved: voice, running: null, forcedByEnv: false, restartRequired: false } });
+
+it('readiness offers the dashboard switches, and Save and Start ends on What’s next', async () => {
+  const user = userEvent.setup();
+  const { server } = renderConsole({ setup: server => {
+    server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', setup: true, localSettings: true }));
+    server.always('GET /setup', () => json(200, { prerequisite: null, activeEventId: null, selection,
+      frozen: false, botName: 'BoBoAssist', check: ready, openingDashboard: false }));
+    server.always('GET /setup/guilds', () => json(200, guilds));
+    server.always('GET /setup/channels', () => json(200, channels));
+    server.always('POST /setup/check', () => json(200, ready));
+    server.always('POST /setup/finish', () => json(200, { openingDashboard: true, eventId: 'event' }));
+    server.always('GET /settings/local', () => json(200, localSettings(true)));
+    server.always('PUT /settings/local', call => json(200, localSettings(
+      (call.body as { dashboardActions?: boolean }).dashboardActions ?? true, (call.body as { voiceMonitoring?: boolean }).voiceMonitoring)));
+  } });
+  await user.click(await screen.findByRole('button', { name: 'Next: channels' }));
+  await user.click(screen.getByRole('button', { name: 'Check readiness' }));
+  const actions = await screen.findByRole('switch', { name: 'Allow dashboard actions' });
+  await waitFor(() => expect(actions).toHaveAttribute('aria-checked', 'true'));
+  await user.click(actions);
+  await waitFor(() => expect(server.callsTo('PUT /settings/local')[0]?.body).toEqual({ dashboardActions: false }));
+  await waitFor(() => expect(screen.getByRole('switch', { name: 'Allow dashboard actions' })).toHaveAttribute('aria-checked', 'false'));
+  await user.click(screen.getByRole('switch', { name: 'Voice monitoring' }));
+  await waitFor(() => expect(server.callsTo('PUT /settings/local')[1]?.body).toEqual({ voiceMonitoring: true }));
+  await user.click(screen.getByRole('button', { name: 'Save and Start' }));
+  const next = await screen.findByRole('region', { name: 'What’s next' });
+  expect(next).toHaveTextContent('Setup complete. Opening dashboard…');
+  for (const name of ['Admin tools', 'Moderation & evidence', 'Helper bots', 'Looking for a game (LFG)', 'Capabilities'])
+    expect(next).toHaveTextContent(name);
+  expect(within(next).getByText('Bot setup guide')).toBeInTheDocument();
+});
+
+it('sessions without local settings show no switches and never call the settings route', async () => {
+  const user = userEvent.setup();
+  const { server } = mountSetup({ prerequisite: null, activeEventId: null, selection,
+    frozen: false, botName: 'BoBoAssist', check: ready, openingDashboard: false });
+  await user.click(await screen.findByRole('button', { name: 'Next: channels' }));
+  await user.click(screen.getByRole('button', { name: 'Check readiness' }));
+  await screen.findByRole('button', { name: 'Save and Start' });
+  expect(screen.queryByRole('switch', { name: 'Allow dashboard actions' })).not.toBeInTheDocument();
+  expect(server.callsTo('GET /settings/local')).toHaveLength(0);
 });

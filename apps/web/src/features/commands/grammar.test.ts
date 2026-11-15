@@ -20,6 +20,24 @@ const error = (text: string, context: ComposerContext) => {
 };
 const labels = (text: string, context: ComposerContext, caret = text.length) => suggest(text, caret, context)?.items.map(item => item.label) ?? [];
 
+describe('organizer signup-add and checkin-for (next wave)', () => {
+  it('adds a member by ID to an open signup and refuses one already in it', () => {
+    const outsider = '900000000000000099';
+    expect(ok(`/signup-add ${outsider}`, ctx(signupOpen))).toEqual({ kind: 'signupAdd', memberId: outsider });
+    expect(ok(`/tcg-staff signup-add <@${outsider}>`, ctx(signupOpen))).toEqual({ kind: 'signupAdd', memberId: outsider });
+    expect(error(`/signup-add @${signupOpen.signup!.roster[0]}`, ctx(signupOpen))).toMatch(/already signed up/);
+    expect(error('/signup-add 900000000000000099', ctx(checkin))).toMatch(/not available/);
+  });
+
+  it('checks in a seat by letter or mention while check-in is open', () => {
+    const waiting = { ...checkin, checkins: ['A'] } as EventSnapshotDto;
+    expect(ok('/checkin-for B', ctx(waiting))).toEqual({ kind: 'checkinFor', seat: 'B' });
+    expect(ok(`/checkin-for @${waiting.seats.C}`, ctx(waiting))).toEqual({ kind: 'checkinFor', seat: 'C' });
+    expect(error('/checkin-for A', ctx(waiting))).toMatch(/already checked in/);
+    expect(labels('/checkin-for ', ctx(waiting))).toEqual(['@B', '@C', '@D']);
+  });
+});
+
 describe('composer parsing', () => {
   it('parses the event commands as /tcg-test spells them', () => {
     expect(ok('/publish', ctx(publishable))).toEqual({ kind: 'event', type: 'publish' });
@@ -123,7 +141,7 @@ describe('composer suggestions', () => {
     expect(labels('/resu', ctx(liveDispute))).toEqual(['/judge-resume']);
     expect(labels('/j', ctx(liveDispute))).toEqual(['/judge-resume']);
     expect(labels('/', ctx(publishable))).toEqual(['/publish', '/signup-reopen', '/refresh']);
-    expect(labels('/', ctx(signupOpen))).toEqual(['/signup-remove', '/refresh']);
+    expect(labels('/', ctx(signupOpen))).toEqual(['/signup-remove', '/signup-add', '/refresh']);
     expect(labels('/', ctx(final))).toEqual(['/refresh', '/correct']);
     expect(labels('/', ctx({ ...liveDispute, status: 'retired' }))).toEqual([]);
     expect(labels('hello /', ctx(liveDispute))).toEqual([]);

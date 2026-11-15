@@ -108,3 +108,48 @@ test('upload refusals: over the admin cap (413), unsupported type (415), and no 
     assert.equal(s.store.records.size, 0);
   } finally { await s.stop(); }
 });
+
+/** An ASCII-safe MP4 with moov AFTER mdat, as phones and cameras often write it (not "fast start"). */
+function moovAtEndMp4(): string {
+  const box = (type: string, body: string) => String.fromCharCode(0, 0, 0, body.length + 8) + type + body;
+  const u32 = (value: number) => String.fromCharCode(0, 0, 0, value);
+  const stsd = box('stsd', u32(0) + u32(1) + box('avc1', 'y'.repeat(8)));
+  return box('ftyp', 'isom' + u32(2) + 'isom') + box('mdat', 'x'.repeat(60)) + box('moov', box('trak', stsd));
+}
+
+test('moov at the end still plays: the player can fetch the trailing moov with a Range request first', async () => {
+  // Browsers read the start, see mdat, then ask for the end of the file (a suffix or open range) to get
+  // moov before playing; progressive playback then continues with ordinary ranges from the start.
+  const s = await setup();
+  try {
+    const token = await login(s.harness);
+    const body = moovAtEndMp4();
+    const item = (await call(s.harness.port, base, { method: 'POST', token, body, headers: { 'Content-Type': 'video/mp4' } })).json().item;
+    assert.equal(item.playable, true);
+    const url = (await call(s.harness.port, `/api/v1/evidence/${item.id}/playback`, { method: 'POST', token })).json().url;
+    const moovAt = body.indexOf('moov') - 4;
+    const tail = await call(s.harness.port, url, { headers: { Range: `bytes=${moovAt}-` } });
+    assert.equal(tail.status, 206);
+    assert.equal(tail.headers['content-range'], `bytes ${moovAt}-${body.length - 1}/${body.length}`);
+    assert.equal(tail.text, body.slice(moovAt));
+    const suffix = await call(s.harness.port, url, { headers: { Range: `bytes=-${body.length - moovAt}` } });
+    assert.equal(suffix.text, body.slice(moovAt));
+    const mdat = await call(s.harness.port, url, { headers: { Range: 'bytes=24-40' } });
+    assert.equal(mdat.text, body.slice(24, 41));
+  } finally { await s.stop(); }
+});
+
+test('uploading the same file twice answers 200 with the earlier item and duplicate: true', async () => {
+  const s = await setup();
+  try {
+    const token = await login(s.harness);
+    const first = await call(s.harness.port, base, { method: 'POST', token, body: MP4 + 'abc', headers: { 'Content-Type': 'video/mp4' } });
+    assert.equal(first.status, 201);
+    assert.equal(first.json().duplicate, undefined);
+    const again = await call(s.harness.port, base, { method: 'POST', token, body: MP4 + 'abc', headers: { 'Content-Type': 'video/mp4' } });
+    assert.equal(again.status, 200);
+    assert.equal(again.json().duplicate, true);
+    assert.equal(again.json().item.id, first.json().item.id);
+    assert.equal(s.store.records.size, 1);
+  } finally { await s.stop(); }
+});

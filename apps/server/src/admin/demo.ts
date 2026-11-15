@@ -20,9 +20,14 @@ import { AdminToolsRuntimeState } from '../admin-tools/status.js';
 import { discordFeatures } from '../discord/feature-registry.js';
 import { demoPermissionMonitor } from '../permissions/demo.js';
 import { PermissionMonitor } from '../permissions/monitor.js';
+import { seedDemoOps } from './demo-seed.js';
+import { enableDemoCaseSeed } from '../admin-tools/members/demo-cases.js';
 
 /** Synthetic Discord server for the demo's in-memory moderation settings. */
 export const DEMO_GUILD_ID = '100000000000000001';
+
+/** Where demo evidence files live: a per-process OS temp directory, never data/evidence. */
+export function demoEvidenceRoot(): string { return join(tmpdir(), 'tcg-live-demo-evidence', String(process.pid)); }
 
 /** In-memory evidence, moderation and admin-tools routes for the demo: nothing touches PostgreSQL or data/. */
 export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'moderation' | 'adminTools'> {
@@ -32,7 +37,7 @@ export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'modera
   return {
     // Demo uploads go to a per-process OS temp directory, never data/evidence.
     evidence: { store: new MemoryEvidenceStore(audit), audit,
-      seams: createEvidenceSeams({ root: join(tmpdir(), 'tcg-live-demo-evidence', String(process.pid)) }).seams },
+      seams: createEvidenceSeams({ root: demoEvidenceRoot() }).seams },
     moderation: { settings: new MemoryModerationSettingsStore(audit), flags: new MemoryModerationFlagStore(audit), audit,
       voiceBots: new MemoryVoiceBotRegistry(), guildId: () => DEMO_GUILD_ID },
     // Admin tools act on a synthetic server (members, bans, roles, channels); route modules use Memory* stores.
@@ -79,6 +84,11 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
   try {
     server = await startServer({ port: requestedPort, database: null }, { admin: adapter });
     const ops = demoOpsOptions();
+    // Sample cases, flags and evidence so every screen has something to show (the real demo only, not tests).
+    const seed = !options.ephemeral;
+    if (seed && ops.adminTools?.demo) enableDemoCaseSeed(ops.adminTools.demo);
+    if (seed && ops.moderation && ops.evidence) seedDemoOps(runtime, { guildId: DEMO_GUILD_ID, flags: ops.moderation.flags, evidence: ops.evidence.store,
+      evidenceRoot: demoEvidenceRoot() });
     const permissions = ops.adminTools?.permissions;
     if (permissions instanceof PermissionMonitor) {
       runtime.attachPermissions(permissions);

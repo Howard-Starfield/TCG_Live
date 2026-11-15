@@ -14,7 +14,8 @@ import { SectionFrame } from '../shared/SectionFrame';
 import { useAdminToolsNavigation } from '../navigation';
 import { isElevatedRole } from '../roles/api';
 import { IntentStatusCard } from '../SettingsTab';
-import { DEFAULT_LOG_FILTER, deleteMessageHistory, useInvalidateLogs, useLogPages, useMessageStoreStats, type LogFilter } from './api';
+import { collectPages, ExportButtons, type ExportRow } from '../shared/exportData';
+import { DEFAULT_LOG_FILTER, getLogPage, deleteMessageHistory, useInvalidateLogs, useLogPages, useMessageStoreStats, type LogFilter } from './api';
 import { renderTemplatePreview, TEMPLATE_PLACEHOLDERS } from './template';
 
 const SNOWFLAKE = /^[1-9]\d{14,21}$/;
@@ -75,8 +76,15 @@ export function LogList() {
   const memberInvalid = memberText.trim() !== '' && !SNOWFLAKE.test(memberText.trim());
   const set = (patch: Partial<LogFilter>) => setFilter(current => ({ ...current, ...patch }));
   const byMember = (userId: string) => { setMemberText(userId); set({ userId }); };
+  const { api } = useAdminData();
+  const effective = rangeInverted ? { ...filter, to: null } : filter;
+  const collect = () => collectPages<number>(0, async before => {
+    const page = await getLogPage(api, effective, before);
+    return { rows: page.entries as unknown as ExportRow[], next: page.nextAfter > 0 ? page.nextAfter : null };
+  });
   return <section aria-label="Log entries" className="flex flex-col gap-3 rounded-lg border border-line p-4">
-    <header><h3 className="text-[13px] font-semibold text-fg">Log</h3></header>
+    <header className="flex flex-wrap items-center gap-2"><h3 className="flex-1 text-[13px] font-semibold text-fg">Log</h3>
+      <ExportButtons name={`log-${filter.stream}`} label={`the ${filter.stream} log`} collect={collect} /></header>
     <form className="grid grid-cols-1 gap-2 sm:grid-cols-5" onSubmit={event => { event.preventDefault(); }} aria-label="Log filters">
       <Field label="Kind">
         <Select value={`${filter.stream}:${filter.kind ?? ''}`} onChange={event => {
@@ -224,8 +232,11 @@ export function LoggingSettingsForm() {
       </fieldset>
       <fieldset className="flex flex-col gap-3" aria-label="Auto-role">
         <legend className="text-xs font-semibold text-fg">Auto-role on join</legend>
-        <Field label="Give roles to new members" inline description="Bots are skipped. Roles the bot cannot assign are skipped and logged.">
+        <Field label="Give roles to new members" inline description="Roles the bot cannot assign are skipped and logged.">
           <Switch checked={value.autoRole.enabled} disabled={disabled} onCheckedChange={enabled => update('autoRole', { enabled })} />
+        </Field>
+        <Field label="Skip bots" inline description="On: only human members get these roles. Off: bots that join get them too (they are never welcomed).">
+          <Switch checked={value.autoRole.skipBots !== false} disabled={disabled} onCheckedChange={skipBots => update('autoRole', { skipBots })} />
         </Field>
         <ul className="flex flex-wrap gap-1.5" aria-label="Auto-roles">
           {value.autoRole.roleIds.map(id => <li key={id}><Badge tone={unassignable.includes(id) ? 'danger' : 'neutral'}>{roleName(meta.data, id)}

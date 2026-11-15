@@ -2,8 +2,9 @@
 import { DEFAULT_MODERATION_NOTICE, EVIDENCE_QUOTA_BYTES, MODERATION_LIMITS as L, RETENTION_PRESET_DAYS,
   VOICE_SENSITIVITY_PRESETS, type ModerationSettingsBodyDto, type RecordingMode, type VoiceLoudnessSettingsDto,
   type VoiceMonitorScope, type VoiceSensitivity } from '@tcg-live/core';
-import { TriangleAlert } from 'lucide-react';
-import { Disclosure, Field, Input, SegmentedControl, Select, Switch, Textarea } from '../../ui';
+import { TriangleAlert, UserX, X } from 'lucide-react';
+import { useState } from 'react';
+import { Button, Disclosure, Field, Input, SegmentedControl, Select, Switch, Textarea } from '../../ui';
 import { formatBytes } from '../evidence/api';
 import type { SettingsErrors } from './validate';
 
@@ -80,11 +81,13 @@ export function RecordingSection({ settings, onChange, errors, disabled }: {
     </p>
     <Field label="Record match voice">
       <SegmentedControl<RecordingMode> label="Recording mode" value={settings.recording.mode}
-        onChange={mode => onChange({ ...settings, recording: { mode } })}
+        onChange={mode => onChange({ ...settings, recording: { ...settings.recording, mode } })}
         options={[{ value: 'off', label: 'Off', disabled }, { value: 'judge-call', label: 'On judge call', disabled },
           { value: 'always', label: 'Always', disabled }]} />
     </Field>
     <p className="-mt-2 text-2xs text-fg-subtle">Audio only, one file per player, stored on this PC. Video is never recorded by the bot.</p>
+    <OptOutList ids={settings.recording.optOutUserIds ?? []} disabled={disabled}
+      onChange={optOutUserIds => onChange({ ...settings, recording: { ...settings.recording, optOutUserIds } })} />
     <div className="grid gap-3 sm:grid-cols-2">
       <Field label="Keep evidence for" description="Held items are never deleted automatically.">
         <Select value={choice} disabled={disabled} onChange={event => {
@@ -109,4 +112,29 @@ export function RecordingSection({ settings, onChange, errors, disabled }: {
         onChange={event => onChange({ ...settings, noticeText: event.target.value.trim() ? event.target.value : null })} />
     </Field>
   </div>;
+}
+
+const SNOWFLAKE = /^[1-9]\d{15,21}$/;
+
+/** Players who declined recording: never subscribed, recorded or loudness-checked. Saved with the settings. */
+export function OptOutList({ ids, disabled, onChange }: { ids: string[]; disabled: boolean; onChange(ids: string[]): void }) {
+  const [value, setValue] = useState('');
+  const id = value.trim();
+  const error = id && !SNOWFLAKE.test(id) ? 'Paste a Discord user ID (right-click the player, Copy User ID).'
+    : ids.length >= L.recordingOptOuts ? `At most ${L.recordingOptOuts} players.` : null;
+  const add = () => { if (!id || error) return; if (!ids.includes(id)) onChange([...ids, id]); setValue(''); };
+  return <section aria-label="Recording opt-outs" className="flex flex-col gap-2 rounded-md bg-sunken p-2">
+    <h4 className="flex items-center gap-1.5 text-xs font-semibold text-fg"><UserX aria-hidden className="size-3.5" />Players who opted out ({ids.length})</h4>
+    <p className="text-2xs text-fg-subtle">They are never recorded and their audio is not processed at all. Players can also opt out themselves in Discord. Save to apply.</p>
+    {ids.length > 0 && <ul className="flex flex-wrap gap-1.5">{ids.map(item => <li key={item} className="flex items-center gap-1 rounded bg-raised px-1.5 py-0.5 font-mono text-2xs">
+      {item}<button type="button" aria-label={`Remove opt-out ${item}`} disabled={disabled} className="text-fg-subtle hover:text-fg"
+        onClick={() => onChange(ids.filter(other => other !== item))}><X aria-hidden className="size-3" /></button></li>)}</ul>}
+    <div className="flex items-end gap-2">
+      <Field label="Discord user ID" error={error}>
+        <Input value={value} inputMode="numeric" className="font-mono" disabled={disabled} onChange={event => setValue(event.target.value)}
+          onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); add(); } }} />
+      </Field>
+      <Button size="sm" variant="ghost" disabled={disabled || !id || !!error} onClick={add}>Add opt-out</Button>
+    </div>
+  </section>;
 }

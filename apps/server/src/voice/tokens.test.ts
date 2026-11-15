@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { MODERATION_LIMITS } from '@tcg-live/core';
 import { OpsConflictError, OpsInputError, OpsNotFoundError } from '../ops/errors.js';
 import { describeVoicePool } from './pool.js';
+import { offlineHelperApi } from './helper-api.js';
 import { syntheticToken } from './testing.js';
 import { MemoryVoiceBotRegistry, tokenUserId, validateBotToken, VoiceBotTokenStore } from './tokens.js';
 
@@ -23,11 +24,11 @@ test('file store writes 0600 via temp+rename, lists summaries only and keeps tok
   const directory = await mkdtemp(path.join(os.tmpdir(), 'tcg-voice-'));
   try {
     const file = path.join(directory, 'data', 'voice-bots.json');
-    const store = new VoiceBotTokenStore(file, () => 42);
+    const store = new VoiceBotTokenStore(file, () => 42, offlineHelperApi());
     assert.deepEqual(await store.list(), []);
     const token = syntheticToken();
     const added = await store.add('Helper 1', token);
-    assert.deepEqual(Object.keys(added).sort(), ['addedAtMs', 'id', 'label', 'userId']);
+    assert.deepEqual(Object.keys(added).sort(), ['addedAtMs', 'applicationId', 'enabled', 'id', 'label', 'nickname', 'userId']);
     assert.equal(added.userId, '123456789012345678');
     assert.doesNotMatch(JSON.stringify(await store.list()), new RegExp(token.split('.')[2]!));
     if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600);

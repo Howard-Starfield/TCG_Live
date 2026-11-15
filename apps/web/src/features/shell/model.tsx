@@ -6,6 +6,7 @@ import { useActiveEventId, useEvents, useEventSnapshot, useRuntimeStatus, type C
 import { useConsolePreferences } from '../../app/preferences';
 import { NARROW_QUERY, useMediaQuery } from './useMediaQuery';
 import { useTournamentDirectory } from '../tournaments/directory';
+import { currentConsoleRoute, parseConsoleHash, writeConsoleRoute } from '../admin-tools/navigation';
 
 export type PaneKey = 'live' | 'list';
 
@@ -45,6 +46,9 @@ export interface ShellModel {
   /** The Admin tools page is shown (no event view). */
   adminTools: boolean;
   showAdminTools(): void;
+  /** The Capabilities & shortcuts page is shown (no event view). */
+  capabilities: boolean;
+  showCapabilities(): void;
   showDrafts(): void;
   draftsOpen: boolean;
   showHome(): void;
@@ -125,9 +129,12 @@ export function useShellModel(session: SessionDto): ShellModel {
   const activeEventId = useActiveEventId();
   const events = eventsQuery.data ?? NO_EVENTS;
   const [selected, setSelected] = useState<string | null>(null);
-  const [home, setHome] = useState(session.mode === 'discord');
+  // A deep link (#/admin-tools/…, #/capabilities) opens that page on load.
+  const [linked] = useState(currentConsoleRoute);
+  const [home, setHome] = useState(session.mode === 'discord' && !linked);
   const [draftsOpen, setDraftsOpen] = useState(false);
-  const [adminTools, setAdminTools] = useState(false);
+  const [adminTools, setAdminTools] = useState(linked?.page === 'admin-tools');
+  const [capabilities, setCapabilities] = useState(linked?.page === 'capabilities');
   const [draft, setDraft] = useState<TournamentDirectoryEntryDto | null>(null);
   const [liveMatch, setLiveMatch] = useState<MatchId | null>(null);
 
@@ -163,6 +170,21 @@ export function useShellModel(session: SessionDto): ShellModel {
   }), [viewedId, summary, snapshot, snapshotQuery.error, refetchSnapshot, status.data?.database]);
 
   const dock = useDock();
+  // Pages other than Admin tools and Capabilities clear the console route; Admin tools writes its own tab.
+  useEffect(() => {
+    if (capabilities) writeConsoleRoute({ page: 'capabilities' });
+    else if (!adminTools) writeConsoleRoute(null);
+  }, [adminTools, capabilities]);
+  useEffect(() => {
+    const onHash = () => {
+      const route = parseConsoleHash(window.location.hash);
+      if (!route) return;
+      setDraft(null); setSelected(null); setDraftsOpen(false); setHome(false);
+      setAdminTools(route.page === 'admin-tools'); setCapabilities(route.page === 'capabilities');
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
   const setCanvas = useCallback((view: CanvasView, matchId: MatchId | null) => {
     update({ canvasView: view });
     setLiveMatch(matchId);
@@ -183,25 +205,27 @@ export function useShellModel(session: SessionDto): ShellModel {
     events,
     directory: directoryQuery.data,
     directoryState,
-    home: home && !adminTools,
-    adminTools,
-    showAdminTools: () => { setDraft(null); setSelected(null); setDraftsOpen(false); setHome(false); setAdminTools(true); dock.dismissSheet(); },
-    draftsOpen: home && !adminTools && draftsOpen,
-    showHome: () => { setDraft(null); setSelected(null); setDraftsOpen(false); setAdminTools(false); setHome(true); dock.dismissSheet(); },
-    showDrafts: () => { setDraft(null); setSelected(null); setDraftsOpen(true); setAdminTools(false); setHome(true); dock.dismissSheet(); },
+    home: home && !adminTools && !capabilities,
+    adminTools: adminTools && !capabilities,
+    capabilities,
+    showCapabilities: () => { setDraft(null); setSelected(null); setDraftsOpen(false); setHome(false); setAdminTools(false); setCapabilities(true); dock.dismissSheet(); },
+    showAdminTools: () => { setDraft(null); setSelected(null); setDraftsOpen(false); setHome(false); setAdminTools(true); setCapabilities(false); dock.dismissSheet(); },
+    draftsOpen: home && !adminTools && !capabilities && draftsOpen,
+    showHome: () => { setDraft(null); setSelected(null); setDraftsOpen(false); setAdminTools(false); setCapabilities(false); setHome(true); dock.dismissSheet(); },
+    showDrafts: () => { setDraft(null); setSelected(null); setDraftsOpen(true); setAdminTools(false); setCapabilities(false); setHome(true); dock.dismissSheet(); },
     draft,
-    selectDraft: entry => { setSelected(null); setDraft(entry); setAdminTools(false); setHome(false); },
+    selectDraft: entry => { setSelected(null); setDraft(entry); setAdminTools(false); setCapabilities(false); setHome(false); },
     eventsState,
     refetchEvents: () => { void refetchEvents(); },
     activeEventId,
     viewed,
-    selectEvent: eventId => { setDraft(null); setSelected(eventId === activeEventId ? null : eventId); setAdminTools(false); setHome(false); },
-    followActive: () => { setDraft(null); setSelected(null); setAdminTools(false); setHome(false); },
+    selectEvent: eventId => { setDraft(null); setSelected(eventId === activeEventId ? null : eventId); setAdminTools(false); setCapabilities(false); setHome(false); },
+    followActive: () => { setDraft(null); setSelected(null); setAdminTools(false); setCapabilities(false); setHome(false); },
     canvasView,
     liveMatch,
     setCanvas,
     openMatch,
     dock
-  }), [session, statusData, events, directoryQuery.data, directoryState, home, adminTools, draftsOpen, draft, eventsState, refetchEvents, activeEventId, viewed,
+  }), [session, statusData, events, directoryQuery.data, directoryState, home, adminTools, capabilities, draftsOpen, draft, eventsState, refetchEvents, activeEventId, viewed,
     canvasView, liveMatch, setCanvas, openMatch, dock]);
 }

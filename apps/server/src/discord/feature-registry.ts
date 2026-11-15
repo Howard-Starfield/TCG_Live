@@ -11,6 +11,8 @@ import { autoModFeature } from '../moderation/automod-feature.js';
 import { evidenceSubmitFeature } from '../evidence/discord-submit.js';
 import { evidenceRetentionFeature } from '../evidence/retention.js';
 import { voiceFeature } from '../voice/feature.js';
+import { membersDiscordFeature } from '../admin-tools/members/discord-feature.js';
+import { lfgFeature } from '../admin-tools/lfg/feature.js';
 
 export function discordFeatures(): DiscordFeature[] {
   return [
@@ -19,6 +21,8 @@ export function discordFeatures(): DiscordFeature[] {
     stickiesTicketsFeature(),
     loggingFeature(),
     rolesFeature(), announcementsFeature(),
+    membersDiscordFeature(),
+    lfgFeature(),
     // (A) members/cases feature, (B) stickies/channels/tickets feature, (C) button roles/bulk roles/announcements
     // feature, (D) logging/welcome/auto-role feature: append here.
   ];

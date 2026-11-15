@@ -3,6 +3,7 @@ import type { AdminMode } from './config.js';
 import { createAdminHttp } from './http/handler.js';
 import type { AdminRuntime } from './runtime-types.js';
 import type { SetupService } from '../onboarding/service.js';
+import type { LocalSettings } from '../onboarding/settings.js';
 import type { ArtworkStore } from '../artwork/store.js';
 import type { ArtworkApplyResult } from '../artwork/routes.js';
 import type { TournamentDirectory } from '../tournaments/directory.js';
@@ -17,6 +18,10 @@ export interface AdminHandlerOptions {
   port: number;
   mode: AdminMode;
   commandsEnabled: boolean;
+  /** Guided start: read on every request instead of commandsEnabled (the "Allow dashboard actions" switch). */
+  commandsLive?: () => boolean;
+  /** Guided start: GET/PUT /api/v1/settings/local. */
+  localSettings?: LocalSettings;
   /** Built web assets. Static serving is skipped when absent. */
   webDist?: string;
   /** Demo only: an extra allowed Origin. */

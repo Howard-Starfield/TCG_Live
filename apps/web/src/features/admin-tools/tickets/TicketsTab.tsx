@@ -11,6 +11,10 @@ import { adminToolsKeys, useAdminToolsAccess, useAdminToolsCapability, useAdminT
 import { useAction } from '../channels/useAction';
 import { ChannelSelect, RoleSelect } from '../shared/ChannelSelect';
 import { SectionFrame } from '../shared/SectionFrame';
+import { ExportButtons, type ExportRow } from '../shared/exportData';
+import { useAdminToolsNavigation } from '../navigation';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const STATUS: Record<TicketStatus, { label: string; tone: Tone }> = {
   open: { label: 'Open', tone: 'success' }, closed: { label: 'Closed', tone: 'neutral' }, deleted: { label: 'Channel deleted', tone: 'warning' }
@@ -119,14 +123,25 @@ function TicketSettings() {
   </SectionFrame>;
 }
 
-function TranscriptDialog({ ticket, onClose }: { ticket: TicketDto; onClose(): void }) {
+/** Transcript export rows: one per message, with the ticket's number and name. */
+export function transcriptRows(transcript: TranscriptDto): ExportRow[] {
+  return transcript.messages.map(message => ({ ticket: transcript.ticket.number, ticketName: transcript.ticket.name, seq: message.seq,
+    at: new Date(message.createdAtMs).toISOString(), authorId: message.authorId, author: message.authorName, bot: message.authorBot,
+    content: message.content, attachments: message.attachments.map(item => item.url) }));
+}
+
+function TranscriptDialog({ ticketId, ticket: known, onClose }: { ticketId: string; ticket?: TicketDto; onClose(): void }) {
   const { api } = useAdminData();
-  const transcript = useQuery({ queryKey: adminToolsKeys.feature('tickets', 'transcript', ticket.id), retry: retryTransient,
-    queryFn: ({ signal }) => api.request<TranscriptDto>('GET', `/admin-tools/tickets/${ticket.id}/transcript`, { signal }) });
-  return <Dialog open onClose={onClose} title={`Ticket #${ticket.number} transcript`} description={ticket.name} width="lg">
+  const transcript = useQuery({ queryKey: adminToolsKeys.feature('tickets', 'transcript', ticketId), retry: retryTransient,
+    queryFn: ({ signal }) => api.request<TranscriptDto>('GET', `/admin-tools/tickets/${ticketId}/transcript`, { signal }) });
+  const ticket = known ?? transcript.data?.ticket;
+  const data = transcript.data;
+  return <Dialog open onClose={onClose} title={ticket ? `Ticket #${ticket.number} transcript` : 'Ticket transcript'} description={ticket?.name} width="lg"
+    footer={<>{data && data.messages.length > 0 && <ExportButtons name={`ticket-${data.ticket.number}-transcript`} label="the transcript"
+      collect={async () => ({ rows: transcriptRows(data), truncated: false })} />}<span className="flex-1" /><Button onClick={onClose}>Close</Button></>}>
     {transcript.error ? <p role="alert" className="text-xs text-danger">{describeError(transcript.error, 'The transcript could not be loaded.')}</p>
       : !transcript.data ? <p role="status" className="text-xs text-fg-muted">Loading transcript…</p>
-      : transcript.data.messages.length === 0 ? <p className="text-xs text-fg-muted">No messages were saved{ticket.status === 'open' ? ' yet: the transcript is saved when the ticket closes' : ''}.</p>
+      : transcript.data.messages.length === 0 ? <p className="text-xs text-fg-muted">No messages were saved{ticket?.status === 'open' ? ' yet: the transcript is saved when the ticket closes' : ''}.</p>
       : <ol className="flex flex-col gap-2" aria-label="Transcript">
         {transcript.data.messages.map(message => <li key={message.seq} className="text-xs">
           <span className="font-medium text-fg">{message.authorName}</span>{message.authorBot && <Badge tone="neutral">bot</Badge>}
@@ -145,7 +160,10 @@ function TicketList() {
   const canModerate = useAdminToolsCapability('members.moderate');
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<Filter>('open');
-  const [viewing, setViewing] = useState<TicketDto | null>(null);
+  // The open transcript is part of the deep link (#/admin-tools/tickets/<ticket id>).
+  const navigation = useAdminToolsNavigation();
+  const [viewingId, setViewingId] = useState<string | null>(() => (navigation.item && UUID.test(navigation.item) ? navigation.item : null));
+  const setViewing = (ticket: TicketDto | null) => { setViewingId(ticket?.id ?? null); navigation.setItem?.(ticket?.id ?? null); };
   const [pending, setPending] = useState<{ ticket: TicketDto; action: 'close' | 'reopen' } | null>(null);
   const action = useAction();
   const key = adminToolsKeys.feature('tickets', 'list', filter);
@@ -195,7 +213,8 @@ function TicketList() {
       </ul>}
     {list.hasNextPage && <span><Button size="sm" variant="ghost" loading={list.isFetchingNextPage}
       onClick={() => { void list.fetchNextPage(); }}>Older tickets</Button></span>}
-    {viewing && <TranscriptDialog ticket={viewing} onClose={() => setViewing(null)} />}
+    {viewingId && <TranscriptDialog ticketId={viewingId} {...(tickets.find(item => item.id === viewingId) ? { ticket: tickets.find(item => item.id === viewingId)! } : {})}
+      onClose={() => setViewing(null)} />}
     <ConfirmDialog open={pending !== null} pending={action.pending} danger={pending?.action === 'close'}
       title={pending?.action === 'close' ? `Close ticket #${pending.ticket.number} (${pending.ticket.name})?` : `Reopen ticket #${pending?.ticket.number} (${pending?.ticket.name})?`}
       description={pending?.action === 'close' ? 'The transcript is saved and the ticket channel is deleted in Discord. You can reopen it for 24 hours from this page.'

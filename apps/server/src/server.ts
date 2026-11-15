@@ -1,6 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AdminHandler } from './admin/mount.js';
 import type { AppConfig } from './config.js';
+import { isEvidenceUploadRequest } from './evidence/routes.js';
 import { createProbe } from './probe.js';
 
 export interface RunningServer {
@@ -20,6 +21,46 @@ function json(response: ServerResponse, code: number, status: string, allowGet =
 export interface ServerOptions {
   /** Optional admin console. Consulted for every path except exactly /livez and /readyz. */
   admin?: AdminHandler;
+  /** Timeouts; the defaults suit production. */
+  timeouts?: Partial<ServerTimeouts>;
+  /** Requests that may take arbitrarily long while data keeps flowing; defaults to evidence file uploads. */
+  isLongUpload?: (request: IncomingMessage) => boolean;
+}
+
+export interface ServerTimeouts {
+  /** All request headers must arrive within this (slowloris guard, also for uploads). */
+  headersMs: number;
+  /** Ordinary requests must have sent their whole body within this, as Node's default requestTimeout did. */
+  bodyMs: number;
+  /** A long upload is aborted after this long with no data (the total time is unlimited). */
+  uploadIdleMs: number;
+}
+export const DEFAULT_SERVER_TIMEOUTS: ServerTimeouts = { headersMs: 60_000, bodyMs: 300_000, uploadIdleMs: 60_000 };
+
+/**
+ * Node's requestTimeout is one deadline for every request, and its 300 s default kills a 2 GiB upload on
+ * any link slower than about 6.8 MB/s. It is turned off here and replaced per request: ordinary requests
+ * keep a total body deadline (slowloris protection), long uploads get an idle timeout instead.
+ */
+function guardRequest(request: IncomingMessage, response: ServerResponse, timeouts: ServerTimeouts, longUpload: boolean): void {
+  if (longUpload) {
+    const socket = request.socket;
+    socket.setTimeout(timeouts.uploadIdleMs, () => {
+      // No bytes either way for uploadIdleMs: the client stalled (or the server is stuck); free the socket.
+      socket.destroy();
+    });
+    // After the response, Node sets the keep-alive timeout on the same socket, replacing this value.
+    return;
+  }
+  if (request.complete) return;
+  const timer = setTimeout(() => {
+    if (!request.complete) request.socket.destroy();
+  }, timeouts.bodyMs);
+  timer.unref();
+  const clear = () => clearTimeout(timer);
+  request.once('end', clear);
+  request.once('close', clear);
+  response.once('close', clear);
 }
 
 export async function startServer(config: AppConfig, options: ServerOptions = {}): Promise<RunningServer> {
@@ -27,8 +68,11 @@ export async function startServer(config: AppConfig, options: ServerOptions = {}
   const probe = config.database ? createProbe(config.database) : null;
   let stopping = false;
   let stopPromise: Promise<void> | undefined;
+  const timeouts: ServerTimeouts = { ...DEFAULT_SERVER_TIMEOUTS, ...options.timeouts };
+  const isLongUpload = options.isLongUpload ?? isEvidenceUploadRequest;
   const server = http.createServer((request: IncomingMessage, response: ServerResponse) => {
     const path = request.url;
+    guardRequest(request, response, timeouts, isLongUpload(request));
     if (path !== '/livez' && path !== '/readyz') {
       try {
         if (admin?.handle(request, response)) return;
@@ -62,6 +106,9 @@ export async function startServer(config: AppConfig, options: ServerOptions = {}
       if (!response.destroyed) json(response, 503, 'unavailable');
     });
   });
+
+  server.requestTimeout = 0;
+  server.headersTimeout = timeouts.headersMs;
 
   try {
     await new Promise<void>((resolve, reject) => {

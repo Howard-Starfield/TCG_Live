@@ -10,6 +10,8 @@ import { formatTimeOfDay, memberName, useMatchCountdown } from '../../data';
 import { DataTable, EmptyState, StatusDot, cx, type Column } from '../../ui';
 import { MatchActions, useMatchActionsAvailable } from '../commands';
 import { EvidenceButton, useEvidenceAccess } from '../evidence';
+import { ModerateMembersMenu } from '../admin-tools/members/ModerateMembersMenu';
+import { useModerateAvailable } from '../admin-tools/members/ModerateMemberAction';
 import { JUDGE_REASON_LABEL, PHASE_META, matchPhaseMeta } from './model';
 import { None, ScrollCue, SeatTag, StatusChip, ToneBadge, useElementWidth } from './shared';
 
@@ -134,6 +136,7 @@ export function MatchesTab({ snapshot, onOpenMatch }: MatchesTabProps) {
   const tight = width !== null && width < MATCH_STACK_CLOCK_BELOW;
   const actionable = useMatchActionsAvailable(snapshot);
   const evidence = useEvidenceAccess().read;
+  const moderate = useModerateAvailable();
 
   const columns = useMemo<Array<Column<MatchDto>>>(() => {
     const list: Array<Column<MatchDto>> = [
@@ -183,6 +186,11 @@ export function MatchesTab({ snapshot, onOpenMatch }: MatchesTabProps) {
       list.push({ id: 'evidence', header: tight ? <span className="sr-only">Evidence</span> : 'Evidence', width: '64px',
         cell: match => <EvidenceButton snapshot={snapshot} matchId={match.id} variant="cell" /> });
     }
+    if (moderate) {
+      list.push({ id: 'moderate', header: <span className="sr-only">Moderate</span>, width: '36px', align: 'end',
+        cell: match => <ModerateMembersMenu eventId={snapshot.eventId} matchId={match.id} label={`Moderate a player of ${match.id}`}
+          members={match.seats.map(seat => { const id = snapshot.seats[seat] ?? null; return { id, name: id ? memberName(snapshot, id) : `Seat ${seat}` }; })} /> });
+    }
     if (actionable) {
       // Wave 3 (L10): resolve / judge-resume / correct in a row menu; empty cells where none apply.
       list.push({ id: 'actions', header: <span className="sr-only">Actions</span>, width: '40px', align: 'end',
@@ -193,7 +201,7 @@ export function MatchesTab({ snapshot, onOpenMatch }: MatchesTabProps) {
         cell: () => <ChevronRight aria-hidden className="inline size-3.5 text-fg-subtle group-hover/row:text-fg" /> });
     }
     return list;
-  }, [actionable, evidence, onOpenMatch, snapshot, stackPlayers, tight, wide]);
+  }, [actionable, evidence, moderate, onOpenMatch, snapshot, stackPlayers, tight, wide]);
 
   const judges = snapshot.matches.filter(match => match.judge).length;
   return (

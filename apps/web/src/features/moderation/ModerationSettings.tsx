@@ -8,6 +8,7 @@ import { describeError, isNotAvailable } from '../evidence/api';
 import { getModerationSettings, saveModerationSettings, useModerationAccess } from './api';
 import { KeywordSection } from './KeywordSection';
 import { VoiceBots } from './VoiceBots';
+import { requestAdminToolsTab } from '../admin-tools/navigation';
 import { RecordingSection, VolumeSection } from './VoiceSections';
 import { validateSettings } from './validate';
 
@@ -108,7 +109,8 @@ export function ModerationSettings({ open, onClose, onOpenAdminTools }: { open: 
       {section === 'volume' && <VolumeSection voice={draft.voice} errors={errors} disabled={disabled}
         onChange={voice => setDraft({ ...draft, voice })} />}
       {section === 'recording' && <RecordingSection settings={draft} errors={errors} disabled={disabled} onChange={setDraft} />}
-      {section === 'bots' && <VoiceBots disabled={saving} />}
+      {section === 'bots' && <VoiceBots disabled={saving}
+        {...(onOpenAdminTools ? { onOpenBots: () => { requestAdminToolsTab('bots'); onOpenAdminTools(); } } : {})} />}
     </TabPanel>
   </div>;
 

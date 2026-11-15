@@ -8,7 +8,7 @@ import { OpsConflictError, OpsInputError } from '../ops/errors.js';
 import { SNOWFLAKE } from '../ops/http.js';
 import { transaction, withClient } from '../rehearsal/store.js';
 import { requireAdminToolsSchema } from './schema.js';
-import { bool, colorOrNull, emojiOrNull, exactObject, fail, int, snowflakeList, snowflakeOrNull, text,
+import { bool, colorOrNull, emojiOrNull, exactObject, fail, int, shapedObject, snowflakeList, snowflakeOrNull, text,
   textOrNull } from './validate.js';
 
 /** The saved version moved on; `current` is the fresh state for the dashboard to show. */
@@ -24,9 +24,15 @@ export interface AdminToolsSettingsStore {
   put(guildId: string, expectedVersion: number, settings: unknown, actor: OpsActor): Promise<AdminToolsSettingsDto>;
 }
 
+/** Most tournament staff roles one server may configure. */
+export const MAX_TOURNAMENT_STAFF_ROLES = 10;
+
 function parseCases(value: unknown): CaseSettingsDto {
-  const cases = exactObject(value, ['dmMembers', 'logChannelId'], 'Case settings');
-  return { dmMembers: bool(cases.dmMembers, 'DM members'), logChannelId: snowflakeOrNull(cases.logChannelId, 'Case log channel') };
+  const cases = shapedObject(value, ['dmMembers', 'logChannelId'], ['staffRoleIds'], 'Case settings');
+  return { dmMembers: bool(cases.dmMembers, 'DM members'), logChannelId: snowflakeOrNull(cases.logChannelId, 'Case log channel'),
+    // Optional and additive: absent stays absent, so older documents round-trip unchanged.
+    ...(cases.staffRoleIds !== undefined
+      ? { staffRoleIds: snowflakeList(cases.staffRoleIds, MAX_TOURNAMENT_STAFF_ROLES, 'Tournament staff roles') } : {}) };
 }
 
 function parseTickets(value: unknown): TicketSettingsDto {
@@ -63,7 +69,7 @@ function parseLogging(value: unknown): LoggingSettingsDto {
   const logging = exactObject(value, ['joinLeave', 'welcome', 'autoRole', 'messageLog'], 'Logging settings');
   const joinLeave = exactObject(logging.joinLeave, ['enabled', 'channelId', 'newAccountDays', 'memberUpdates'], 'Join/leave log');
   const welcome = exactObject(logging.welcome, ['enabled', 'channelId', 'message', 'leaveMessage'], 'Welcome message');
-  const autoRole = exactObject(logging.autoRole, ['enabled', 'roleIds'], 'Auto-role');
+  const autoRole = shapedObject(logging.autoRole, ['enabled', 'roleIds'], ['skipBots'], 'Auto-role');
   const messageLog = exactObject(logging.messageLog, ['enabled', 'channelId', 'retentionDays', 'ignoredChannelIds'], 'Message log');
   const result: LoggingSettingsDto = {
     joinLeave: { enabled: bool(joinLeave.enabled, 'Join/leave log enabled'), channelId: snowflakeOrNull(joinLeave.channelId, 'Join/leave log channel'),
@@ -72,7 +78,8 @@ function parseLogging(value: unknown): LoggingSettingsDto {
     welcome: { enabled: bool(welcome.enabled, 'Welcome enabled'), channelId: snowflakeOrNull(welcome.channelId, 'Welcome channel'),
       message: text(welcome.message, L.welcomeMessageLength, 'Welcome message', true),
       leaveMessage: textOrNull(welcome.leaveMessage, L.welcomeMessageLength, 'Leave message', true) },
-    autoRole: { enabled: bool(autoRole.enabled, 'Auto-role enabled'), roleIds: snowflakeList(autoRole.roleIds, L.autoRoles, 'Auto-roles') },
+    autoRole: { enabled: bool(autoRole.enabled, 'Auto-role enabled'), roleIds: snowflakeList(autoRole.roleIds, L.autoRoles, 'Auto-roles'),
+      ...(autoRole.skipBots === undefined ? {} : { skipBots: bool(autoRole.skipBots, 'Skip bots') }) },
     messageLog: { enabled: bool(messageLog.enabled, 'Message log enabled'), channelId: snowflakeOrNull(messageLog.channelId, 'Message log channel'),
       retentionDays: int(messageLog.retentionDays, L.retentionDaysMin, L.retentionDaysMax, 'Message log retention days'),
       ignoredChannelIds: snowflakeList(messageLog.ignoredChannelIds, L.ignoredChannels, 'Ignored channels') }
