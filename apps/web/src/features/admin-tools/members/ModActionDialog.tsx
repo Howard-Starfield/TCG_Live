@@ -33,7 +33,11 @@ export const ACTION_CONSEQUENCE: Record<ModAction, string> = {
 };
 
 export interface ModTarget { id: string; name: string }
-export interface ModContext { eventId?: string | null; matchId?: ModActionRequestDto['matchId'] }
+const DAY_MS = 86_400_000;
+const BAN_LENGTHS = [{ ms: 0, label: 'Permanent' }, { ms: DAY_MS, label: '1 day' }, { ms: 3 * DAY_MS, label: '3 days' },
+  { ms: 7 * DAY_MS, label: '7 days' }, { ms: 30 * DAY_MS, label: '30 days' }, { ms: 90 * DAY_MS, label: '90 days' }] as const;
+
+export interface ModContext { eventId?: string | null; matchId?: ModActionRequestDto['matchId']; evidenceIds?: string[] }
 
 export function ModActionDialog({ target, action, context, onClose, onDone }: {
   target: ModTarget | null; action: ModAction | null; context?: ModContext; onClose(): void; onDone?(result: ModActionResultDto): void;
@@ -41,14 +45,17 @@ export function ModActionDialog({ target, action, context, onClose, onDone }: {
   const mutation = useModAction();
   const [durationMs, setDurationMs] = useState<number>(HOUR);
   const [deleteSeconds, setDeleteSeconds] = useState<number>(0);
+  /** Ban length: 0 = permanent, otherwise a tempban lifted by the bot (catch-up on restart). */
+  const [banMs, setBanMs] = useState<number>(0);
   const open = !!target && !!action;
-  useEffect(() => { if (open) { mutation.reset(); setDurationMs(HOUR); setDeleteSeconds(0); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (open) { mutation.reset(); setDurationMs(HOUR); setDeleteSeconds(0); setBanMs(0); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!target || !action) return <ConfirmDialog open={false} onCancel={onClose} onConfirm={() => {}} title="" />;
   const confirm = (reason: string) => {
-    const base = { userId: target.id, reason, ...(context?.eventId ? { eventId: context.eventId } : {}), ...(context?.matchId ? { matchId: context.matchId } : {}) };
+    const base = { userId: target.id, reason, ...(context?.eventId ? { eventId: context.eventId } : {}), ...(context?.matchId ? { matchId: context.matchId } : {}),
+      ...(context?.evidenceIds?.length ? { evidenceIds: context.evidenceIds } : {}) };
     const body: ModActionRequestDto = action === 'timeout' ? { ...base, action, durationMs }
-      : action === 'ban' ? { ...base, action, deleteMessageSeconds: deleteSeconds, durationMs: null } : { ...base, action };
+      : action === 'ban' ? { ...base, action, deleteMessageSeconds: deleteSeconds, durationMs: banMs || null } : { ...base, action };
     mutation.mutate(body, { onSuccess: result => { onDone?.(result); onClose(); } });
   };
   return <ConfirmDialog open={open} onCancel={onClose} onConfirm={confirm} requireReason pending={mutation.isPending}
@@ -58,6 +65,11 @@ export function ModActionDialog({ target, action, context, onClose, onDone }: {
     {action === 'timeout' && <Field label="Length">
       <Select value={String(durationMs)} onChange={event => setDurationMs(Number(event.target.value))}>
         {TIMEOUT_PRESETS.map(preset => <option key={preset.ms} value={preset.ms}>{preset.label}</option>)}
+      </Select>
+    </Field>}
+    {action === 'ban' && <Field label="Ban length" description="A temporary ban is lifted by the bot when it ends (also after a restart).">
+      <Select value={String(banMs)} onChange={event => setBanMs(Number(event.target.value))}>
+        {BAN_LENGTHS.map(length => <option key={length.ms} value={length.ms}>{length.label}</option>)}
       </Select>
     </Field>}
     {action === 'ban' && <Field label="Delete their recent messages">

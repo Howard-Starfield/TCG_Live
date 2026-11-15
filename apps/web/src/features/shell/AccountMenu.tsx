@@ -1,4 +1,4 @@
-import { FlaskConical, Images, Laptop, Link2, LogOut, Moon, ShieldAlert, ShieldCheck, Sun } from 'lucide-react';
+import { BookOpen, FlaskConical, Images, Laptop, Link2, LogOut, Moon, ShieldAlert, ShieldCheck, Sun } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useAdminData, useSession } from '../../data';
 import { ConfirmDialog, Menu, useToast, type MenuEntry, type Placement, type TriggerProps } from '../../ui';
@@ -75,6 +75,8 @@ export function AccountMenu({ trigger, placement = 'bottom-end' }: AccountMenuPr
       onSelect: () => { void launchDemo(); } },
       ...[5, 8, 9, 100].map(size => ({ id: `demo-${size}`, label: `Demo · ${size} players`, icon: <FlaskConical />,
         onSelect: () => { void launchDemo(size); } }))] : []),
+    { id: 'capabilities', label: 'Capabilities & shortcuts', textValue: 'Capabilities and shortcuts', icon: <BookOpen />,
+      shortcut: ['?'], onSelect: () => shell.showCapabilities() },
     { id: 'rotate', label: 'Rotate console link…', textValue: 'Rotate console link', icon: <Link2 />, onSelect: () => setConfirming(true) },
     { type: 'separator', id: 'sep-2' },
     { id: 'sign-out', label: 'Sign out', icon: <LogOut />, onSelect: () => { void session.logout(); } }

@@ -33,8 +33,15 @@ export async function addEvidenceLink(api: ApiClient, eventId: string, matchId: 
   return body.item;
 }
 
+/**
+ * Uploads one file in a single request. `duplicate` is true when the server already had the same file
+ * for this match and returned that item instead of storing a second copy.
+ *
+ * Follow-up: a resumable protocol (reserve an upload ID, PUT chunks at an offset, verify the SHA-256 at
+ * the end) would let a dropped 2 GB upload continue; today a failed upload starts again from the start.
+ */
 export async function uploadEvidence(api: ApiClient, eventId: string, matchId: MatchId, file: File, note: string,
-  options: { onProgress?: (loaded: number, total: number) => void; signal?: AbortSignal } = {}): Promise<EvidenceItemDto> {
+  options: { onProgress?: (loaded: number, total: number) => void; signal?: AbortSignal } = {}): Promise<{ item: EvidenceItemDto; duplicate: boolean }> {
   const contentType = evidenceMime(file);
   if (!contentType) throw new Error(UNSUPPORTED_FILE);
   const search = note ? `?note=${encodeURIComponent(note)}` : '';
@@ -44,7 +51,34 @@ export async function uploadEvidence(api: ApiClient, eventId: string, matchId: M
     ...(options.signal ? { signal: options.signal } : {})
   });
   const body = await response.json() as CreateEvidenceResponseDto;
-  return body.item;
+  return { item: body.item, duplicate: body.duplicate === true };
+}
+
+/** A readable reason an upload failed, for each way it can fail. */
+export function describeUploadError(error: unknown): string {
+  if (error instanceof ApiError) {
+    switch (error.status) {
+      case 0: return 'The connection dropped during the upload: a network problem, or the server stopped waiting after a minute '
+        + 'without data. Check the connection and upload again.';
+      case 408: case 504: return 'The upload timed out. Check the connection and upload again.';
+      case 413: return error.message || `The file is too large. Files can be up to ${formatBytes(EVIDENCE_ADMIN_MAX_BYTES)}.`;
+      case 415: return error.message || UNSUPPORTED_FILE;
+      case 507: return error.message || 'The server has no room for this file. Delete old evidence or free disk space first.';
+      default: return describeError(error, 'The upload failed.');
+    }
+  }
+  return describeError(error, 'The upload failed.');
+}
+
+/** Speed (bytes per second, over the recent samples) and time left, once enough has been sent to tell. */
+export function uploadRate(samples: readonly { atMs: number; loaded: number }[], total: number): { bytesPerSecond: number; etaMs: number | null } | null {
+  if (samples.length < 2) return null;
+  const first = samples[0]!;
+  const last = samples[samples.length - 1]!;
+  const elapsed = last.atMs - first.atMs;
+  if (elapsed < 500 || last.loaded <= first.loaded) return null;
+  const bytesPerSecond = ((last.loaded - first.loaded) / elapsed) * 1000;
+  return { bytesPerSecond, etaMs: total > 0 ? Math.max(0, ((total - last.loaded) / bytesPerSecond) * 1000) : null };
 }
 
 export async function setEvidenceHold(api: ApiClient, id: string, hold: boolean): Promise<EvidenceItemDto> {

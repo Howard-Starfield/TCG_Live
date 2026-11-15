@@ -12,6 +12,10 @@ import { MembersTab } from './members/MembersTab';
 import { LogsTab } from './logs/LogsTab';
 import { RolesTab } from './roles/RolesTab';
 import { AnnouncementsTab } from './announcements/AnnouncementsTab';
+import { LfgTab } from './lfg/LfgTab';
+import { Gamepad2 } from 'lucide-react';
+import { AudioLines } from 'lucide-react';
+import { BotsTab } from './bots/BotsTab';
 
 export interface AdminToolsTab {
   /** Stable, URL-safe ID (also the tab panel ID). */
@@ -43,6 +47,10 @@ export const adminToolsTabs: readonly AdminToolsTab[] = [
     Component: RolesTab },
   { id: 'announcements', label: 'Announcements', icon: Megaphone, capability: 'server.manage',
     Component: AnnouncementsTab },
+  // LFG (looking for a game)
+  { id: 'lfg', label: 'LFG', icon: Gamepad2, capability: 'members.read', Component: LfgTab },
+  // Voice bots (helper bots, room policies)
+  { id: 'bots', label: 'Bots', icon: AudioLines, capability: 'moderation.manage', Component: BotsTab },
   // (D) logs
   { id: 'logs', label: 'Logs', icon: Wrench, capability: 'members.read',
     Component: LogsTab },

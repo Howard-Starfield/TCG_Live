@@ -9,6 +9,7 @@ import { useAdminData } from '../../data';
 import { Badge, Button, ConfirmDialog, Field, Input, StatusDot } from '../../ui';
 import { describeError, isNotAvailable } from '../evidence/api';
 import { addVoiceBot, getVoiceBots, removeVoiceBot } from './api';
+import { useLocalSettingsAvailable } from '../setup/localSettings';
 
 const STATUS_TEXT: Record<VoiceBotRuntimeStatus, string> = {
   idle: 'Idle', 'logging-in': 'Logging in', ready: 'Ready', connecting: 'Connecting', connected: 'Connected',
@@ -20,8 +21,10 @@ const STATUS_TONE: Partial<Record<VoiceBotRuntimeStatus, 'success' | 'warning' |
 };
 const ROOM_TEXT: Record<VoiceRoomStatus, string> = { monitored: 'monitored', recording: 'recording', unmonitored: 'not monitored' };
 
-/** Shown when the pool reports runtime 'disabled' (the server runs voice only with TCG_DISCORD_VOICE=1). */
-export const VOICE_DISABLED_TEXT = 'Voice features are turned off (set TCG_DISCORD_VOICE=1 and restart the bot). Bots show as not connected.';
+/** Shown when the pool reports runtime 'disabled' (voice is off in Dashboard options, or TCG_DISCORD_VOICE is not 1 on a manual run). */
+export const VOICE_DISABLED_TEXT = 'Voice features are turned off. Turn on Voice monitoring in Dashboard options, then restart TCG Live. Bots show as not connected.';
+/** Manual runs (no guided setup profile) can only turn voice on through .env. */
+export const VOICE_DISABLED_ENV_TEXT = 'Voice features are turned off. Set TCG_DISCORD_VOICE=1 in .env and restart the bot. Bots show as not connected.';
 
 function BotRow({ bot, onRemove }: { bot: VoiceBotStatusDto; onRemove(): void }) {
   const room = bot.assignedMatchId ? `${bot.assignedMatchId}${bot.assignedChannelId ? ` · #${bot.assignedChannelId}` : ''}`
@@ -40,7 +43,9 @@ function BotRow({ bot, onRemove }: { bot: VoiceBotStatusDto; onRemove(): void })
   </li>;
 }
 
-export function VoiceBots({ disabled }: { disabled: boolean }) {
+/** `onOpenBots` closes the surrounding dialog and shows Admin tools > Bots (absent without admin tools). */
+export function VoiceBots({ disabled, onOpenBots }: { disabled: boolean; onOpenBots?: () => void }) {
+  const voiceSwitch = useLocalSettingsAvailable();
   const { api } = useAdminData();
   const [pool, setPool] = useState<VoiceBotPoolDto | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -72,7 +77,7 @@ export function VoiceBots({ disabled }: { disabled: boolean }) {
     try {
       setPool(await addVoiceBot(api, body));
       setLabel('');
-      setMessage('Helper bot added. Invite it to the server with the Connect and Speak permissions.');
+      setMessage('Helper bot added. Invite it with View Channel and Connect only (it never speaks); open Admin tools › Bots for its invite link and Verify.');
     } catch (cause) {
       setError(describeError(cause, 'The bot could not be added.'));
     } finally { setBusy(false); }
@@ -87,11 +92,13 @@ export function VoiceBots({ disabled }: { disabled: boolean }) {
   const unmonitored = pool?.rooms.filter(room => room.botId === null) ?? [];
   return <div className="flex flex-col gap-4">
     <p className="text-xs text-fg-muted">A bot can be in one voice room at a time. The main bot covers one match room; each helper bot covers one more at the same time. Rooms without a free bot are not monitored or recorded.</p>
+    {onOpenBots && <p className="text-xs text-fg-muted">Guided helper setup, Verify, invite links, nicknames and per-room settings are in{' '}
+      <button type="button" className="text-accent underline" onClick={onOpenBots}>Admin tools › Bots</button>.</p>}
     {loadError ? <p role="alert" className="text-xs text-danger">{isNotAvailable(loadError)
       ? 'Voice bots are not available in this version yet.' : describeError(loadError, 'Voice bots could not be loaded.')}</p> : null}
     {!pool && !loadError && <p role="status" className="text-xs text-fg-muted">Loading voice bots…</p>}
     {pool && <>
-      {pool.runtime === 'disabled' && <p className="rounded-md bg-sunken p-2 text-xs text-fg-muted">{VOICE_DISABLED_TEXT}</p>}
+      {pool.runtime === 'disabled' && <p className="rounded-md bg-sunken p-2 text-xs text-fg-muted">{voiceSwitch ? VOICE_DISABLED_TEXT : VOICE_DISABLED_ENV_TEXT}</p>}
       <ul aria-label="Voice bots" className="flex flex-col gap-1.5">
         {pool.bots.map(bot => <BotRow key={bot.id} bot={bot} onRemove={() => setRemoving(bot)} />)}
       </ul>

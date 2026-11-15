@@ -4,6 +4,7 @@ import { formatElapsed, formatTimeOfDay, useServerNow } from '../../data';
 import { Badge, Button, CountBadge, DecisionCard, type DecisionReason } from '../../ui';
 import { MatchActions } from '../commands';
 import { EvidenceButton } from '../evidence';
+import { ModerateMembersMenu } from '../admin-tools/members/ModerateMembersMenu';
 import { seatName } from '../shell/labels';
 
 const REASON: Record<JudgeReason, DecisionReason> = {
@@ -106,6 +107,8 @@ function JudgeCard({ snapshot, match, now, readOnly, onOpen }: {
           <Button size="sm" variant="secondary" icon={<Workflow aria-hidden />} onClick={onOpen}
             aria-label={`Open ${match.id} in live preview`}>Open in live preview</Button>
           <EvidenceButton snapshot={snapshot} matchId={match.id} />
+          {!readOnly && <ModerateMembersMenu variant="button" eventId={snapshot.eventId} matchId={match.id} label={`Moderate a player of ${match.id}`}
+            members={match.seats.map(seat => ({ id: snapshot.seats[seat] ?? null, name: seatName(snapshot, seat) }))} />}
         </>
       )}>
       {requests.size > 0 && <ul aria-label="Player messages" className="mt-2 space-y-2">

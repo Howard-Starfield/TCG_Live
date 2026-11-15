@@ -40,3 +40,27 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * App-wide scrollbars: a thin 4px thumb with no track, arrow buttons or corner box.
+ * Chromium/Edge ignore ::-webkit-scrollbar once the standard scrollbar-width/scrollbar-color
+ * properties are set, so the standard properties are only used where ::-webkit-scrollbar is
+ * unsupported (Firefox). Component styles (e.g. the collapsed sidebar rail in shell.css) override these.
+ */
+@supports selector(::-webkit-scrollbar) {
+  ::-webkit-scrollbar { width: 4px; height: 4px; background: transparent; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--color-fg-subtle) 55%, transparent);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--color-fg-subtle); }
+}
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-fg-subtle) transparent;
+  }
+}

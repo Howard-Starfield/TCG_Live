@@ -69,6 +69,7 @@ export function sanitizeCommand(raw: unknown): CommandDto {
   if (source.type === 'delayStart' && isInt(source.delayMinutes)) command.delayMinutes = source.delayMinutes;
   if (isMatchId(source.matchId)) command.matchId = source.matchId;
   if (isSeat(source.winner)) command.winner = source.winner;
+  if (source.type === 'checkinFor' && isSeat(source.seat)) command.seat = source.seat;
   if (typeof source.reason === 'string') command.reason = source.reason.slice(0, 500);
   if (typeof source.memberId === 'string' && SNOWFLAKE.test(source.memberId)) command.memberId = source.memberId;
   if (isInt(source.revision)) command.revision = source.revision;

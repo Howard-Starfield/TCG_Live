@@ -217,11 +217,11 @@ test('slash admin commands keep their replies through the shared commit path', a
 
   const wrongWinner = slash('resolve', { id: ids[2]!, matchId: 'M1', winner: 'C', reason: 'x' });
   await f.controller.handle(wrongWinner.interaction);
-  assert.deepEqual(wrongWinner.replies, ['Winner is not in the selected match.']);
+  assert.deepEqual(wrongWinner.replies, ['Winner is not in the selected match (A vs B).']);
 
   const notAdmin = slash('publish', { id: ids[3]!, userId: config.players.A });
   await f.controller.handle(notAdmin.interaction);
-  assert.deepEqual(notAdmin.replies, ['Private test admin action denied.']);
+  assert.match(notAdmin.replies[0]!, /Only the organizer or tournament staff/);
 
   f.failEdit = new Error('retry');
   const resolve = slash('resolve', { id: ids[4]!, matchId: 'M1', winner: 'A', reason: 'Ruling' });

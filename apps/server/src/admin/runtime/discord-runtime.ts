@@ -56,6 +56,8 @@ export interface DiscordAdminRuntimeOptions {
   /** Process runner; decides running versus interrupted clocks. */
   runnerId: string;
   commandsEnabled: boolean;
+  /** Guided start: read on every check instead of commandsEnabled (the "Allow dashboard actions" switch). */
+  commandsLive?: () => boolean;
   publicMatchRooms: boolean;
   lease?: { isLost(): boolean };
   store?: AdminStore;
@@ -184,7 +186,7 @@ export class DiscordAdminRuntime implements AdminRuntime {
       gateway: this.closed ? 'offline' : this.gatewayState,
       database: this.database, lease, cards,
       rooms: { enabled: this.options.publicMatchRooms, warning: this.roomWarning },
-      commandsEnabled: this.options.commandsEnabled,
+      commandsEnabled: this.options.commandsLive?.() ?? this.options.commandsEnabled,
       ...(this.permissionSource ? { permissions: this.permissionSummary() } : {})
     };
   }
@@ -292,7 +294,7 @@ export class DiscordAdminRuntime implements AdminRuntime {
 
   private commandController(): AdminController {
     // Defence in depth: the route refuses first, but the runtime never applies a command while they are off.
-    if (!this.options.commandsEnabled) throw new AdminForbiddenError('Admin commands are disabled.');
+    if (!(this.options.commandsLive?.() ?? this.options.commandsEnabled)) throw new AdminForbiddenError('Admin commands are disabled.');
     if (this.closed) throw new AdminUnavailableError('The admin console is shutting down.');
     let lost = false;
     try { lost = !!this.options.lease?.isLost(); } catch { lost = true; }

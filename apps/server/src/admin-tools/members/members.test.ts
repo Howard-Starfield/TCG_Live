@@ -50,7 +50,7 @@ test('reading needs members.read and acting needs members.moderate', async () =>
   } finally { await reader.harness.stop(); }
 });
 
-test('action validation: reason required, timeout limits, Discord IDs, no tempbans, no unknown fields', async () => {
+test('action validation: reason required, timeout limits, Discord IDs, tempban limits, no unknown fields', async () => {
   const s = await setup();
   try {
     const bad = async (body: unknown, pattern: RegExp) => {
@@ -67,7 +67,8 @@ test('action validation: reason required, timeout limits, Discord IDs, no tempba
     await bad({ action: 'timeout', userId: ASH, reason: 'spam', durationMs: 28 * DAY + 1 }, /28 days/);
     await bad({ action: 'timeout', userId: ASH, reason: 'spam' }, /missing/);
     await bad({ action: 'ban', userId: ASH, reason: 'spam', deleteMessageSeconds: 604_801, durationMs: null }, /Delete messages/);
-    await bad({ action: 'ban', userId: ASH, reason: 'spam', deleteMessageSeconds: 0, durationMs: DAY }, /Temporary bans/);
+    await bad({ action: 'ban', userId: ASH, reason: 'spam', deleteMessageSeconds: 0, durationMs: 1_000 }, /temporary ban/);
+    await bad({ action: 'ban', userId: ASH, reason: 'spam', deleteMessageSeconds: 0, durationMs: 366 * DAY }, /temporary ban/);
     await bad({ action: 'kick', userId: ASH, reason: 'spam', durationMs: 1 }, /unknown fields/);
     await bad({ action: 'warn', userId: ASH, reason: 'spam', evidenceIds: ['nope'] }, /valid IDs/);
     await bad({ action: 'warn', userId: ASH, reason: 'spam', matchId: 'M1' }, /tournament/);

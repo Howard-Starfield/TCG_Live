@@ -1,11 +1,11 @@
 // Moderation flags (tcg_moderation_flags): AutoMod keyword hits and voice loudness spikes. Each append
 // also writes its ops-audit row (automod.executed or voice.spike) in the same transaction.
-import { KEYWORD_ACTIONS, MODERATION_FLAG_PAGE_LIMIT, type KeywordFlagDetailDto, type ModerationFlagDto,
-  type ModerationFlagPageDto, type VolumeFlagDetailDto } from '@tcg-live/core';
+import { KEYWORD_ACTIONS, MODERATION_FLAG_PAGE_LIMIT, MODERATION_FLAG_REVIEW_STATES, type KeywordFlagDetailDto, type ModerationFlagDto,
+  type ModerationFlagPageDto, type ModerationFlagReviewState, type VolumeFlagDetailDto } from '@tcg-live/core';
 import { transaction, withClient } from '../rehearsal/store.js';
-import { requireEvidenceSchema } from '../evidence/schema.js';
+import { EvidenceSchemaUnavailableError, requireEvidenceSchema } from '../evidence/schema.js';
 import { insertOpsAudit, type OpsActor, type OpsAuditStore } from '../ops/audit.js';
-import { OpsInputError } from '../ops/errors.js';
+import { OpsInputError, OpsNotFoundError } from '../ops/errors.js';
 import { readableText, SNOWFLAKE, UUID } from '../ops/http.js';
 
 interface FlagInputBase {
@@ -24,6 +24,24 @@ export interface FlagPageQuery { after?: number; limit?: number; eventId?: strin
 export interface ModerationFlagStore {
   append(input: ModerationFlagInput): Promise<ModerationFlagDto>;
   list(guildId: string, query?: FlagPageQuery): Promise<ModerationFlagPageDto>;
+  /**
+   * Sets (or with null clears) the admin's triage of one flag and audits moderation.flag.reviewed in the same
+   * transaction. Optional so hand-built stores keep compiling; the route answers 501 without it.
+   */
+  review?(guildId: string, id: number, state: ModerationFlagReviewState | null, actor: OpsActor): Promise<ModerationFlagDto>;
+}
+
+/** Validates the `state` of a PATCH /moderation/flags/:id body. */
+export function parseReviewState(value: unknown): ModerationFlagReviewState | null {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !(MODERATION_FLAG_REVIEW_STATES as readonly string[]).includes(value))
+    throw new OpsInputError('state must be acknowledged, dismissed or null.');
+  return value as ModerationFlagReviewState;
+}
+const flagNotFound = () => new OpsNotFoundError('That flag does not exist.');
+function reviewAudit(flag: ModerationFlagDto, state: ModerationFlagReviewState | null, actor: OpsActor) {
+  return { kind: 'moderation.flag.reviewed' as const, actor, guildId: flag.guildId, eventId: flag.eventId,
+    payload: { flagId: flag.id, flagKind: flag.kind, state, matchId: flag.matchId, userId: flag.userId } };
 }
 
 /** Flags come from Discord or the voice runtime; the bot (or system) is the audit actor. */
@@ -97,12 +115,18 @@ function auditFor(flag: NormalizedFlag, id: number) {
 }
 
 interface FlagRow { id: string; kind: 'keyword' | 'volume'; guild_id: string; channel_id: string | null; event_id: string | null;
-  match_id: string | null; user_id: string | null; detail: never; occurred_at_ms: string }
+  match_id: string | null; user_id: string | null; detail: never; occurred_at_ms: string;
+  review_state?: string | null; reviewed_at_ms?: string | number | null; reviewed_by?: string | null }
 function flag(row: FlagRow): ModerationFlagDto {
+  const state = (MODERATION_FLAG_REVIEW_STATES as readonly string[]).includes(row.review_state ?? '') ? row.review_state as ModerationFlagReviewState : null;
+  const review = state && row.reviewed_at_ms != null && row.reviewed_by ? { state, atMs: Number(row.reviewed_at_ms), by: row.reviewed_by } : null;
   return { id: Number(row.id), kind: row.kind, guildId: row.guild_id, channelId: row.channel_id, eventId: row.event_id,
-    matchId: row.match_id as ModerationFlagDto['matchId'], userId: row.user_id, detail: row.detail, occurredAtMs: Number(row.occurred_at_ms) };
+    matchId: row.match_id as ModerationFlagDto['matchId'], userId: row.user_id, detail: row.detail, occurredAtMs: Number(row.occurred_at_ms), review };
 }
 const COLUMNS = 'id, kind, guild_id, channel_id, event_id::text AS event_id, match_id, user_id, detail, occurred_at_ms';
+// Review columns are read through to_jsonb, so a database that has not re-run the evidence setup yet still lists flags.
+const READ_COLUMNS = `f.id, f.kind, f.guild_id, f.channel_id, f.event_id::text AS event_id, f.match_id, f.user_id, f.detail, f.occurred_at_ms,
+  to_jsonb(f) ->> 'review_state' AS review_state, to_jsonb(f) ->> 'reviewed_at_ms' AS reviewed_at_ms, to_jsonb(f) ->> 'reviewed_by' AS reviewed_by`;
 
 export function pgModerationFlagStore(now: () => number = Date.now): ModerationFlagStore {
   return {
@@ -127,11 +151,35 @@ export function pgModerationFlagStore(now: () => number = Date.now): ModerationF
       return withClient(async client => {
         await requireEvidenceSchema(client);
         const result = await client.query<FlagRow>(
-          `SELECT ${COLUMNS} FROM public.tcg_moderation_flags WHERE guild_id = $1 AND id > $2
-             AND ($4::uuid IS NULL OR event_id = $4::uuid) AND ($5::text IS NULL OR match_id = $5::text) ORDER BY id LIMIT $3`,
+          `SELECT ${READ_COLUMNS} FROM public.tcg_moderation_flags f WHERE f.guild_id = $1 AND f.id > $2
+             AND ($4::uuid IS NULL OR f.event_id = $4::uuid) AND ($5::text IS NULL OR f.match_id = $5::text) ORDER BY f.id LIMIT $3`,
           [guildId, page.after, page.limit, page.eventId, page.matchId]);
         const flags = result.rows.map(flag);
         return { flags, nextAfter: flags.at(-1)?.id ?? page.after };
+      });
+    },
+    async review(guildId, id, state, actor) {
+      if (!SNOWFLAKE.test(guildId)) fail('The Discord server is not configured.');
+      if (!Number.isSafeInteger(id) || id < 1) throw flagNotFound();
+      return withClient(async client => {
+        await requireEvidenceSchema(client);
+        const columns = await client.query<{ n: string }>(
+          `SELECT count(*)::text AS n FROM information_schema.columns WHERE table_schema = 'public'
+             AND table_name = 'tcg_moderation_flags' AND column_name = 'review_state'`);
+        if (columns.rows[0]?.n !== '1') throw new EvidenceSchemaUnavailableError(
+          'Flag review needs the updated moderation storage. Restart with the launcher or run npm run db:evidence-setup -w @tcg-live/server.');
+        return transaction(client, async () => {
+          const at = now();
+          const result = await client.query<FlagRow>(
+            `UPDATE public.tcg_moderation_flags f SET review_state = $3, reviewed_at_ms = CASE WHEN $3::text IS NULL THEN NULL ELSE $4::bigint END,
+               reviewed_by = CASE WHEN $3::text IS NULL THEN NULL ELSE $5::text END
+             WHERE f.guild_id = $1 AND f.id = $2 RETURNING ${READ_COLUMNS}`, [guildId, id, state, at, actor.id]);
+          const row = result.rows[0];
+          if (!row) throw flagNotFound();
+          const saved = flag(row);
+          await insertOpsAudit(client, reviewAudit(saved, state, actor), now);
+          return saved;
+        });
       });
     }
   };
@@ -155,5 +203,15 @@ export class MemoryModerationFlagStore implements ModerationFlagStore {
       (page.eventId === null || item.eventId === page.eventId) && (page.matchId === null || item.matchId === page.matchId))
       .slice(0, page.limit).map(item => structuredClone(item));
     return { flags, nextAfter: flags.at(-1)?.id ?? page.after };
+  }
+  async review(guildId: string, id: number, state: ModerationFlagReviewState | null, actor: OpsActor): Promise<ModerationFlagDto> {
+    if (!SNOWFLAKE.test(guildId)) fail('The Discord server is not configured.');
+    const item = this.flags.find(flag => flag.id === id && flag.guildId === guildId);
+    if (!item) throw flagNotFound();
+    const previous = item.review;
+    item.review = state === null ? null : { state, atMs: this.now(), by: actor.id };
+    try { await this.audit.append(reviewAudit(item, state, actor)); }
+    catch (error) { item.review = previous; throw error; }
+    return structuredClone(item);
   }
 }

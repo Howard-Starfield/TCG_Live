@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { LocalSettings } from '../onboarding/settings.js';
 
 export type AdminMode = 'discord' | 'demo';
 /** Demo only: autoplay advances on its own; interactive pauses wherever an admin decision is required. */
@@ -8,8 +9,14 @@ export type DemoPlayMode = 'autoplay' | 'interactive';
 export interface AdminConfig {
   /** Serve the console. Always true in demo mode; TCG_ADMIN_CONSOLE=1 in Discord mode. */
   console: boolean;
-  /** Wave 3: browser-issued admin commands. Always true in demo mode; TCG_ADMIN_COMMANDS=1 in Discord mode. */
-  commandsEnabled: boolean;
+  /**
+   * Wave 3: browser-issued admin commands. Always true in demo mode; TCG_ADMIN_COMMANDS=1 in Discord mode.
+   * Under the guided start (localSettings set) this is a live getter: TCG_ADMIN_COMMANDS=1 or the
+   * "Allow dashboard actions" switch, read again on every access.
+   */
+  readonly commandsEnabled: boolean;
+  /** Guided start only (npm start): the saved local switches. Absent for direct commands and the demo. */
+  localSettings?: LocalSettings;
   /** Demo only: an extra allowed Origin for the Vite dev server. */
   devOrigin: string | null;
   /** Demo only: a fixed launch token for E2E tests. */
@@ -42,7 +49,29 @@ function devOrigin(raw: string): string {
   return url.origin;
 }
 
+let guidedSettings: LocalSettings | null = null;
+
+/**
+ * Guided start (onboarding/entry.ts) registers its local switches before the Discord runtime reads its
+ * configuration; null unregisters. Direct commands never register, so there the .env flags alone decide.
+ */
+export function useGuidedSettings(settings: LocalSettings | null): void {
+  guidedSettings = settings;
+}
+
 export function readAdminConfig(mode: AdminMode, env: NodeJS.ProcessEnv = process.env): AdminConfig {
+  const config = readStaticAdminConfig(mode, env);
+  const local = mode === 'discord' ? guidedSettings : null;
+  if (!local) return config;
+  // A `1` in .env forces actions on; otherwise the switch decides, on every read (no restart, no new sign-in).
+  const forced = config.commandsEnabled;
+  return Object.defineProperties({ ...config, localSettings: local }, {
+    commandsEnabled: { enumerable: true, get: () => forced || local.dashboardActionsEnabled() },
+    localSettings: { enumerable: false, value: local }
+  });
+}
+
+function readStaticAdminConfig(mode: AdminMode, env: NodeJS.ProcessEnv): AdminConfig {
   const rawToken = env.TCG_ADMIN_LOGIN_TOKEN?.trim() || null;
   const rawOrigin = env.TCG_ADMIN_DEV_ORIGIN?.trim() || null;
   if (mode === 'discord' && rawToken) throw new Error(`${ERROR} TCG_ADMIN_LOGIN_TOKEN is demo-only; unset it to run the Discord runtime.`);

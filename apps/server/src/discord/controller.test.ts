@@ -489,7 +489,8 @@ test('paused match highlights the waiting player; final card shows winner withou
   assert.match(finished.embeds[0]!.description, /Finished — A wins/);
   assert.match(finished.embeds[0]!.description, new RegExp(`Agreed by <@${config.players.B}>`));
   assert.doesNotMatch(finished.embeds[0]!.description, /Remaining|Proposal/);
-  assert.equal(finished.components.length, 0);
+  // Only the evidence button remains on a final card (open for 24 h after the result).
+  assert.deepEqual(finished.components.flatMap(row => row.components.map(button => button.label)), ['Submit evidence']);
   assert.equal(renderCard(base, 'M1').embeds[0]?.color, 0xf59e0b);
   const legacy = renderCard({ ...paused, matches: [{ ...paused.matches[0]!, phase: 'final', finalWinner: 'A' },
     paused.matches[1]!] }, 'M1', undefined, config.players);
@@ -600,7 +601,7 @@ test('the canonical voice-chat sticky handles a player report and only the oppon
     assert.equal(state.matches[0]!.judgeAttention, false);
     assert.equal(finished?.embeds[0]?.color, 0x22c55e);
     assert.match(finished?.embeds[0]?.description ?? '', /A wins/);
-    assert.deepEqual(finished?.components, []);
+    assert.deepEqual(finished?.components.flatMap(row => row.components.map(button => button.label)), ['Submit evidence']);
   } finally { await controller.stop(); }
 });
 

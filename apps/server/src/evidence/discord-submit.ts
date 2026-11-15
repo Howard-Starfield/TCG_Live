@@ -6,6 +6,7 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { MessageFlags, type Interaction } from 'discord.js';
 import { EVIDENCE_PLAYER_MAX_BYTES, type MatchId } from '@tcg-live/core';
 import type { DiscordFeature, DiscordFeatureContext } from '../discord/features.js';
+import { isTournamentStaff, memberRoleIds } from '../discord/staff.js';
 import type { OpsActor } from '../ops/audit.js';
 import { OpsConflictError, OpsInputError, OpsNotFoundError } from '../ops/errors.js';
 import { EvidenceFileError, EvidenceFiles, formatBytes, sharedEvidenceFiles } from './files.js';
@@ -17,21 +18,38 @@ const MATCH = /^M[1-9]\d{0,3}$/;
 const ATTACHMENT_HOSTS = new Set(['cdn.discordapp.com', 'media.discordapp.net']);
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const MAX_PARALLEL_DOWNLOADS = 3;
+/** Redirects are followed by hand, and only to ATTACHMENT_HOSTS over https. */
+const MAX_REDIRECTS = 3;
+/** Extra attempts after a 5xx or network failure, before any byte is stored. */
+export const ATTACHMENT_RETRIES = 2;
+const RETRY_BASE_MS = 1_000;
+
+const allowedAttachmentUrl = (raw: string): URL | null => {
+  let url: URL;
+  try { url = new URL(raw); } catch { return null; }
+  return url.protocol === 'https:' && ATTACHMENT_HOSTS.has(url.hostname) && !url.username && !url.password ? url : null;
+};
+class AttachmentRetryable extends Error {}
 
 export interface EvidenceAttachment { url: string; size: number; name: string; contentType: string | null }
 export interface EvidenceCommandInput {
   guildId: string | null;
   userId: string;
+  /** The member's role IDs (tournament staff roles may submit for any match). */
+  roleIds?: readonly string[];
   matchId: string | null;
   attachment: EvidenceAttachment | null;
   link: string | null;
   note: string | null;
 }
-export type EvidenceSubmitContext = Pick<DiscordFeatureContext, 'guildId' | 'adminId' | 'evidence' | 'matchRoom'>;
+export type EvidenceSubmitContext = Pick<DiscordFeatureContext, 'guildId' | 'adminId' | 'evidence' | 'matchRoom'> &
+  Partial<Pick<DiscordFeatureContext, 'adminToolsSettings'>>;
 export interface EvidenceSubmitOptions {
   files?: EvidenceFiles;
   fetch?: typeof fetch;
   maxBytes?: number;
+  /** Backoff wait between download attempts; defaults to setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** The reply text for one submission. Never throws. */
@@ -39,12 +57,14 @@ export class EvidenceSubmitter {
   private readonly files: EvidenceFiles;
   private readonly fetcher: typeof fetch;
   private readonly maxBytes: number;
+  private readonly sleep: (ms: number) => Promise<void>;
   private downloads = 0;
 
   constructor(private readonly ctx: EvidenceSubmitContext, options: EvidenceSubmitOptions = {}) {
     this.files = options.files ?? sharedEvidenceFiles();
     this.fetcher = options.fetch ?? fetch;
     this.maxBytes = options.maxBytes ?? EVIDENCE_PLAYER_MAX_BYTES;
+    this.sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   }
 
   async submit(input: EvidenceCommandInput): Promise<string> {
@@ -66,11 +86,12 @@ export class EvidenceSubmitter {
     const link = input.link ? parseEvidenceUrl(input.link.trim()) : null;
     const room = await this.ctx.matchRoom(matchId as MatchId);
     if (!room) return `${matchId} is not a match in the current round.`;
-    const organizer = input.userId === this.ctx.adminId;
-    if (!organizer && !room.playerIds.includes(input.userId))
-      return 'Only the two players in this match or the organizer can submit evidence for it.';
+    // The same rule as the match card's evidence button: seated players, the organizer, tournament staff roles.
+    const seated = room.playerIds.includes(input.userId);
+    const staff = !seated && await this.isStaff(input);
+    if (!seated && !staff) return 'Only the two players in this match or tournament staff can submit evidence for it.';
     if (input.attachment) this.checkAttachment(input.attachment);
-    const actor: OpsActor = { kind: organizer ? 'admin' : 'player', id: input.userId };
+    const actor: OpsActor = { kind: staff ? 'admin' : 'player', id: input.userId };
     const base = { eventId: room.eventId, matchId, source: 'discord' as const, submittedBy: input.userId, actor, note };
     const saved: string[] = [];
     if (link) {
@@ -79,18 +100,68 @@ export class EvidenceSubmitter {
     }
     if (input.attachment) {
       const item = await this.download(input.attachment, base);
-      saved.push(`file (${formatBytes(item.byteSize ?? 0)}${item.playable ? '' : ', download only'})`);
+      saved.push(item.duplicate ? 'file (already submitted for this match, not stored again)'
+        : `file (${formatBytes(item.byteSize ?? 0)}${item.playable ? '' : ', download only'})`);
     }
     return `Evidence saved for ${matchId}: ${saved.join(' and ')}. The organizer can review it in the dashboard.`;
+  }
+
+  private async isStaff(input: EvidenceCommandInput): Promise<boolean> {
+    if (input.userId === this.ctx.adminId) return true;
+    let staffRoleIds: readonly string[] = [];
+    try { staffRoleIds = (await this.ctx.adminToolsSettings?.())?.cases.staffRoleIds ?? []; } catch { /* Settings unavailable: organizer only. */ }
+    return isTournamentStaff({ userId: input.userId, adminId: this.ctx.adminId, roleIds: input.roleIds ?? [], staffRoleIds });
   }
 
   private checkAttachment(attachment: EvidenceAttachment): void {
     if (!Number.isSafeInteger(attachment.size) || attachment.size > this.maxBytes)
       throw new EvidenceFileError(413, `Files can be at most ${formatBytes(this.maxBytes)}. Upload longer clips somewhere and share a link.`);
-    let url: URL;
-    try { url = new URL(attachment.url); } catch { throw new EvidenceFileError(400, 'That attachment link is not valid.'); }
-    if (url.protocol !== 'https:' || !ATTACHMENT_HOSTS.has(url.hostname))
-      throw new EvidenceFileError(400, 'That attachment link is not valid.');
+    if (!allowedAttachmentUrl(attachment.url)) throw new EvidenceFileError(400, 'That attachment link is not valid.');
+  }
+
+  /**
+   * One GET with redirects followed by hand: each hop must stay on an allow-listed Discord CDN host over
+   * https (fetch's own redirect handling would follow anywhere).
+   */
+  private async fetchOnce(start: string, signal: AbortSignal): Promise<Response> {
+    let url = start;
+    for (let hop = 0; ; hop++) {
+      let response: Response;
+      try { response = await this.fetcher(url, { redirect: 'manual', signal }); }
+      catch (error) {
+        if (signal.aborted) throw new EvidenceFileError(400, 'Downloading the attachment from Discord took too long. Try again.');
+        throw new AttachmentRetryable(error instanceof Error ? error.message : 'network');
+      }
+      if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel().catch(() => {});
+        const location = response.headers.get('location');
+        const next = location ? (() => { try { return new URL(location, url).href; } catch { return null; } })() : null;
+        if (!next || !allowedAttachmentUrl(next) || hop >= MAX_REDIRECTS)
+          throw new EvidenceFileError(400, 'Discord redirected the attachment somewhere unexpected; it was not downloaded.');
+        url = next;
+        continue;
+      }
+      if (response.status >= 500) {
+        await response.body?.cancel().catch(() => {});
+        throw new AttachmentRetryable(`status ${response.status}`);
+      }
+      if (!response.ok || !response.body) {
+        await response.body?.cancel().catch(() => {});
+        throw new EvidenceFileError(400, 'Discord did not provide the attachment. Try again.');
+      }
+      return response;
+    }
+  }
+
+  /** fetchOnce with ATTACHMENT_RETRIES retries (1 s, 2 s) for 5xx answers and network failures. */
+  private async fetchAttachment(url: string, signal: AbortSignal): Promise<Response> {
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.fetchOnce(url, signal); } catch (error) {
+        if (!(error instanceof AttachmentRetryable)) throw error;
+        if (attempt >= ATTACHMENT_RETRIES) throw new EvidenceFileError(400, 'Discord did not provide the attachment. Try again.');
+        await this.sleep(RETRY_BASE_MS * 2 ** attempt);
+      }
+    }
   }
 
   private async download(attachment: EvidenceAttachment, base: { eventId: string; matchId: string; source: 'discord';
@@ -98,11 +169,10 @@ export class EvidenceSubmitter {
     if (this.downloads >= MAX_PARALLEL_DOWNLOADS) throw new EvidenceFileError(400, 'Other evidence is downloading. Try again in a minute.');
     this.downloads++;
     try {
-      const response = await this.fetcher(attachment.url, { redirect: 'error', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-      if (!response.ok || !response.body) throw new EvidenceFileError(400, 'Discord did not provide the attachment. Try again.');
+      const response = await this.fetchAttachment(attachment.url, AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS));
       const length = response.headers.get('content-length');
       const declared = length && /^\d{1,16}$/.test(length) ? Number(length) : attachment.size;
-      const source = Readable.fromWeb(response.body as unknown as WebReadableStream<Uint8Array>);
+      const source = Readable.fromWeb(response.body! as unknown as WebReadableStream<Uint8Array>);
       try {
         return await this.files.ingest({ source, maxBytes: this.maxBytes, declaredBytes: declared, store: this.ctx.evidence,
           evidence: { ...base, originalName: attachment.name } });
@@ -117,7 +187,7 @@ export function evidenceCommandInput(interaction: Interaction): EvidenceCommandI
       interaction.options.getSubcommand(false) !== EVIDENCE_SUBCOMMAND) return null;
   const file = interaction.options.getAttachment('file');
   return {
-    guildId: interaction.guildId, userId: interaction.user.id,
+    guildId: interaction.guildId, userId: interaction.user.id, roleIds: memberRoleIds(interaction.member),
     matchId: interaction.options.getString('match'),
     attachment: file ? { url: file.url, size: file.size, name: file.name, contentType: file.contentType } : null,
     link: interaction.options.getString('link'),

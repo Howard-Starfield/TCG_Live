@@ -1,25 +1,44 @@
 // Voice runtime core: decides which match rooms need a bot, assigns pool bots, joins, subscribes to the
 // seated players only, and feeds packets to the recorder and the loudness detector. Library-free: every
 // Discord or codec touch goes through transport.ts, so this runs against fakes in tests.
+//
+// Robustness: connection state changes are tracked; while a bot is not connected the recording gets an
+// audited gap (files stay aligned by silence fill). A lost connection rejoins at once and, within
+// REJOIN_WINDOW_MS, continues the SAME recording session; later, it is finalized and a new one starts.
+// A recording stopped for storage is retried with backoff. Players seated mid-recording get their own
+// track. Players who opted out are never subscribed, recorded or loudness-checked.
 import { createHash } from 'node:crypto';
-import { DEFAULT_MODERATION_SETTINGS, type MatchId, type ModerationSettingsBodyDto, type VoiceBotRuntimeStatus } from '@tcg-live/core';
+import { DEFAULT_MODERATION_SETTINGS, DEFAULT_VOICE_ROOM_POLICY, type MatchId, type ModerationSettingsBodyDto,
+  type VoiceBotRuntimeStatus, type VoiceRoomPolicyDto } from '@tcg-live/core';
 import type { MatchRoomInfo } from '../discord/features.js';
 import type { ModerationFlagInput } from '../moderation/flags.js';
 import type { OpsAuditInput } from '../ops/audit.js';
+import type { VoiceRuntimeControlTarget } from './control.js';
 import { VoicePoolIdentities } from './identities.js';
 import { FRAME_MS, LoudnessDetector, loudnessConfig, type LoudnessSpike } from './loudness.js';
 import { opusPacketSamples } from './ogg-writer.js';
-import { MAIN_VOICE_BOT_ID, planVoiceAssignments, roomStatus, type CoverageRoom, type VoicePoolLiveState } from './pool.js';
-import { shouldRecord, type RecordingTarget } from './recorder.js';
+import { MAIN_VOICE_BOT_ID, planVoiceAssignments, roomStatus, type CoverageRoom, type VoiceBotLiveState,
+  type VoicePoolLiveState } from './pool.js';
+import { monotonicNow, shouldRecord, type RecordingTarget } from './recorder.js';
 import type { VoiceBotCredential } from './tokens.js';
-import type { OpusDecoder, OpusDecoderFactory, VoiceBotTransport, VoiceChannelHandle, VoicePacketSubscription } from './transport.js';
+import type { OpusDecoder, OpusDecoderFactory, VoiceBotTransport, VoiceChannelHandle, VoiceConnectionPhase,
+  VoicePacketSubscription } from './transport.js';
 
 export const DEFAULT_MONITOR_NOTICE = '🔴 Audio monitoring/recording is active for this match.';
 const JOIN_RETRY_MS = 30_000;
 const ORGANIZER_NOTICE_INTERVAL_MS = 60_000;
 const SAFETY_RECONCILE_MS = 30_000;
-/** A recording that could not start (for example evidence storage full) is retried after this long. */
-const RECORDING_RETRY_MS = 5 * 60_000;
+/** Pending recordings left by a crash or a failed finalize are re-checked this often (not only at start). */
+export const RECOVERY_INTERVAL_MS = 10 * 60_000;
+/** A recording that could not start (for example evidence storage full) is retried after 30 s, doubling to 5 min. */
+export const RECORDING_RETRY_MIN_MS = 30_000;
+export const RECORDING_RETRY_MAX_MS = 5 * 60_000;
+/** A lost connection that rejoins within this long continues the same recording session. */
+export const REJOIN_WINDOW_MS = 2 * 60_000;
+/** Shutdown waits at most this long for recordings to finalize (the runtime's watchdog is 5 s). */
+export const SHUTDOWN_RECORDING_BUDGET_MS = 3_000;
+/** At shutdown, an in-flight tick is awaited this long at most before the recordings are stopped. */
+export const SHUTDOWN_TICK_WAIT_MS = 300;
 
 /** Room info plus optional live match detail from the runtime. */
 export type VoiceRoomInfo = MatchRoomInfo & { phase?: string; judgeCall?: boolean };
@@ -31,10 +50,18 @@ export interface RecordingHandle {
   write(userId: string, packet: Buffer, atMs: number): void;
   offsetMs(atMs: number): number;
   stop(reason?: string): Promise<void>;
+  /** Players with a track. */
+  players?(): string[];
+  /** Adds a track for a player seated after the start. */
+  addPlayer?(userId: string): Promise<unknown>;
+  /** Audits a capture gap. */
+  gap?(fromMs: number, toMs: number, reason: string): Promise<void>;
 }
 export interface RecorderLike {
   recover(): Promise<unknown>;
   start(target: RecordingTarget): Promise<RecordingHandle>;
+  /** Stops every recording in parallel within a budget (shutdown). */
+  stopAll?(reason?: string, budgetMs?: number): Promise<void>;
 }
 
 export interface VoiceMonitorDeps {
@@ -57,9 +84,12 @@ export interface VoiceMonitorDeps {
   /** Organizer notice; channelId null means the runtime's default destination. */
   notifyOrganizer(channelId: string | null, text: string): Promise<void>;
   identities?: VoicePoolIdentities;
+  /** Policy timers (retry benches, backoff). */
   now?: () => number;
+  /** Packet and gap timing; must share the recorder's clock. Defaults to `now` when given, else monotonicNow. */
+  clock?: () => number;
   log(message: string): void;
-  /** Disable the periodic safety reconcile (tests). */
+  /** Disable the periodic safety reconcile and recovery (tests). */
   timers?: boolean;
 }
 
@@ -70,10 +100,14 @@ interface Assignment {
   decoders: Map<string, OpusDecoder>;
   detector: LoudnessDetector;
   monitor: boolean;
+  judgeCall: boolean;
   recording: RecordingHandle | null;
   recordingStart: Promise<void> | null;
   /** A refused start (storage full) is retried no sooner than this. */
   recordingRetryAtMs: number;
+  recordingFailures: number;
+  /** Clock time the connection left Ready (null while connected). */
+  gapStartMs: number | null;
 }
 interface BotSlot {
   id: string;
@@ -83,19 +117,26 @@ interface BotSlot {
   assignment: Assignment | null;
   joining: boolean;
   failedAtMs: number | null;
+  lastErrorCode: VoiceBotLiveState['lastErrorCode'];
 }
+/** A recording whose bot lost its connection, kept for a quick rejoin. */
+interface Suspended { recording: RecordingHandle; channelId: string; lostAtMs: number; lostAtPolicyMs: number }
 
 const roomKey = (eventId: string, matchId: string) => `${eventId}:${matchId}`;
 
-export class VoiceMonitor {
+export class VoiceMonitor implements VoiceRuntimeControlTarget {
   private readonly bots = new Map<string, BotSlot>();
   private readonly judgeOpen = new Set<string>();
   private readonly resolved = new Set<string>();
   private readonly notices = new Set<string>();
   /** Rooms whose notice failed (audited once per activation); nothing is captured there until it posts. */
   private readonly noticeFailed = new Set<string>();
+  private readonly suspended = new Map<string, Suspended>();
+  /** Backoff of rooms whose recording could not start, kept across bot reassignments. */
+  private readonly roomRetry = new Map<string, { atMs: number; failures: number }>();
   private readonly identities: VoicePoolIdentities;
   private readonly now: () => number;
+  private readonly clock: () => number;
   private settingsCache: ModerationSettingsBodyDto = DEFAULT_MODERATION_SETTINGS;
   private coverage: CoverageRoom[] = [];
   private coverageEvents = new Map<MatchId, string>();
@@ -103,12 +144,16 @@ export class VoiceMonitor {
   private running: Promise<void> | null = null;
   private stopped = false;
   private timer: NodeJS.Timeout | null = null;
+  private recoveryTimer: NodeJS.Timeout | null = null;
   private lastOrganizerNoticeAtMs = -Infinity;
+  private lastDropNoticeAtMs = -Infinity;
 
   constructor(private readonly deps: VoiceMonitorDeps) {
     this.identities = deps.identities ?? new VoicePoolIdentities();
     this.now = deps.now ?? Date.now;
-    this.bots.set(MAIN_VOICE_BOT_ID, { id: MAIN_VOICE_BOT_ID, transport: deps.main, fingerprint: null, assignment: null, joining: false, failedAtMs: null });
+    this.clock = deps.clock ?? deps.now ?? monotonicNow;
+    this.bots.set(MAIN_VOICE_BOT_ID, { id: MAIN_VOICE_BOT_ID, transport: deps.main, fingerprint: null, assignment: null, joining: false,
+      failedAtMs: null, lastErrorCode: null });
   }
 
   async start(): Promise<void> {
@@ -117,6 +162,10 @@ export class VoiceMonitor {
     if (this.deps.timers !== false) {
       this.timer = setInterval(() => { void this.schedule(); }, SAFETY_RECONCILE_MS);
       this.timer.unref();
+      this.recoveryTimer = setInterval(() => {
+        void this.deps.recorder.recover().catch(() => this.deps.log('Pending voice recordings could not be checked.'));
+      }, RECOVERY_INTERVAL_MS);
+      this.recoveryTimer.unref();
     }
     await this.schedule();
   }
@@ -139,6 +188,19 @@ export class VoiceMonitor {
   settingsChanged(settings: ModerationSettingsBodyDto): Promise<void> { this.settingsCache = settings; return this.schedule(); }
   async helpersChanged(): Promise<void> { await this.reloadHelpers(); await this.schedule(); }
 
+  /** Dashboard Retry: clears the bot's failure state and backoff, then reconciles. */
+  async retryBot(botId: string): Promise<boolean> {
+    const slot = this.bots.get(botId);
+    if (!slot) return false;
+    slot.failedAtMs = null;
+    slot.lastErrorCode = null;
+    slot.transport.resetFailure?.();
+    if (slot.id !== MAIN_VOICE_BOT_ID && slot.transport.state() === 'idle')
+      void slot.transport.ensureReady().then(() => { this.refreshIdentities(); return this.schedule(); });
+    await this.schedule();
+    return true;
+  }
+
   /** Coalesced, serialized reconcile. */
   schedule(): Promise<void> {
     if (this.stopped) return Promise.resolve();
@@ -153,19 +215,20 @@ export class VoiceMonitor {
   private async reloadHelpers(): Promise<void> {
     let credentials: VoiceBotCredential[];
     try { credentials = await this.deps.helpers(); } catch { this.deps.log('The helper voice bot list could not be read.'); return; }
-    const wanted = new Map(credentials.map(credential => [credential.id, credential]));
+    // Disabled helpers are never logged in or assigned.
+    const wanted = new Map(credentials.filter(credential => credential.enabled !== false).map(credential => [credential.id, credential]));
     for (const [id, slot] of [...this.bots]) {
       if (id === MAIN_VOICE_BOT_ID) continue;
       const credential = wanted.get(id);
-      if (credential && fingerprint(credential.token) === slot.fingerprint) continue;
-      await this.release(slot, 'bot removed');
+      if (credential && fingerprint(credential) === slot.fingerprint) continue;
+      await this.release(slot, credential ? 'bot changed' : 'bot removed');
       await slot.transport.destroy().catch(() => {});
       this.bots.delete(id);
     }
-    for (const credential of credentials) {
+    for (const credential of wanted.values()) {
       if (this.bots.has(credential.id)) continue;
       this.bots.set(credential.id, { id: credential.id, transport: this.deps.createHelper(credential),
-        fingerprint: fingerprint(credential.token), assignment: null, joining: false, failedAtMs: null });
+        fingerprint: fingerprint(credential), assignment: null, joining: false, failedAtMs: null, lastErrorCode: null });
     }
     this.refreshIdentities();
   }
@@ -173,6 +236,12 @@ export class VoiceMonitor {
   private refreshIdentities(): void {
     this.identities.retain(this.bots.keys());
     for (const slot of this.bots.values()) this.identities.set(slot.id, slot.transport.userId());
+  }
+
+  private policy(channelId: string): VoiceRoomPolicyDto {
+    const policy = this.settingsCache.voice.rooms?.[channelId] ?? DEFAULT_VOICE_ROOM_POLICY;
+    // A pin to a bot that no longer exists falls back to auto.
+    return policy.pinnedBotId && !this.bots.has(policy.pinnedBotId) ? { ...policy, pinnedBotId: null } : policy;
   }
 
   // ---- reconcile ----
@@ -187,25 +256,31 @@ export class VoiceMonitor {
     for (const room of rooms) {
       const key = roomKey(room.eventId, room.matchId);
       if (!room.voiceChannelId || !room.playerIds.length || room.phase === 'final' || this.resolved.has(key)) continue;
+      const policy = this.policy(room.voiceChannelId);
+      if (policy.coverage === 'never') continue;
       const judgeCall = this.judgeOpen.has(key) || room.judgeCall === true;
-      const record = shouldRecord(settings.recording.mode, judgeCall);
-      const monitor = settings.voice.enabled && (settings.voice.scope === 'always' || judgeCall);
-      if (!(record || monitor) || (!coverAll && !judgeCall)) continue;
-      coverage.push({ matchId: room.matchId, channelId: room.voiceChannelId, judgeCall, record, monitor });
+      const record = shouldRecord(policy.recording === 'inherit' ? settings.recording.mode : policy.recording, judgeCall);
+      const monitor = settings.voice.enabled && (settings.voice.scope === 'always' || judgeCall || policy.coverage === 'always');
+      // A room may record more than the global setting (it still shows its notice before capturing anything).
+      const roomCoverAll = policy.coverage === 'always' || coverAll || policy.recording === 'always';
+      if (!(record || monitor) || (!roomCoverAll && !judgeCall)) continue;
+      coverage.push({ matchId: room.matchId, channelId: room.voiceChannelId, judgeCall, record, monitor,
+        priority: policy.priority, pinnedBotId: policy.pinnedBotId });
       events.set(room.matchId, room.eventId);
     }
     this.coverage = coverage;
     this.coverageEvents = events;
-    // Lazy helper login: only when the rooms outnumber the bots that are ready.
+    await this.expireSuspended();
+    // Lazy helper login: only when the rooms outnumber the bots that are ready (or a needed room pins an idle helper).
     const ready = () => [...this.bots.values()].filter(slot => this.usable(slot)).map(slot => slot.id);
     // Logins run in the background so a judge-call room is never delayed by a slow helper; each finished
     // login reconciles again, and a helper that fails is skipped in favour of the next idle one.
     const starting = [...this.bots.values()].filter(slot => slot.transport.state() === 'logging-in').length;
     const shortfall = coverage.length - ready().length - starting;
-    if (shortfall > 0) {
-      const idle = [...this.bots.values()].filter(slot => slot.id !== MAIN_VOICE_BOT_ID && slot.transport.state() === 'idle');
-      for (const slot of idle.slice(0, shortfall)) void slot.transport.ensureReady().then(() => { this.refreshIdentities(); return this.schedule(); });
-    }
+    const idle = [...this.bots.values()].filter(slot => slot.id !== MAIN_VOICE_BOT_ID && slot.transport.state() === 'idle');
+    const login = new Set<BotSlot>(shortfall > 0 ? idle.slice(0, shortfall) : []);
+    for (const room of coverage) { const pinned = idle.find(slot => slot.id === room.pinnedBotId); if (pinned) login.add(pinned); }
+    for (const slot of login) void slot.transport.ensureReady().then(() => { this.refreshIdentities(); return this.schedule(); });
     const current = new Map<string, MatchId>();
     for (const slot of this.bots.values()) if (slot.assignment) current.set(slot.id, slot.assignment.matchId);
     const plan = planVoiceAssignments(coverage, ready(), current);
@@ -228,7 +303,21 @@ export class VoiceMonitor {
     }
     for (const set of [this.notices, this.noticeFailed])
       for (const key of [...set]) if (!coverage.some(room => roomKey(events.get(room.matchId)!, room.matchId) === key)) set.delete(key);
+    for (const key of [...this.roomRetry.keys()])
+      if (!coverage.some(room => roomKey(events.get(room.matchId)!, room.matchId) === key)) this.roomRetry.delete(key);
     this.publish();
+  }
+
+  /** Finalizes suspended recordings past the rejoin window or whose room no longer records. */
+  private async expireSuspended(): Promise<void> {
+    for (const [key, entry] of [...this.suspended]) {
+      const room = this.coverage.find(item => roomKey(this.coverageEvents.get(item.matchId) ?? '', item.matchId) === key);
+      const expired = this.now() - entry.lostAtPolicyMs >= REJOIN_WINDOW_MS;
+      if (!expired && room && room.record && room.channelId === entry.channelId) continue;
+      this.suspended.delete(key);
+      await entry.recording.gap?.(entry.lostAtMs, this.clock(), 'disconnected').catch(() => {});
+      await entry.recording.stop('disconnected').catch(() => this.deps.log('A voice recording could not be finalized.'));
+    }
   }
 
   private usable(slot: BotSlot): boolean {
@@ -243,6 +332,7 @@ export class VoiceMonitor {
     try { handle = await slot.transport.join(room.channelId); }
     catch {
       slot.failedAtMs = this.now();
+      slot.lastErrorCode = 'join-failed';
       slot.joining = false;
       this.deps.log(`Voice bot ${slot.id === MAIN_VOICE_BOT_ID ? 'main' : 'helper'} could not join match room ${room.matchId}.`);
       this.dirty = true;
@@ -250,19 +340,57 @@ export class VoiceMonitor {
     }
     slot.joining = false;
     slot.failedAtMs = null;
+    slot.lastErrorCode = null;
     const config = loudnessConfig(this.settingsCache.voice);
+    const key = roomKey(info.eventId, room.matchId);
+    const retry = this.roomRetry.get(key);
     const assignment: Assignment = { eventId: info.eventId, matchId: room.matchId, channelId: room.channelId, handle,
-      subscriptions: new Map(), decoders: new Map(), monitor: false, recording: null, recordingStart: null, recordingRetryAtMs: 0,
+      subscriptions: new Map(), decoders: new Map(), monitor: false, judgeCall: room.judgeCall, recording: null, recordingStart: null,
+      recordingRetryAtMs: retry?.atMs ?? 0, recordingFailures: retry?.failures ?? 0, gapStartMs: null,
       detector: new LoudnessDetector(config, spike => { void this.onSpike(assignment, spike); }) };
+    // Rejoined within the window: continue the same recording, with the time away audited as a gap.
+    const suspended = this.suspended.get(key);
+    if (suspended && suspended.channelId === room.channelId) {
+      this.suspended.delete(key);
+      if (suspended.recording.active !== false) {
+        assignment.recording = suspended.recording;
+        await suspended.recording.gap?.(suspended.lostAtMs, this.clock(), 'disconnected').catch(() => {});
+      }
+    }
     slot.assignment = assignment;
+    handle.onState?.(state => this.onConnectionState(slot, assignment, state));
     handle.onLost(() => {
       if (slot.assignment !== assignment) return;
-      slot.failedAtMs = this.now();
-      void this.release(slot, 'disconnected').then(() => this.schedule());
+      slot.lastErrorCode = 'disconnected';
+      if (slot.id !== MAIN_VOICE_BOT_ID && assignment.judgeCall) void this.dropNotice(assignment);
+      // No bench: rejoin at once (a failing join benches it), keeping the recording for REJOIN_WINDOW_MS.
+      void this.release(slot, 'disconnected', true).then(() => this.schedule());
     });
   }
 
+  private onConnectionState(slot: BotSlot, assignment: Assignment, state: VoiceConnectionPhase): void {
+    if (slot.assignment !== assignment) return;
+    if (state !== 'ready') {
+      if (assignment.gapStartMs === null) assignment.gapStartMs = this.clock();
+      return;
+    }
+    const from = assignment.gapStartMs;
+    assignment.gapStartMs = null;
+    if (from !== null && assignment.recording) void assignment.recording.gap?.(from, this.clock(), 'reconnecting').catch(() => {});
+  }
+
+  private async dropNotice(assignment: Assignment): Promise<void> {
+    if (this.now() - this.lastDropNoticeAtMs < ORGANIZER_NOTICE_INTERVAL_MS) return;
+    this.lastDropNoticeAtMs = this.now();
+    await this.deps.notifyOrganizer(this.settingsCache.voice.notifyChannelId,
+      `⚠️ The helper bot covering the judge call in ${assignment.matchId} lost its voice connection; it is rejoining.`)
+      .catch(() => this.deps.log('The helper drop notice could not be sent.'));
+  }
+
+  private optedOut(): Set<string> { return new Set(this.settingsCache.recording.optOutUserIds ?? []); }
+
   private async update(assignment: Assignment, room: CoverageRoom, info: VoiceRoomInfo): Promise<void> {
+    assignment.judgeCall = room.judgeCall;
     // Consent: the notice is posted BEFORE anyone is subscribed or recorded. If it cannot be posted, nothing
     // is captured in this room (audited once); the next reconcile retries.
     const key = roomKey(info.eventId, room.matchId);
@@ -285,8 +413,9 @@ export class VoiceMonitor {
     }
     assignment.monitor = room.monitor;
     assignment.detector.configure(loudnessConfig(this.settingsCache.voice));
-    // Seated players only: never spectators, judges or other bots.
-    const seated = new Set(info.playerIds.filter(id => !this.identities.has(id)));
+    // Seated players only: never spectators, judges, other bots or players who opted out.
+    const optedOut = this.optedOut();
+    const seated = new Set(info.playerIds.filter(id => !this.identities.has(id) && !optedOut.has(id)));
     for (const [userId, subscription] of [...assignment.subscriptions]) if (!seated.has(userId)) {
       subscription.close();
       assignment.subscriptions.delete(userId);
@@ -296,24 +425,43 @@ export class VoiceMonitor {
     }
     for (const userId of seated) if (!assignment.subscriptions.has(userId))
       assignment.subscriptions.set(userId, assignment.handle.subscribe(userId, packet => this.onPacket(assignment, userId, packet)));
-    if (room.record && !assignment.recording && !assignment.recordingStart && this.now() >= assignment.recordingRetryAtMs) {
+    // A recording that stopped on its own (storage full) is cleared so it can be retried with backoff.
+    if (assignment.recording && assignment.recording.active === false) {
+      assignment.recording = null;
+      this.backoff(assignment, key);
+    }
+    if (room.record && !assignment.recording && !assignment.recordingStart && seated.size && this.now() >= assignment.recordingRetryAtMs) {
       assignment.recordingStart = this.deps.recorder.start({ eventId: info.eventId, matchId: room.matchId, channelId: room.channelId,
-        playerIds: [...seated] }).then(session => { assignment.recording = session; },
-        () => {
-          assignment.recordingRetryAtMs = this.now() + RECORDING_RETRY_MS;
-          this.deps.log(`Recording could not start in match room ${room.matchId}.`);
-        })
+        playerIds: [...seated] }).then(session => {
+        assignment.recording = session;
+        assignment.recordingFailures = 0;
+        this.roomRetry.delete(key);
+      }, () => {
+        this.backoff(assignment, key);
+        this.deps.log(`Recording could not start in match room ${room.matchId}.`);
+      })
         .finally(() => { assignment.recordingStart = null; });
       await assignment.recordingStart;
     } else if (!room.record && assignment.recording) {
       const session = assignment.recording;
       assignment.recording = null;
       await session.stop('recording turned off');
+    } else if (assignment.recording?.addPlayer && assignment.recording.players) {
+      // Seated after the start (late arrival, seat swap): a new track aligned to the session start.
+      const recorded = new Set(assignment.recording.players());
+      for (const userId of seated) if (!recorded.has(userId)) void assignment.recording.addPlayer(userId).catch(() => {});
     }
   }
 
+  private backoff(assignment: Assignment, key: string): void {
+    assignment.recordingFailures += 1;
+    const delay = Math.min(RECORDING_RETRY_MAX_MS, RECORDING_RETRY_MIN_MS * 2 ** Math.min(10, assignment.recordingFailures - 1));
+    assignment.recordingRetryAtMs = this.now() + delay;
+    this.roomRetry.set(key, { atMs: assignment.recordingRetryAtMs, failures: assignment.recordingFailures });
+  }
+
   private onPacket(assignment: Assignment, userId: string, packet: Buffer): void {
-    const atMs = this.now();
+    const atMs = this.clock();
     assignment.recording?.write(userId, packet, atMs);
     if (!assignment.monitor) return;
     let decoder = assignment.decoders.get(userId);
@@ -344,7 +492,8 @@ export class VoiceMonitor {
     }
   }
 
-  private async release(slot: BotSlot, reason: string): Promise<void> {
+  /** Leaves the room. `suspend` keeps an active recording for a quick rejoin instead of finalizing it. */
+  private async release(slot: BotSlot, reason: string, suspend = false): Promise<void> {
     const assignment = slot.assignment;
     if (!assignment) return;
     slot.assignment = null;
@@ -356,7 +505,13 @@ export class VoiceMonitor {
     try { assignment.handle.leave(); } catch { /* already gone */ }
     const recording = assignment.recording;
     assignment.recording = null;
-    await recording?.stop(reason).catch(() => this.deps.log(`Recording in match room ${assignment.matchId} could not be finalized.`));
+    if (!recording) return;
+    if (suspend && recording.active !== false && !this.stopped) {
+      this.suspended.set(roomKey(assignment.eventId, assignment.matchId), { recording, channelId: assignment.channelId,
+        lostAtMs: assignment.gapStartMs ?? this.clock(), lostAtPolicyMs: this.now() });
+      return;
+    }
+    await recording.stop(reason).catch(() => this.deps.log(`Recording in match room ${assignment.matchId} could not be finalized.`));
   }
 
   private botStatus(slot: BotSlot): VoiceBotRuntimeStatus {
@@ -369,8 +524,13 @@ export class VoiceMonitor {
   /** The live state the dashboard reads; never carries a token. */
   snapshot(): VoicePoolLiveState {
     const bots: VoicePoolLiveState['bots'] = {};
-    for (const slot of this.bots.values()) bots[slot.id] = { connected: !!slot.assignment, status: this.botStatus(slot),
-      assignedChannelId: slot.assignment?.channelId ?? null, assignedMatchId: slot.assignment?.matchId ?? null };
+    for (const slot of this.bots.values()) {
+      const health = slot.transport.health?.();
+      bots[slot.id] = { connected: !!slot.assignment, status: this.botStatus(slot),
+        assignedChannelId: slot.assignment?.channelId ?? null, assignedMatchId: slot.assignment?.matchId ?? null,
+        ...(health ? { lastReadyAtMs: health.lastReadyAtMs, consecutiveFailures: health.consecutiveFailures } : {}),
+        lastErrorCode: slot.lastErrorCode ?? health?.lastErrorCode ?? null };
+    }
     const rooms = this.coverage.map(room => {
       const slot = [...this.bots.values()].find(item => item.assignment?.matchId === room.matchId &&
         item.assignment.eventId === this.coverageEvents.get(room.matchId));
@@ -386,12 +546,29 @@ export class VoiceMonitor {
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
-    await this.running?.catch(() => {});
-    for (const slot of this.bots.values()) await this.release(slot, 'shutdown');
-    for (const slot of this.bots.values()) await slot.transport.destroy().catch(() => {});
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+    // A tick may be inside a 15-20 s voice join or helper login: wait for it briefly only, so the recordings
+    // below still get their budget (anything the tick starts afterwards is finalized by recovery).
+    if (this.running) {
+      let wait: NodeJS.Timeout | undefined;
+      await Promise.race([this.running.catch(() => {}), new Promise<void>(resolve => { wait = setTimeout(resolve, SHUTDOWN_TICK_WAIT_MS); wait.unref(); })]);
+      if (wait) clearTimeout(wait);
+    }
+    // Recordings first, all in parallel and within the shutdown budget; what does not finish is recovered on the next start.
+    const recordings: RecordingHandle[] = [...this.suspended.values()].map(entry => entry.recording);
+    this.suspended.clear();
+    for (const slot of this.bots.values()) if (slot.assignment?.recording) recordings.push(slot.assignment.recording);
+    const stopping = Promise.all(recordings.map(recording => recording.stop('shutdown').catch(() => {})));
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([stopping, new Promise<void>(resolve => { timer = setTimeout(resolve, SHUTDOWN_RECORDING_BUDGET_MS); timer.unref(); })]);
+    if (timer) clearTimeout(timer);
+    await Promise.all([...this.bots.values()].map(slot => this.release(slot, 'shutdown').catch(() => {})));
+    await Promise.all([...this.bots.values()].map(slot => slot.transport.destroy().catch(() => {})));
     this.identities.clear();
     this.deps.publish(null);
   }
 }
 
-function fingerprint(token: string): string { return createHash('sha256').update(token).digest('hex'); }
+function fingerprint(credential: Pick<VoiceBotCredential, 'token'>): string {
+  return createHash('sha256').update(credential.token).digest('hex');
+}

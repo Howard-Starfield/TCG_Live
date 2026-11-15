@@ -81,7 +81,11 @@ export class LoggingProcessor {
         description: `<@${event.userId}> ${event.username}${event.bot ? ' (bot)' : ''}\nAccount created ${ts(event.accountCreatedAtMs)}`,
         footer: { text: `ID ${event.userId}` }, timestamp: new Date(now).toISOString() }] }, 'join log');
     }
-    if (event.bot) return;
+    if (event.bot) {
+      // Bots never get a welcome; auto-roles reach them only when "Skip bots" is turned off.
+      if (autoRole.enabled && autoRole.skipBots === false && autoRole.roleIds.length) await this.assignAutoRoles(event.userId, autoRole.roleIds);
+      return;
+    }
     if (welcome.enabled && welcome.channelId) {
       const text = renderLoggingTemplate(welcome.message, { userId: event.userId, username: event.username,
         server: await this.deps.serverName(), memberCount: await this.deps.memberCount() });

@@ -2,11 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  ChannelType, ChatInputCommandInteraction, Events, LabelBuilder, MessageFlags, MessageType, ModalBuilder,
-  PermissionFlagsBits, Routes, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
-  SlashCommandBuilder, type Client, type Guild, type GuildMember, type Interaction, type TextChannel, type VoiceChannel
+  ChannelType, ChatInputCommandInteraction, Events, FileUploadBuilder, InteractionContextType, LabelBuilder, MessageFlags, MessageType,
+  ModalBuilder, PermissionFlagsBits, Routes, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
+  SlashCommandBuilder, type Client, type Guild, type GuildMember, type Interaction, type ModalSubmitInteraction,
+  type SlashCommandSubcommandBuilder, type TextChannel, type VoiceChannel
 } from 'discord.js';
-import { JUDGE_REQUEST_CATEGORIES, MAX_JUDGE_REQUEST_LENGTH } from '@tcg-live/core';
+import { EvidenceSubmitter } from '../evidence/discord-submit.js';
+import { recordingOptOuts } from '../voice/optout.js';
+import { onRecordingBadgeChange, recordingMatchIds, syncRecordingFromPool } from './recording-badge.js';
+import { memberRoleIds } from './staff.js';
+import { DEFAULT_MODERATION_NOTICE, JUDGE_REQUEST_CATEGORIES, MAX_JUDGE_REQUEST_LENGTH } from '@tcg-live/core';
 import { readAdminConfig, type AdminConfig } from '../admin/config.js';
 import { createDiscordAdmin, discordGateway, guildMembers, type DiscordAdmin, type DiscordAdminOptions } from '../admin/runtime/discord-wiring.js';
 import { readConfig } from '../config.js';
@@ -41,6 +46,7 @@ import { pgAnnouncementStore } from '../admin-tools/announcements/announcements.
 import { pgStickyStore } from '../admin-tools/channels/sticky-store.js';
 import { pgBulkRoleJobStore } from '../admin-tools/roles/bulk.js';
 import { pgButtonRolePanelStore } from '../admin-tools/roles/panels.js';
+import { lfgBody, pgLfgSettingsStore } from '../admin-tools/lfg/settings.js';
 import { livePermissionMonitor, watchPermissionEvents } from '../permissions/live.js';
 import { voiceRuntimeEnabled } from '../voice/feature.js';
 
@@ -61,56 +67,129 @@ export class RetryBackoff {
   succeeded(key: string): void { this.failures.delete(key); }
 }
 
+/**
+ * Command structure (next wave):
+ *  - `/tcg-test`  — players, visible to everyone: `evidence` (evidence/discord-submit.ts) and `recording-optout`.
+ *  - `/tcg-staff` — tournament staff (Manage Server by default; widen in Server Settings > Integrations, and
+ *    staff roles are enforced in the bot): the former `/tcg-test` admin subcommands under the same names,
+ *    plus `signup-add` and `checkin-for`.
+ *  - `/tcg-admin` — admin tools (discord/admin-command.ts), including the moderation subcommands.
+ */
+export const PLAYER_COMMAND_NAME = 'tcg-test';
+export const STAFF_COMMAND_NAME = 'tcg-staff';
+/** The staff subcommands that lived under `/tcg-test` before; still accepted there from a stale client. */
+export const STAFF_SUBCOMMANDS = ['publish', 'signup-close', 'signup-reopen', 'signup-remove', 'signup-add', 'checkin-for', 'refresh',
+  'resolve', 'correct', 'judge-resume'] as const;
+
+export const EVIDENCE_UNAVAILABLE = "Evidence submission isn't available right now. Please ask a staff member.";
+
+/**
+ * `/tcg-test evidence` is answered by the evidence-submit feature. When that feature is not running (no
+ * features, or it failed to start), answer here so the member never sees "did not respond". True when answered.
+ */
+export function answerEvidenceUnavailable(interaction: Interaction, featureRunning: boolean): boolean {
+  if (featureRunning || !interaction.isChatInputCommand() || interaction.commandName !== PLAYER_COMMAND_NAME ||
+      interaction.options.getSubcommand(false) !== 'evidence') return false;
+  void interaction.reply({ content: EVIDENCE_UNAVAILABLE, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } }).catch(() => {});
+  return true;
+}
+
+/** `/tcg-test`: what players use. */
 export function commandDefinition() {
-  const match = { name: 'match', description: 'Practice match', type: 3, required: true,
-    choices: [{ name: 'A vs B', value: 'M1' }, { name: 'C vs D', value: 'M2' }] };
-  const winner = { name: 'winner', description: 'Fixture player', type: 3, required: true,
-    choices: ['A', 'B', 'C', 'D'].map(name => ({ name, value: name })) };
-  const reason = { name: 'reason', description: 'Required admin reason', type: 3, required: true };
-  return new SlashCommandBuilder().setName('tcg-test').setDescription('Private practice fixture')
-    .addSubcommand(sub => sub.setName('publish').setDescription('Publish the fixed practice round'))
-    .addSubcommand(sub => sub.setName('signup-close').setDescription('Assign four signup members to A-D'))
-    .addSubcommand(sub => sub.setName('signup-reopen').setDescription('Reopen signup before publication'))
-    .addSubcommand(sub => sub.setName('signup-remove').setDescription('Remove a signup member while open')
-      .addStringOption(option => option.setName('member-id').setDescription('Discord member ID').setRequired(true)))
-    .addSubcommand(sub => sub.setName('refresh').setDescription('Create or repair the three practice cards'))
-    .addSubcommand(sub => sub.setName('resolve').setDescription('Resolve a practice match')
-      .addStringOption(option => option.setName(match.name).setDescription(match.description).setRequired(true)
-        .addChoices(...match.choices))
-      .addStringOption(option => option.setName(winner.name).setDescription(winner.description).setRequired(true)
-        .addChoices(...winner.choices))
-      .addStringOption(option => option.setName(reason.name).setDescription(reason.description).setRequired(true)))
-    .addSubcommand(sub => sub.setName('correct').setDescription('Correct a finalized practice match')
-      .addStringOption(option => option.setName(match.name).setDescription(match.description).setRequired(true)
-        .addChoices(...match.choices))
-      .addStringOption(option => option.setName(winner.name).setDescription(winner.description).setRequired(true)
-        .addChoices(...winner.choices))
-      .addStringOption(option => option.setName(reason.name).setDescription(reason.description).setRequired(true)))
-    .addSubcommand(sub => sub.setName('judge-resume').setDescription('Override a practice pause')
-      .addStringOption(option => option.setName(match.name).setDescription(match.description).setRequired(true)
-        .addChoices(...match.choices))
-      .addStringOption(option => option.setName(reason.name).setDescription(reason.description).setRequired(true)))
+  return new SlashCommandBuilder().setName(PLAYER_COMMAND_NAME).setDescription('TCG Live tournament: player tools')
+    .setContexts(InteractionContextType.Guild)
     // Handled by the evidence-submit feature (evidence/discord-submit.ts), not the controller.
     .addSubcommand(sub => sub.setName('evidence').setDescription('Submit a clip or link for your match')
       .addStringOption(option => option.setName('match').setDescription('Match, for example M1').setRequired(true).setMaxLength(5))
       .addAttachmentOption(option => option.setName('file').setDescription('Video or audio file (up to 100 MB)'))
       .addStringOption(option => option.setName('link').setDescription('https:// link to the clip').setMaxLength(2048))
       .addStringOption(option => option.setName('note').setDescription('What the clip shows').setMaxLength(500)))
+    .addSubcommand(sub => sub.setName('recording-optout').setDescription('Opt out of (or back into) match audio recording')
+      .addStringOption(option => option.setName('choice').setDescription('Opt out, or opt back in').setRequired(true)
+        .addChoices({ name: 'Opt out: never record me', value: 'out' }, { name: 'Opt back in', value: 'in' })))
     .toJSON();
 }
 
-export async function registerPrivateCommand(config: PrivateDiscordConfig): Promise<void> {
-  if (!config.token) throw new RuleError('TCG_DISCORD_TOKEN or DISCORD_BOT_TOKEN is required.');
-  const rest = privateDiscordRest(config.token);
+/** `/tcg-staff`: tournament staff. Match and player options autocomplete from the live round; free text is validated. */
+export function staffCommandDefinition() {
+  const reason = (sub: SlashCommandSubcommandBuilder) => sub.addStringOption(option => option.setName('reason')
+    .setDescription('Required reason (stored in the audit log)').setRequired(true).setMaxLength(500));
+  const match = (sub: SlashCommandSubcommandBuilder) => sub.addStringOption(option => option.setName('match')
+    .setDescription('Match, for example M3').setRequired(true).setAutocomplete(true).setMaxLength(6));
+  const winner = (sub: SlashCommandSubcommandBuilder) => sub.addStringOption(option => option.setName('winner')
+    .setDescription('Winning seat (or mention the player)').setRequired(true).setAutocomplete(true).setMaxLength(40));
+  return new SlashCommandBuilder().setName(STAFF_COMMAND_NAME).setDescription('TCG Live tournament: staff tools')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setContexts(InteractionContextType.Guild)
+    .addSubcommand(sub => sub.setName('publish').setDescription('Publish the round'))
+    .addSubcommand(sub => sub.setName('signup-close').setDescription('Close signup and assign seats'))
+    .addSubcommand(sub => sub.setName('signup-reopen').setDescription('Reopen signup before publication'))
+    .addSubcommand(sub => sub.setName('signup-remove').setDescription('Remove a signup member while open')
+      .addStringOption(option => option.setName('member-id').setDescription('Discord member ID').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(sub => sub.setName('signup-add').setDescription('Add a member to the open signup')
+      .addUserOption(option => option.setName('member').setDescription('The member to add').setRequired(true)))
+    .addSubcommand(sub => sub.setName('checkin-for').setDescription('Check a seated player in for them')
+      .addStringOption(option => option.setName('player').setDescription('Seat (for example A or P3) or a mention')
+        .setRequired(true).setAutocomplete(true).setMaxLength(40)))
+    .addSubcommand(sub => sub.setName('refresh').setDescription('Create or repair the tournament cards'))
+    .addSubcommand(sub => reason(winner(match(sub.setName('resolve').setDescription('Resolve a match')))))
+    .addSubcommand(sub => reason(winner(match(sub.setName('correct').setDescription('Correct a finalized match')))))
+    .addSubcommand(sub => reason(match(sub.setName('judge-resume').setDescription('Override a pause and resume play'))))
+    .toJSON();
+}
+
+/** Every guild command this bot owns, in registration order. */
+export function guildCommandDefinitions(): Array<[string, Record<string, unknown>]> {
+  return [[PLAYER_COMMAND_NAME, commandDefinition() as unknown as Record<string, unknown>],
+    [STAFF_COMMAND_NAME, staffCommandDefinition() as unknown as Record<string, unknown>],
+    [ADMIN_COMMAND_NAME, adminCommandDefinition() as unknown as Record<string, unknown>]];
+}
+
+/**
+ * The parts of a command definition Discord stores, in a stable form: absent, null and false values,
+ * localizations and server-assigned fields are dropped, so a definition compares equal to what GET returns.
+ */
+export function comparableCommand(value: unknown): unknown {
+  const SERVER_FIELDS = new Set(['id', 'application_id', 'guild_id', 'version', 'default_permission', 'nsfw', 'integration_types', 'type',
+    'dm_permission', 'handler']);
+  const walk = (item: unknown, top: boolean): unknown => {
+    if (Array.isArray(item)) return item.map(entry => walk(entry, false));
+    if (!item || typeof item !== 'object') return item;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(item).sort()) {
+      const entry = (item as Record<string, unknown>)[key];
+      if (entry === undefined || entry === null || entry === false || key.endsWith('_localizations') || key.endsWith('_localized')) continue;
+      if (top && SERVER_FIELDS.has(key)) continue;
+      if (Array.isArray(entry) && !entry.length && key === 'options') continue;
+      out[key] = walk(entry, false);
+    }
+    return out;
+  };
+  return walk(value, true);
+}
+
+export interface CommandRegistration { created: string[]; updated: string[]; unchanged: string[] }
+
+/**
+ * Upserts `/tcg-test`, `/tcg-staff` and `/tcg-admin` in the guild. Idempotent: a command whose stored
+ * definition already matches is not PATCHed. Runs on every start, so existing installs get new subcommands.
+ */
+export async function registerPrivateCommand(config: PrivateDiscordConfig,
+  rest: Pick<ReturnType<typeof privateDiscordRest>, 'get' | 'post' | 'patch'> | null = null): Promise<CommandRegistration> {
+  if (!rest && !config.token) throw new RuleError('TCG_DISCORD_TOKEN or DISCORD_BOT_TOKEN is required.');
+  const client = rest ?? privateDiscordRest(config.token!);
   const route = Routes.applicationGuildCommands(config.applicationId, config.guildId);
-  const commands = await rest.get(route) as Array<{ id: string; name: string }>;
-  // `/tcg-test` (controller) and `/tcg-admin` (admin-tools features, discord/admin-command.ts).
-  const definitions: Array<[string, unknown]> = [['tcg-test', commandDefinition()], [ADMIN_COMMAND_NAME, adminCommandDefinition()]];
-  for (const [name, body] of definitions) {
+  const commands = await client.get(route) as Array<{ id: string; name: string }>;
+  const result: CommandRegistration = { created: [], updated: [], unchanged: [] };
+  for (const [name, body] of guildCommandDefinitions()) {
     const existing = commands.find(command => command.name === name);
-    if (existing) await rest.patch(Routes.applicationGuildCommand(config.applicationId, config.guildId, existing.id), { body });
-    else await rest.post(route, { body });
+    if (!existing) { await client.post(route, { body }); result.created.push(name); }
+    else if (JSON.stringify(comparableCommand(existing)) === JSON.stringify(comparableCommand(body))) result.unchanged.push(name);
+    else {
+      await client.patch(Routes.applicationGuildCommand(config.applicationId, config.guildId, existing.id), { body });
+      result.updated.push(name);
+    }
   }
+  return result;
 }
 
 export function discordTransport(channel: TextChannel | (() => TextChannel), matches?: ConfiguredRooms<VoiceChannel>, botId?: string, roundRoom?: (slot: MatchId) => VoiceChannel | undefined): CardTransport {
@@ -269,16 +348,49 @@ function judgeModal(buttonId: string, requesterId: string) {
       new LabelBuilder().setLabel('What happened?').setTextInputComponent(description));
 }
 
+export const EVIDENCE_MODAL_ID = /^evd:([0-9a-f-]{36}):(M[1-9]\d{0,3})$/i;
+const EVIDENCE_FILE_FIELD = 'file';
+const EVIDENCE_LINK_FIELD = 'link';
+const EVIDENCE_NOTE_FIELD = 'note';
+
+/** The match-card evidence form: an optional file upload, an optional link and a note. */
+export function evidenceModal(eventId: string, matchId: string) {
+  const file = new FileUploadBuilder().setCustomId(EVIDENCE_FILE_FIELD).setRequired(false).setMinValues(0).setMaxValues(1);
+  const link = new TextInputBuilder().setCustomId(EVIDENCE_LINK_FIELD).setStyle(TextInputStyle.Short).setRequired(false)
+    .setMaxLength(2048).setPlaceholder('https://… (a clip on YouTube, Twitch, Drive…)');
+  const note = new TextInputBuilder().setCustomId(EVIDENCE_NOTE_FIELD).setStyle(TextInputStyle.Paragraph).setRequired(false)
+    .setMaxLength(500).setPlaceholder('What does it show? Game, turn, moment.');
+  return new ModalBuilder().setCustomId(`evd:${eventId}:${matchId}`).setTitle(`Evidence for ${matchId}`)
+    .addLabelComponents(new LabelBuilder().setLabel('Video or audio file (optional)').setFileUploadComponent(file),
+      new LabelBuilder().setLabel('Link (optional)').setTextInputComponent(link),
+      new LabelBuilder().setLabel('Note (optional)').setTextInputComponent(note));
+}
+
+/** Reads the evidence form; null when it is not one. */
+export function evidenceFormInput(interaction: ModalSubmitInteraction) {
+  const id = EVIDENCE_MODAL_ID.exec(interaction.customId);
+  if (!id) return null;
+  const text = (field: string) => { try { return interaction.fields.getTextInputValue(field).trim() || null; } catch { return null; } };
+  let file: { url: string; size: number; name: string; contentType: string | null } | null = null;
+  try {
+    const uploaded = interaction.fields.getUploadedFiles(EVIDENCE_FILE_FIELD)?.first();
+    if (uploaded) file = { url: uploaded.url, size: uploaded.size, name: uploaded.name, contentType: uploaded.contentType ?? null };
+  } catch { /* No file. */ }
+  return { eventId: id[1]!.toLowerCase(), matchId: id[2]!.toUpperCase(), link: text(EVIDENCE_LINK_FIELD), note: text(EVIDENCE_NOTE_FIELD), file };
+}
+
 export function adapt(interaction: Interaction): PrivateInteraction | null {
   if (!interaction.isButton() && !interaction.isChatInputCommand() && !interaction.isModalSubmit()) return null;
   // Feature-owned controls (discord/interactions.ts) never reach the controller.
   if ((interaction.isButton() || interaction.isModalSubmit()) && isFeatureInteractionId(interaction.customId)) return null;
-  if (interaction.isChatInputCommand() && (interaction.commandName !== 'tcg-test' ||
-    interaction.options.getSubcommand(false) === 'evidence')) return null;
+  // `/tcg-staff`, plus the old `/tcg-test <staff subcommand>` from a client that has not refreshed its commands.
+  if (interaction.isChatInputCommand() && !(interaction.commandName === STAFF_COMMAND_NAME ||
+    (interaction.commandName === PLAYER_COMMAND_NAME &&
+      (STAFF_SUBCOMMANDS as readonly string[]).includes(interaction.options.getSubcommand(false) ?? '')))) return null;
   const base = {
     id: interaction.id, applicationId: interaction.applicationId,
     guildId: interaction.guildId, channelId: interaction.channelId,
-    userId: interaction.user.id
+    userId: interaction.user.id, roleIds: memberRoleIds((interaction as { member?: unknown }).member)
   };
   const expire = (remove: () => Promise<unknown>) => {
     const timer = setTimeout(() => { void remove().catch(() => {}); }, 8_000);
@@ -320,6 +432,12 @@ export function adapt(interaction: Interaction): PrivateInteraction | null {
     ...(interaction.customId.endsWith(':J') ? {
       async showJudgeRequest() { await interaction.showModal(judgeModal(interaction.customId, interaction.user.id)); }
     } : {}),
+    ...(interaction.customId.endsWith(':E') ? {
+      async showEvidenceForm() {
+        const [, eventId, slot] = interaction.customId.split(':');
+        await interaction.showModal(evidenceModal(eventId!, slot!));
+      }
+    } : {}),
     async acknowledge() { await interaction.deferUpdate(); },
     async reply(message, attachment) {
       if ((message.startsWith('Saved: ') && !message.includes('pending')) || message.startsWith('No change: ')) return;
@@ -341,9 +459,10 @@ export function adapt(interaction: Interaction): PrivateInteraction | null {
     },
     subcommand: command.options.getSubcommand(),
     matchId: (command.options.getString('match') ?? undefined) as MatchId | undefined,
-    winner: (command.options.getString('winner') ?? undefined) as Player | undefined,
+    winner: command.options.getString('winner') ?? undefined,
     reason: command.options.getString('reason') ?? undefined,
-    memberId: command.options.getString('member-id') ?? undefined };
+    memberId: command.options.getString('member-id') ?? command.options.getUser?.('member')?.id ?? undefined,
+    player: command.options.getString('player') ?? undefined };
 }
 
 interface ReadyGateway {
@@ -438,9 +557,11 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       const status = adminToolsState.describe(settings);
       return status.runtime === 'running' ? { wanted: status.wantedIntents, state: status.privilegedIntents } : null;
     },
-    stores: { stickies: pgStickyStore(), panels: pgButtonRolePanelStore(), bulk: pgBulkRoleJobStore(), announcements: pgAnnouncementStore() }
+    stores: { stickies: pgStickyStore(), panels: pgButtonRolePanelStore(), bulk: pgBulkRoleJobStore(), announcements: pgAnnouncementStore() },
+    lfgSettings: async () => lfgBody(await pgLfgSettingsStore().get(config.guildId))
   });
   let stopPermissionWatch: (() => void) | undefined;
+  let stopRecordingWatch: (() => void) | undefined;
   let stopping = false;
   let shutdownTask: Promise<void> | undefined;
   let deletedCardRetry: ReturnType<typeof setInterval> | undefined;
@@ -468,6 +589,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         // Ends console streams and polling first, so open streams cannot hold the watchdog budget.
         await admin?.close();
         stopPermissionWatch?.();
+        stopRecordingWatch?.();
         permissionMonitor.close();
         await featureHandle?.stop();
         adminToolsState.recordStopped();
@@ -488,6 +610,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     process.once('SIGINT', () => { void shutdown(); });
     process.once('SIGTERM', () => { void shutdown(); });
     process.once('SIGBREAK', () => { void shutdown(); });
+    // Closing the Windows console window sends SIGHUP; recordings need a clean shutdown.
+    process.once('SIGHUP', () => { void shutdown(); });
   }
   const ensureActive = () => {
     if (stopping || lease?.isLost()) throw new RuleError('Private Discord startup was interrupted.');
@@ -513,7 +637,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       },
       evidence: { store: evidence, audit: opsAudit, seams: createEvidenceSeams().seams },
       moderation: { settings: moderationSettings, flags: moderationFlags, audit: opsAudit, voiceBots, voicePool,
-        guildId: () => config.guildId, mainBotUserId: () => client.user?.id ?? null,
+        guildId: () => config.guildId, mainBotUserId: () => client.user?.id ?? config.applicationId,
         onSettingsSaved: settings => featureEvents.emit({ type: 'moderationSettingsChanged', settings }),
         onVoiceBotsChanged: () => featureEvents.emit({ type: 'voiceBotsChanged' }),
         // Lazy: the client is replaced at login.
@@ -692,9 +816,30 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     cleanupDeletedCards();
     deletedCardRetry = setInterval(cleanupDeletedCards, 60_000);
     deletedCardRetry.unref();
+    // Every start upserts the guild commands (unchanged ones are skipped), so existing installs get new subcommands.
+    try {
+      const registered = await registerPrivateCommand(config);
+      if (registered.created.length || registered.updated.length)
+        process.stdout.write(`Guild commands registered: ${[...registered.created, ...registered.updated].map(name => `/${name}`).join(', ')}.\n`);
+    } catch { process.stderr.write('Guild command registration is pending; it is retried on the next start (or run the registration command).\n'); }
+    // Tournament staff roles (admin-tools settings, Cases section) may run the staff commands.
+    controller.setStaffRoles(async () => (await adminToolsSettings.get(config.guildId)).cases.staffRoleIds ?? []);
+    // Recording badge on match cards and the recording policy line on the signup card.
+    let recordingNotice: string | null = null;
+    const applyRecordingPolicy = (settings: { recording: { mode: string }; noticeText: string | null }) => {
+      const next = settings.recording.mode === 'off' ? null : settings.noticeText ?? DEFAULT_MODERATION_NOTICE;
+      if (next === recordingNotice) return false;
+      recordingNotice = next;
+      return true;
+    };
+    try { applyRecordingPolicy(await moderationSettings.get(config.guildId)); } catch { /* Schema missing: no policy line. */ }
+    controller.setCardOptions(() => ({ recording: recordingMatchIds(), recordingNotice }));
+    const offRecordingBadge = onRecordingBadgeChange(() => controller?.reconnect());
+    const offRecordingPolicy = featureEvents.on('moderationSettingsChanged', event => {
+      if (applyRecordingPolicy(event.settings)) controller?.reconnect();
+    });
+    stopRecordingWatch = () => { offRecordingBadge(); offRecordingPolicy(); };
     if (initializeFresh) {
-      try { await registerPrivateCommand(config); }
-      catch { process.stderr.write('Initial guild command registration is pending; use the existing registration command to retry.\n'); }
       try {
         const initial = await controller.refreshExplicit();
         if (initial.cards === 'pending' || initial.roomWarning)
@@ -702,8 +847,72 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       } catch { process.stderr.write('Initial practice panels are pending; review the dashboard and use Refresh.\n'); }
     }
     ensureActive();
+    const evidenceMatchRoom = async (matchId: MatchId) => {
+      try {
+        const current = await getSessionState(config);
+        const match = current.state.matches.find(item => item.id === matchId);
+        if (!match) return null;
+        const players = resolvePlayers(current.session, current.state);
+        return { eventId: current.state.id, matchId, voiceChannelId: current.session.identity_map.roundRooms?.[matchId] ?? null,
+          playerIds: match.players.flatMap(seat => players?.[seat] ? [players[seat]] : []) };
+      } catch { return null; }
+    };
+    const optOuts = recordingOptOuts({ settings: moderationSettings, audit: input => opsAudit.append(input), guildId: () => config.guildId,
+      onChanged: () => { void moderationSettings.get(config.guildId).then(settings =>
+        featureEvents.emit({ type: 'moderationSettingsChanged', settings })).catch(() => {}); } });
+    /** Player tools, the evidence form and `/tcg-staff` autocomplete. True when handled here. */
+    const handleRuntimeInteraction = (interaction: Interaction): boolean => {
+      if (interaction.applicationId !== config.applicationId || interaction.guildId !== config.guildId) return false;
+      if (answerEvidenceUnavailable(interaction, !!featureHandle?.started.includes('evidence-submit'))) return true;
+      if (interaction.isAutocomplete() && interaction.commandName === STAFF_COMMAND_NAME) {
+        const focused = interaction.options.getFocused(true);
+        const nameOf = (id: string) => interaction.guild?.members.cache.get(id)?.displayName;
+        void (async () => {
+          const choices = await controller!.staffLevel(interaction.user.id, memberRoleIds(interaction.member))
+            ? await controller!.autocomplete(interaction.options.getSubcommand(false) ?? '', focused.name, String(focused.value),
+              interaction.options.getString('match'), nameOf) : [];
+          await interaction.respond(choices);
+        })().catch(() => {});
+        return true;
+      }
+      if (interaction.isChatInputCommand() && interaction.commandName === PLAYER_COMMAND_NAME &&
+          interaction.options.getSubcommand(false) === 'recording-optout') {
+        const optedOut = interaction.options.getString('choice', true) === 'out';
+        void (async () => {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          let content: string;
+          try {
+            const result = await optOuts.setRecordingOptOut(interaction.user.id, optedOut, { kind: 'player', id: interaction.user.id });
+            content = optedOut ? `${result.changed ? 'Done' : 'You had already opted out'}: your voice is never recorded or loudness-checked in match rooms. Use this command again to opt back in.`
+              : `${result.changed ? 'Done' : 'You were already opted in'}: your voice may be recorded in match rooms when the organizer's recording policy applies.`;
+          } catch (error) { content = error instanceof RuleError ? error.message : 'Your recording choice could not be saved. Try again in a moment.'; }
+          await interaction.editReply({ content, allowedMentions: { parse: [] } });
+        })().catch(() => {});
+        return true;
+      }
+      if (interaction.isModalSubmit() && EVIDENCE_MODAL_ID.test(interaction.customId)) {
+        const input = evidenceFormInput(interaction)!;
+        void (async () => {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const roles = memberRoleIds(interaction.member);
+          let content = await controller!.evidenceRefusal(interaction.user.id, roles, input.eventId, input.matchId);
+          if (!content) {
+            // Staff submit as the organizer would (actor kind admin) under their own Discord ID.
+            const staff = await controller!.staffLevel(interaction.user.id, roles);
+            const submitter = new EvidenceSubmitter({ guildId: config.guildId, adminId: staff ? interaction.user.id : config.adminId,
+              evidence, matchRoom: evidenceMatchRoom });
+            content = await submitter.submit({ guildId: interaction.guildId, userId: interaction.user.id, matchId: input.matchId,
+              attachment: input.file, link: input.link, note: input.note });
+          }
+          await interaction.editReply({ content, allowedMentions: { parse: [] } });
+        })().catch(() => {});
+        return true;
+      }
+      return false;
+    };
     client.on('interactionCreate', interaction => { if (!stopping && !lease?.isLost()) {
       if (interactions.dispatch(interaction)) return;
+      if (handleRuntimeInteraction(interaction)) return;
       const adapted = adapt(interaction);
       if (adapted) void controller?.handle(adapted).catch(() => {});
     } });
@@ -754,7 +963,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         appendFlag: input => moderationFlags.append(input),
         appendAudit: input => opsAudit.append(input),
         evidence, voiceBots,
-        publishVoicePool: state => voicePool.publish(state),
+        publishVoicePool: state => { voicePool.publish(state); syncRecordingFromPool(state); },
         on: (type, listener) => featureEvents.on(type, listener),
         matchRoom: async matchId => (await roomsOf()).find(room => room.matchId === matchId) ?? null,
         activeMatchRooms: roomsOf,

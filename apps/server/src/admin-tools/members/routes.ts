@@ -12,6 +12,9 @@ import type { AdminToolsRouteDeps, AdminToolsRouteModule } from '../module.js';
 import { demoMembersBackend, liveMembersBackend, type BackendAction, type DemoMembersBackendOptions, type ExternalAuditState,
   type MemberRecord, type MembersBackend, type TargetInfo } from './backend.js';
 import { parseCaseKind, parseCasePatch, parseDeleteCase, parseModAction, parseNoteBody, parseSearchQuery } from './parse.js';
+import { withTournamentNames } from './tournament-names.js';
+import { seedDemoCases } from './demo-cases.js';
+import { moderateMember } from './service.js';
 import { MemoryModCaseStore, MemoryModNoteStore, pgModCaseStore, pgModNoteStore, type ModCaseStore, type ModNoteStore } from './store.js';
 
 const DAY = 86_400_000;
@@ -59,24 +62,15 @@ export function assertCanModerate(action: ModAction, target: TargetInfo): void {
 
 const VERB: Record<ModAction, string> = { warn: 'warned', timeout: 'timed out', untimeout: 'no longer timed out', kick: 'kicked',
   ban: 'banned', unban: 'unbanned' };
-const DM_ACTIONS: readonly ModAction[] = ['warn', 'timeout', 'kick', 'ban'];
 
 export function dmText(request: ModActionRequestDto, number: number): string {
-  const until = request.action === 'timeout' ? ` until ${new Date(Date.now() + request.durationMs).toUTCString()}` : '';
+  const ms = request.action === 'timeout' ? request.durationMs : request.action === 'ban' ? request.durationMs : null;
+  const until = ms ? ` until ${new Date(Date.now() + ms).toUTCString()}` : '';
   return `You were ${VERB[request.action]}${until} by the server staff (case #${number}).\nReason: ${request.reason}`.slice(0, 1900);
 }
 /** Discord's audit-log reason (512). */
 export function discordReason(number: number, reason: string): string {
   return `Case #${number}: ${reason}`.slice(0, L.discordReasonLength);
-}
-
-function backendAction(request: ModActionRequestDto, now: number): BackendAction | null {
-  switch (request.action) {
-    case 'warn': return null;
-    case 'timeout': return { kind: 'timeout', untilMs: now + request.durationMs };
-    case 'ban': return { kind: 'ban', deleteMessageSeconds: request.deleteMessageSeconds };
-    default: return { kind: request.action };
-  }
 }
 
 function historyRole(snapshot: { adminId: string; seats: Record<string, string | null>; signup: { roster: string[] } | null }, id: string) {
@@ -94,6 +88,7 @@ function membersRoutes(deps: AdminToolsRouteDeps, options: MembersModuleOptions)
   const memory = deps.storage === 'memory';
   const cases = options.cases?.(deps) ?? (memory ? new MemoryModCaseStore(deps.audit, deps.now) : pgModCaseStore(deps.now));
   const notes = options.notes?.(deps) ?? (memory ? new MemoryModNoteStore(deps.audit, deps.now) : pgModNoteStore(deps.now));
+  if (memory && deps.demo && !options.cases) seedDemoCases(cases, deps);
   let cached: MembersBackend | null = null;
   const backend = (): MembersBackend => {
     if (cached) return cached;
@@ -138,7 +133,7 @@ function membersRoutes(deps: AdminToolsRouteDeps, options: MembersModuleOptions)
       const ref: TournamentHistoryRefDto | null = role ? { eventId: event.eventId, name: null, status: event.status, createdAtMs: event.createdAtMs, role } : null;
       return ref;
     }));
-    return refs.filter((ref): ref is TournamentHistoryRefDto => ref !== null);
+    return withTournamentNames(refs.filter((ref): ref is TournamentHistoryRefDto => ref !== null), deps.storage);
   }
 
   async function profile(id: string): Promise<MemberProfileDto> {
@@ -153,34 +148,11 @@ function membersRoutes(deps: AdminToolsRouteDeps, options: MembersModuleOptions)
   }
 
   async function act(request: ModActionRequestDto): Promise<ModActionResultDto> {
-    const guildId = deps.guildId();
-    const discord = backend();
-    const target = await discord.target(request.userId);
-    assertCanModerate(request.action, target);
-    if (request.action === 'warn' && !target.inGuild && !(await discord.member(request.userId)))
-      throw new HttpError(404, 'not_found', 'Discord does not know that member.');
-    const settings = await deps.currentSettings();
-    const wantsDm = settings.cases.dmMembers && DM_ACTIONS.includes(request.action);
-    const now = deps.now();
-    const action = backendAction(request, now);
-    let dm: ModActionResultDto['dm'] = 'skipped';
-    const sendDm = async (number: number) => { dm = await discord.dm(request.userId, dmText(request, number)).catch(() => false) ? 'sent' : 'failed'; };
-    const saved = await guarded(() => cases.create(guildId, {
-      kind: request.action, targetId: request.userId, reason: request.reason, evidenceIds: request.evidenceIds ?? [],
-      eventId: request.eventId ?? null, matchId: request.matchId ?? null, source: 'dashboard',
-      expiresAtMs: request.action === 'timeout' ? now + request.durationMs : null
-    }, LOCAL_ADMIN, async number => {
-      // Kicked or banned members share no server with the bot afterwards, so they hear first.
-      if (wantsDm && (request.action === 'kick' || request.action === 'ban')) await sendDm(number);
-      if (action) await discord.apply(request.userId, action, discordReason(number, request.reason));
-    }));
-    if (wantsDm && (request.action === 'warn' || request.action === 'timeout')) await sendDm(saved.number);
-    if (settings.cases.logChannelId) {
-      const line = `Case #${saved.number} · ${saved.kind} · <@${saved.targetId}> · ${saved.reason}`.slice(0, 1900);
-      await discord.postLog(settings.cases.logChannelId, line).catch(() => {});
-    }
-    deps.notify('members', String(saved.number));
-    return { case: saved, dm };
+    // Same body as the /tcg-admin moderation subcommands (service.ts); the dashboard acts as the local admin.
+    const result = await moderateMember({ guildId: deps.guildId(), now: deps.now, backend: backend(), cases,
+      settings: () => deps.currentSettings(), guarded }, request, LOCAL_ADMIN, 'dashboard');
+    deps.notify('members', String(result.case.number));
+    return result;
   }
 
   async function bans(query: URLSearchParams): Promise<BanListDto> {
@@ -192,7 +164,9 @@ function membersRoutes(deps: AdminToolsRouteDeps, options: MembersModuleOptions)
     const page = await backend().bans(after, limit);
     const linked = await guarded(() => cases.latestBans(deps.guildId(), page.map(ban => ban.userId)));
     const entries: BanEntryDto[] = page.map(ban => ({ userId: ban.userId, username: ban.username, avatarUrl: ban.avatarUrl, reason: ban.reason,
-      caseNumber: linked.get(ban.userId)?.number ?? null, expiresAtMs: null }));
+      caseNumber: linked.get(ban.userId)?.number ?? null,
+      // A tempban the scheduler has not lifted yet.
+      expiresAtMs: linked.get(ban.userId)?.expiryHandledAtMs === null ? linked.get(ban.userId)?.expiresAtMs ?? null : null }));
     return { bans: q ? entries.filter(ban => ban.username.toLowerCase().includes(q) || ban.userId.startsWith(q) || (ban.reason ?? '').toLowerCase().includes(q))
       : entries, nextAfter: page.length === limit ? page.at(-1)!.userId : null };
   }

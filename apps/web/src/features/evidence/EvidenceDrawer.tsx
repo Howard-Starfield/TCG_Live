@@ -10,9 +10,10 @@ import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, Segment
   type Tone } from '../../ui';
 import { useMatchVolumeFlags } from '../moderation/api';
 import { seatName } from '../shell/labels';
-import { addEvidenceLink, deleteEvidence, describeError, formatBytes, formatDuration, isNotAvailable, setEvidenceHold,
-  uploadEvidence, useEvidenceAccess, useEvidenceCacheUpdate, useEvidenceList, validateDeleteReason, validateEvidenceFile,
+import { addEvidenceLink, deleteEvidence, describeError, describeUploadError, formatBytes, formatDuration, isNotAvailable, setEvidenceHold,
+  uploadEvidence, uploadRate, useEvidenceAccess, useEvidenceCacheUpdate, useEvidenceList, validateDeleteReason, validateEvidenceFile,
   validateEvidenceUrl, validateNote } from './api';
+import { EvidenceCaseTools } from '../admin-tools/members/EvidenceCaseTools';
 import { EvidenceDownloadButton, EvidencePlayer, SyncedVoicePlayer, type PlayerMarker } from './EvidencePlayer';
 
 const KIND_TONE: Record<EvidenceItemDto['kind'], Tone> = { upload: 'accent', link: 'neutral', voice: 'warning' };
@@ -139,13 +140,24 @@ function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ loaded: number; total: number } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement | null>(null);
   const abort = useRef<AbortController | null>(null);
+  /** Recent progress samples (the last ~10 s) for the speed and time-left estimate. */
+  const samples = useRef<{ atMs: number; loaded: number }[]>([]);
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
   // An unmount mid-upload aborts it: never leave the drawer stuck undismissible.
   useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
+  // Closing or reloading the tab mid-upload would throw the upload away: ask the browser to confirm.
+  const uploading = busy && mode === 'file';
+  useEffect(() => {
+    if (!uploading) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [uploading]);
 
   const urlError = mode === 'link' ? validateEvidenceUrl(url) : null;
   const fileError = mode === 'file' ? (file ? validateEvidenceFile(file) : 'Choose a file.') : null;
@@ -155,24 +167,34 @@ function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
   const submit = async () => {
     setTouched(true);
     if (invalid || busy) return;
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setNotice(null);
     const controller = new AbortController();
     abort.current = controller;
+    samples.current = [];
     try {
-      const item = mode === 'link'
-        ? await addEvidenceLink(api, eventId, matchId, url.trim(), note.trim())
-        : await uploadEvidence(api, eventId, matchId, file!, note.trim(), {
-          signal: controller.signal, onProgress: (loaded, total) => setProgress({ loaded, total })
+      if (mode === 'link') {
+        onAdded(await addEvidenceLink(api, eventId, matchId, url.trim(), note.trim()));
+      } else {
+        const result = await uploadEvidence(api, eventId, matchId, file!, note.trim(), {
+          signal: controller.signal, onProgress: (loaded, total) => {
+            const now = Date.now();
+            samples.current = [...samples.current.filter(sample => now - sample.atMs <= 10_000), { atMs: now, loaded }];
+            setProgress({ loaded, total });
+          }
         });
-      onAdded(item);
+        onAdded(result.item);
+        if (result.duplicate) setNotice('This file was already uploaded for this match, so it was not stored again. The earlier copy is selected.');
+      }
       setUrl(''); setNote(''); setFile(null); setTouched(false); setProgress(null);
       if (input.current) input.current.value = '';
     } catch (cause) {
-      if (!controller.signal.aborted) setError(describeError(cause, 'The evidence could not be added.'));
+      if (!controller.signal.aborted)
+        setError(mode === 'file' ? describeUploadError(cause) : describeError(cause, 'The evidence could not be added.'));
       setProgress(null);
     } finally { setBusy(false); abort.current = null; }
   };
   const percent = progress && progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : null;
+  const rate = progress ? uploadRate(samples.current, progress.total) : null;
 
   return <form aria-label="Add evidence" className="flex flex-col gap-3 rounded-lg bg-raised p-3 shadow-[inset_0_0_0_1px_var(--color-line)]"
     onSubmit={event => { event.preventDefault(); void submit(); }}>
@@ -201,8 +223,13 @@ function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
     {progress && <div className="flex items-center gap-2">
       <progress aria-label="Upload progress" max={progress.total || 1} value={progress.loaded} className="h-1.5 flex-1 accent-[var(--color-accent)]" />
       <span className="font-mono text-2xs tabular-nums text-fg-muted">{percent === null ? formatBytes(progress.loaded) : `${percent}%`}</span>
+      {rate && <span data-testid="upload-rate" className="font-mono text-2xs tabular-nums text-fg-muted">
+        {formatBytes(Math.round(rate.bytesPerSecond))}/s{rate.etaMs !== null ? ` · ${formatDuration(rate.etaMs)} left` : ''}
+      </span>}
       <Button size="sm" variant="ghost" onClick={() => abort.current?.abort()}>Cancel</Button>
     </div>}
+    {progress && <p className="text-2xs text-fg-muted">Keep this tab open until the upload finishes.</p>}
+    {notice && <p role="status" className="text-xs text-fg-muted">{notice}</p>}
     {error && <p role="alert" className="text-xs text-danger">{error}</p>}
     <div className="flex justify-end">
       <Button type="submit" size="sm" variant="primary" loading={busy} icon={mode === 'file' ? <Upload aria-hidden /> : <Link2 aria-hidden />}>
@@ -290,6 +317,7 @@ export function EvidenceDrawer({ open, onClose, snapshot: liveSnapshot, matchId:
           </li>)}
         </ul>}
       {selected && <section aria-label="Selected evidence" className="flex flex-col gap-2 border-t border-line pt-3">
+        <EvidenceCaseTools snapshot={snapshot} item={selected} matchId={matchId} />
         {pair && <label className="flex items-center gap-2 text-xs text-fg-muted">
           <input type="checkbox" checked={sideBySide} onChange={event => setSideBySide(event.target.checked)} />
           Play both players' recordings side by side

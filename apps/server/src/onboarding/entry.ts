@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { AdminCommandRequestDto, AdminCommandResultDto, AuditEntryDto, EventSnapshotDto,
   EventSummaryDto, PanelRefreshResultDto, RuntimeStatusDto } from '@tcg-live/core';
-import { readAdminConfig } from '../admin/config.js';
+import { readAdminConfig, useGuidedSettings } from '../admin/config.js';
 import { createAdminHandler } from '../admin/mount.js';
 import { AdminNotFoundError, type AdminPrincipal, type AdminRuntime, type AdminRuntimeListener } from '../admin/runtime-types.js';
 import { readConfig } from '../config.js';
@@ -17,6 +17,7 @@ import { withClient } from '../rehearsal/store.js';
 import { startServer, type RunningServer } from '../server.js';
 import { discordSetupDiscovery } from './discord.js';
 import { SetupService } from './service.js';
+import { LocalSettings } from './settings.js';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
@@ -78,6 +79,9 @@ export async function runGuidedStart(options: GuidedStartOptions = {}): Promise<
   const envFile = path.join(PROJECT_ROOT, '.env');
   if (existsSync(envFile)) process.loadEnvFile(envFile);
   process.env.TCG_ADMIN_CONSOLE = '1';
+  // Read after .env: TCG_ADMIN_COMMANDS=1 / TCG_DISCORD_VOICE=1 force a switch on; otherwise the saved switch decides.
+  const localSettings = await LocalSettings.load();
+  useGuidedSettings(localSettings);
   const adminConfig = readAdminConfig('discord');
   const healthConfig = readConfig();
   const token = process.env.TCG_DISCORD_TOKEN?.trim() || process.env.DISCORD_BOT_TOKEN?.trim() || null;
@@ -104,6 +108,7 @@ export async function runGuidedStart(options: GuidedStartOptions = {}): Promise<
       await client?.destroy().catch(() => {});
       if (liveTask) live = await liveTask.catch(() => null);
       await live?.stop().catch(() => {});
+      useGuidedSettings(null);
     })();
     return stopTask;
   };
@@ -111,7 +116,7 @@ export async function runGuidedStart(options: GuidedStartOptions = {}): Promise<
   const launchBootstrap = async () => {
     if (stopping) return;
     setupHandler = createAdminHandler({ runtime: new BootstrapRuntime(), port: healthConfig.port,
-      mode: 'discord', commandsEnabled: false, webDist: adminConfig.webDist, setup,
+      mode: 'discord', commandsEnabled: false, webDist: adminConfig.webDist, setup, localSettings,
       persistentSessions: true, ...(options.launcher ? { launcher: options.launcher } : {}) });
     setupServer = await startServer(healthConfig, { admin: setupHandler });
     const link = setupHandler.loginUrl();
@@ -144,6 +149,7 @@ export async function runGuidedStart(options: GuidedStartOptions = {}): Promise<
     setupHandler = null;
     await disconnectDiscovery();
     if (stopping) return;
+    localSettings.applyVoice();
     try { liveTask = runPrivateDiscord(config, open, false, fresh,
       { launcher: options.launcher, browserAutoOpen: !options.noBrowser }); live = await liveTask; }
     catch {
@@ -161,6 +167,7 @@ export async function runGuidedStart(options: GuidedStartOptions = {}): Promise<
     const ready = await setup.readyConfig();
     if (ready) {
       await disconnectDiscovery();
+      localSettings.applyVoice();
       try { liveTask = runPrivateDiscord(ready, open, false, false,
         { launcher: options.launcher, browserAutoOpen: !options.noBrowser }); live = await liveTask; }
       catch { await recoverBootstrap(); }
@@ -180,6 +187,7 @@ async function main(): Promise<void> {
   process.once('SIGINT', () => { void handle.stop(); });
   process.once('SIGTERM', () => { void handle.stop(); });
   process.once('SIGBREAK', () => { void handle.stop(); });
+  process.once('SIGHUP', () => { void handle.stop(); });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url)))

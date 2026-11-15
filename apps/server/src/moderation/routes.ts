@@ -8,13 +8,16 @@ import { HttpError, sendJson } from '../admin/http/respond.js';
 import { LOCAL_ADMIN, type OpsAuditStore } from '../ops/audit.js';
 import { mapOpsError } from '../ops/errors.js';
 import { badRequest, integerQuery, notImplemented, onlyParams, UUID, type OpsRoute } from '../ops/http.js';
-import { describeVoicePool, type VoicePoolStatusSource } from '../voice/pool.js';
-import { tokenUserId, validateBotToken, type VoiceBotRegistry } from '../voice/tokens.js';
-import type { ModerationFlagStore } from './flags.js';
+import { voiceRuntimeControl, type VoiceRuntimeControl } from '../voice/control.js';
+import { recordingOptOuts } from '../voice/optout.js';
+import { describeVoicePool, MAIN_VOICE_BOT_ID, type VoicePoolStatusSource } from '../voice/pool.js';
+import { tokenUserId, validateBotToken, type VoiceBotRegistry, type VoiceBotSummary } from '../voice/tokens.js';
+import { SNOWFLAKE } from '../ops/http.js';
+import { parseReviewState, type ModerationFlagStore } from './flags.js';
 import { validateAutoModText } from './automod.js';
 import { ModerationVersionConflictError, parseModerationSettings, type ModerationSettingsStore } from './settings.js';
 
-export const MODERATION_UNAVAILABLE = 'Moderation storage is unavailable. Check PostgreSQL and run npm run db:evidence-setup -w @tcg-live/server.';
+export const MODERATION_UNAVAILABLE = 'Moderation storage is unavailable. Check PostgreSQL, then restart with npm start or run npm run db:evidence-setup.';
 
 export interface ModerationRouteOptions {
   settings: ModerationSettingsStore;
@@ -33,6 +36,8 @@ export interface ModerationRouteOptions {
   onSettingsSaved?(settings: ModerationSettingsDto): void;
   /** After a helper bot is added or removed; the voice runtime reloads its pool from here. */
   onVoiceBotsChanged?(): void;
+  /** The running voice runtime (Retry); defaults to the process-wide voiceRuntimeControl. */
+  voiceControl?: Pick<VoiceRuntimeControl, 'retryBot' | 'running'>;
 }
 
 async function guarded<T>(run: () => Promise<T>): Promise<T> {
@@ -46,7 +51,29 @@ export function moderationRoutes(options: ModerationRouteOptions): OpsRoute[] {
     return id;
   };
   const pool = async (): Promise<VoiceBotPoolDto> => describeVoicePool(await guarded(() => options.voiceBots.list()),
-    options.voicePool?.live() ?? null, { userId: options.mainBotUserId?.() ?? null });
+    options.voicePool?.live() ?? null, { userId: options.mainBotUserId?.() ?? null }, options.guildId());
+  const helper = async (raw: string | undefined): Promise<VoiceBotSummary> => {
+    const id = raw ?? '';
+    const bot = UUID.test(id) ? (await guarded(() => options.voiceBots.list())).find(item => item.id === id.toLowerCase()) : undefined;
+    if (!bot) throw new HttpError(404, 'not_found', 'Helper bot not found.');
+    return bot;
+  };
+  const control = options.voiceControl ?? voiceRuntimeControl;
+  const optOuts = recordingOptOuts({ settings: options.settings, audit: input => options.audit.append(input), guildId: () => options.guildId(),
+    onChanged: () => { void options.settings.get(guild()).then(saved => notify(options.onSettingsSaved && (() => options.onSettingsSaved!(saved)))).catch(() => {}); } });
+  /** Deleting a helper removes its room pins (best effort; a stale pin also falls back to auto at runtime). */
+  const unpin = async (botId: string) => {
+    try {
+      const id = guild();
+      const current = await options.settings.get(id);
+      const rooms = current.voice.rooms ?? {};
+      if (!Object.values(rooms).some(room => room.pinnedBotId === botId)) return;
+      const next = Object.fromEntries(Object.entries(rooms).map(([key, room]) => [key, room.pinnedBotId === botId ? { ...room, pinnedBotId: null } : room]));
+      const { guildId: _g, version, updatedAtMs: _u, ...body } = current;
+      const saved = await options.settings.put(id, version, { ...body, voice: { ...body.voice, rooms: next } }, LOCAL_ADMIN);
+      notify(options.onSettingsSaved && (() => options.onSettingsSaved!(saved)));
+    } catch { /* The runtime ignores pins to missing bots. */ }
+  };
   const notify = (callback: (() => void) | undefined) => { try { callback?.(); } catch { /* Listeners never fail a save. */ } };
   return [
     { pattern: /^\/api\/v1\/moderation\/settings$/, methods: {
@@ -88,6 +115,17 @@ export function moderationRoutes(options: ModerationRouteOptions): OpsRoute[] {
         sendJson(response, 200, page);
       } }
     } },
+    { pattern: /^\/api\/v1\/moderation\/flags\/(\d{1,15})$/, methods: {
+      // Acknowledge / dismiss / reopen one flag; audited as moderation.flag.reviewed by the store.
+      PATCH: { access: 'moderation.manage', run: async ({ request, response, params }) => {
+        const { state } = strictObject(await readJsonBody(request), ['state']);
+        const review = options.flags.review?.bind(options.flags);
+        if (!review) throw notImplemented('Flag review');
+        const id = guild();
+        const value = await guarded(async () => parseReviewState(state));
+        sendJson(response, 200, await guarded(() => review(id, Number(params[0]), value, LOCAL_ADMIN)));
+      } }
+    } },
     { pattern: /^\/api\/v1\/moderation\/voice-bots$/, methods: {
       GET: { access: 'moderation.manage', run: async ({ response }) => sendJson(response, 200, await pool()) },
       POST: { access: 'moderation.manage', run: async ({ request, response }) => {
@@ -124,8 +162,74 @@ export function moderationRoutes(options: ModerationRouteOptions): OpsRoute[] {
         await guarded(() => options.audit.append({ kind: 'moderation.voice_bot.removed', actor: LOCAL_ADMIN, guildId: options.guildId(),
           payload: { botId: bot.id, label: bot.label, userId: bot.userId } }));
         await guarded(() => options.voiceBots.remove(bot.id));
+        await unpin(bot.id);
         notify(options.onVoiceBotsChanged);
         sendJson(response, 200, await pool());
+      } },
+      PATCH: { access: 'moderation.manage', run: async ({ request, response, params }) => {
+        const bot = await helper(params[0]);
+        const patch = strictObject(await readJsonBody(request), ['label', 'enabled', 'nickname']);
+        const { before, after } = await guarded(() => options.voiceBots.update(bot.id, patch));
+        const changed = (['label', 'enabled', 'nickname'] as const).filter(key => before[key] !== after[key]);
+        if (changed.length) {
+          await guarded(() => options.audit.append({ kind: 'moderation.voice_bot.updated', actor: LOCAL_ADMIN, guildId: options.guildId(),
+            payload: { botId: bot.id, userId: bot.userId, changed, label: after.label, enabled: after.enabled, nickname: after.nickname } }));
+          const id = options.guildId();
+          // The helper sets its own nickname with its own token; it is set again on its next login if this fails.
+          if (changed.includes('nickname') && id) await options.voiceBots.applyNickname(bot.id, id).catch(() => false);
+          if (changed.includes('enabled') || changed.includes('nickname')) notify(options.onVoiceBotsChanged);
+        }
+        sendJson(response, 200, await pool());
+      } }
+    } },
+    { pattern: /^\/api\/v1\/moderation\/voice-bots\/([^/]+)\/token$/, methods: {
+      PUT: { access: 'moderation.manage', run: async ({ request, response, params }) => {
+        const bot = await helper(params[0]);
+        const { token } = strictObject(await readJsonBody(request), ['token']);
+        const updated = await guarded(() => options.voiceBots.replaceToken(bot.id, token));
+        await guarded(() => options.audit.append({ kind: 'moderation.voice_bot.updated', actor: LOCAL_ADMIN, guildId: options.guildId(),
+          payload: { botId: bot.id, userId: updated.userId, changed: ['credential'] } }));
+        notify(options.onVoiceBotsChanged);
+        sendJson(response, 200, await pool());
+      } }
+    } },
+    { pattern: /^\/api\/v1\/moderation\/voice-bots\/([^/]+)\/verify$/, methods: {
+      POST: { access: 'moderation.manage', run: async ({ request, response, params }) => {
+        const bot = await helper(params[0]);
+        const id = guild();
+        const { channelIds } = strictObject(await readJsonBody(request), ['channelIds']);
+        let channels: string[];
+        if (channelIds === undefined) {
+          const settings = await guarded(() => options.settings.get(id));
+          channels = [...new Set([...(options.voicePool?.live()?.rooms ?? []).map(room => room.channelId), ...Object.keys(settings.voice.rooms ?? {})])];
+        } else {
+          if (!Array.isArray(channelIds) || channelIds.length > 50 || channelIds.some(item => typeof item !== 'string' || !SNOWFLAKE.test(item)))
+            throw badRequest('channelIds must be at most 50 Discord channel IDs.');
+          channels = [...new Set(channelIds as string[])];
+        }
+        sendJson(response, 200, await guarded(() => options.voiceBots.verify(bot.id, id, channels.slice(0, 50))));
+      } }
+    } },
+    { pattern: /^\/api\/v1\/moderation\/voice-bots\/([^/]+)\/retry$/, methods: {
+      POST: { access: 'moderation.manage', run: async ({ request, response, params }) => {
+        await readEmptyBody(request);
+        const raw = params[0] ?? '';
+        const botId = raw === MAIN_VOICE_BOT_ID ? MAIN_VOICE_BOT_ID : (await helper(raw)).id;
+        if (!control.running) throw new HttpError(409, 'conflict', 'Voice features are turned off, so there is nothing to retry.');
+        await control.retryBot(botId);
+        sendJson(response, 200, await pool());
+      } }
+    } },
+    { pattern: /^\/api\/v1\/moderation\/recording-opt-outs$/, methods: {
+      GET: { access: 'moderation.manage', run: async ({ response }) => {
+        guild();
+        sendJson(response, 200, await guarded(() => optOuts.list()));
+      } },
+      POST: { access: 'moderation.manage', run: async ({ request, response }) => {
+        guild();
+        const { userId, optedOut } = strictObject(await readJsonBody(request), ['userId', 'optedOut']);
+        const result = await guarded(() => optOuts.setRecordingOptOut(userId as string, optedOut as boolean, LOCAL_ADMIN));
+        sendJson(response, 200, { userIds: result.userIds, version: result.version });
       } }
     } },
     { pattern: /^\/api\/v1\/moderation\/automod\/sync$/, methods: {

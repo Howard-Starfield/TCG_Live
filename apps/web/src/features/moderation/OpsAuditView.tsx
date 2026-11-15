@@ -3,10 +3,11 @@
 import { type EventSnapshotDto, type OpsAuditEntryDto, type OpsAuditKind } from '@tcg-live/core';
 import { History, RefreshCw } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { formatTimeOfDay, useSession } from '../../data';
+import { formatTimeOfDay, useAdminData, useSession } from '../../data';
+import { collectPages, ExportButtons, type ExportRow } from '../admin-tools/shared/exportData';
 import { Button, DataTable, EmptyState, Select, type Column } from '../../ui';
 import { None, ToneBadge } from '../lists/shared';
-import { useOpsAuditFeed } from './api';
+import { getOpsAuditPage, useOpsAuditFeed } from './api';
 
 /** True when this session may read the ops audit (GET /ops/audit needs evidence.read). */
 export function useOpsAuditAccess(): boolean {
@@ -29,6 +30,11 @@ export function OpsAuditView({ snapshot, pageLimit = 200 }: { snapshot: EventSna
   const [scope, setScope] = useState<'event' | 'all'>('event');
   const feed = useOpsAuditFeed({ enabled: true, limit: pageLimit, ...(scope === 'event' ? { eventId: snapshot.eventId } : {}) });
   const rows = useMemo(() => [...feed.items].reverse(), [feed.items]);
+  const { api } = useAdminData();
+  const collect = () => collectPages<number>(0, async after => {
+    const page = await getOpsAuditPage(api, { after, limit: 500, ...(scope === 'event' ? { eventId: snapshot.eventId } : {}) });
+    return { rows: page.entries as unknown as ExportRow[], next: page.entries.length ? page.nextAfter : null };
+  });
   const columns = useMemo<Array<Column<OpsAuditEntryDto>>>(() => [
     { id: 'id', header: '#', numeric: true, width: '44px', cell: entry => <span className="text-fg-muted">{entry.id}</span> },
     { id: 'time', header: 'Time', cell: entry => <time dateTime={new Date(entry.occurredAtMs).toISOString()} className="text-fg-muted">{formatTimeOfDay(entry.occurredAtMs)}</time> },
@@ -53,6 +59,7 @@ export function OpsAuditView({ snapshot, pageLimit = 200 }: { snapshot: EventSna
       </span>
       <span className="ml-auto flex items-center gap-1.5 text-2xs tabular-nums text-fg-subtle">
         {feed.items.length} loaded
+        <ExportButtons name={scope === 'event' ? 'ops-audit-event' : 'ops-audit'} label="the evidence and moderation audit" collect={collect} />
         <Button size="sm" variant="ghost" className="h-6 px-2" icon={<RefreshCw aria-hidden />} onClick={() => void feed.refresh()}>Refresh</Button>
       </span>
     </div>

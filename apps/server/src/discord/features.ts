@@ -143,6 +143,8 @@ export interface DiscordFeature {
   intentsFor?(settings: AdminToolsSettingsBodyDto): readonly GatewayIntentBits[];
   start(context: DiscordFeatureContext): Promise<void> | void;
   stop(): Promise<void> | void;
+  /** Time stop() may take at shutdown; defaults to STOP_BUDGET_MS (voice needs longer to finalize recordings). */
+  readonly stopBudgetMs?: number;
 }
 
 /** Static intents only; conditional ones come from planIntents() in intents.ts. */
@@ -150,7 +152,7 @@ export function featureIntents(features: readonly DiscordFeature[]): GatewayInte
   return [...new Set(features.flatMap(feature => feature.intents ?? []))];
 }
 
-const STOP_BUDGET_MS = 1_500;
+export const STOP_BUDGET_MS = 1_500;
 
 /**
  * Starts each feature in isolation: a failing feature is logged by name and skipped, the bot keeps
@@ -181,7 +183,7 @@ export async function startDiscordFeatures(features: readonly DiscordFeature[], 
           let timer: NodeJS.Timeout | undefined;
           try {
             await Promise.race([Promise.resolve().then(() => feature.stop()),
-              new Promise<void>(resolve => { timer = setTimeout(resolve, STOP_BUDGET_MS); timer.unref(); })]);
+              new Promise<void>(resolve => { timer = setTimeout(resolve, feature.stopBudgetMs ?? STOP_BUDGET_MS); timer.unref(); })]);
           } catch { context.log(`Discord feature ${feature.name} did not stop cleanly.`); }
           finally { if (timer) clearTimeout(timer); }
         }

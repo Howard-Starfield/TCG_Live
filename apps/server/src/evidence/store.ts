@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type pg from 'pg';
-import { EVIDENCE_DELETE_REASON_MAX_LENGTH, EVIDENCE_FILE_TYPES, EVIDENCE_LIST_LIMIT, EVIDENCE_NOTE_MAX_LENGTH,
+import { EVIDENCE_DELETE_REASON_MAX_LENGTH, EVIDENCE_DOWNLOAD_ONLY_MIME, EVIDENCE_FILE_TYPES, EVIDENCE_LIST_LIMIT, EVIDENCE_NOTE_MAX_LENGTH,
   EVIDENCE_ORIGINAL_NAME_MAX_LENGTH, EVIDENCE_URL_MAX_LENGTH, isEvidenceFileExtension, isMatchId, isSeatId,
   type EvidenceFileExtension, type EvidenceItemDto, type EvidenceKind, type EvidenceSource, type EvidenceStatus,
   type EvidenceSubmitter, type MatchId, type Seat } from '@tcg-live/core';
@@ -149,6 +149,10 @@ function extensionOf(storagePath: string | null): EvidenceFileExtension | null {
   const ext = storagePath ? RELATIVE_PATH.exec(storagePath)?.[3] : undefined;
   return isEvidenceFileExtension(ext) ? ext : null;
 }
+/** Stored, a browser-playable container, and not marked download-only by codec sniffing. */
+function isPlayable(status: EvidenceStatus, extension: EvidenceFileExtension | null, mime: string | null): boolean {
+  return status === 'stored' && extension !== null && EVIDENCE_FILE_TYPES[extension].playable && mime !== EVIDENCE_DOWNLOAD_ONLY_MIME;
+}
 function safeReason(reason: string): string {
   return [...String(reason).replace(/[\p{Cc}\p{Cf}]/gu, ' ')].slice(0, 200).join('') || 'failed';
 }
@@ -179,7 +183,7 @@ export function evidenceFromRow(row: EvidenceRow): EvidenceRecord {
     kind: row.kind, source: row.source, submittedBy: row.submitted_by as EvidenceSubmitter, seat: row.seat as Seat | null,
     note: row.note, originalName: row.original_name, mime: row.mime, byteSize: num(row.byte_size), sha256: row.sha256,
     durationMs: num(row.duration_ms), externalUrl: row.external_url,
-    playable: row.status === 'stored' && extension !== null && EVIDENCE_FILE_TYPES[extension].playable,
+    playable: isPlayable(row.status, extension, row.mime),
     status: row.status, hold: row.hold, createdAtMs: Number(row.created_at_ms), deletedAtMs: num(row.deleted_at_ms),
     deleteReason: row.delete_reason,
     ...(row.kind === 'voice' ? { recordedUserId: row.recorded_user_id, recordingStartedAtMs: num(row.recording_started_at_ms) } : {}),
@@ -320,7 +324,7 @@ export class MemoryEvidenceStore implements EvidenceStore {
   }
   private save(record: EvidenceRecord): EvidenceRecord {
     const extension = extensionOf(record.storagePath);
-    record.playable = record.status === 'stored' && extension !== null && EVIDENCE_FILE_TYPES[extension].playable;
+    record.playable = isPlayable(record.status, extension, record.mime);
     this.records.set(record.id, record);
     return structuredClone(record);
   }
@@ -409,6 +413,11 @@ export interface EvidenceRetentionSource {
   candidates(endedAtOrBeforeMs: number, limit: number): Promise<RetentionCandidate[]>;
   /** Deleted rows that still name a file, deleted at or after `sinceMs`, so a failed file removal is retried. */
   deletedWithFiles(sinceMs: number, limit: number): Promise<EvidenceRecord[]>;
+  /**
+   * Non-voice rows still 'pending' that were created before `createdBeforeMs`: an upload interrupted by a
+   * crash between reserving the row and marking it stored. Voice rows are left to the voice recorder.
+   */
+  stalePendingUploads?(createdBeforeMs: number, limit: number): Promise<EvidenceRecord[]>;
 }
 
 /**
@@ -448,6 +457,14 @@ export function pgEvidenceRetentionSource(): EvidenceRetentionSource {
         await requireEvidenceSchema(client);
         const result = await client.query<EvidenceRow>(`SELECT ${COLUMNS} FROM public.tcg_evidence
           WHERE status = 'deleted' AND storage_path IS NOT NULL AND deleted_at_ms >= $1 ORDER BY deleted_at_ms LIMIT $2`, [sinceMs, limit]);
+        return result.rows.map(evidenceFromRow);
+      });
+    },
+    async stalePendingUploads(createdBeforeMs, limit) {
+      return withClient(async client => {
+        await requireEvidenceSchema(client);
+        const result = await client.query<EvidenceRow>(`SELECT ${COLUMNS} FROM public.tcg_evidence
+          WHERE status = 'pending' AND kind <> 'voice' AND created_at_ms < $1 ORDER BY created_at_ms LIMIT $2`, [createdBeforeMs, limit]);
         return result.rows.map(evidenceFromRow);
       });
     }

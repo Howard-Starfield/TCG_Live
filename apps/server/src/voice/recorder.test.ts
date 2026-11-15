@@ -136,6 +136,6 @@ test('storage: no start below the quota or free-disk floor; a full disk mid-reco
     assert.equal(env.audit.entries.find(entry => entry.kind === 'voice.recording.stop')!.payload.reason, 'storage');
     assert.equal(notices.length, 2);
     assert.match(notices[1]!, /M3 stopped/);
-    assert.equal(session.storageTimer, undefined, 'the periodic check is cleared');
+    assert.equal(recorder.activeCount, 0, 'no recording (and so no periodic check) is left');
   } finally { await env.cleanup(); }
 });

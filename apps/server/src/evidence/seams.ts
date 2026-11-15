@@ -26,8 +26,10 @@ function declaredLength(request: IncomingMessage): number | null {
 
 /** EvidenceFileError and interrupted uploads become safe HTTP errors; store errors pass to the route's mapper. */
 export function uploadHttpError(error: unknown, request?: IncomingMessage): unknown {
+  // Connection: close on every refusal: the client may still be sending a large body, and a fresh
+  // connection for its next request is safer than draining gigabytes. The message is always readable.
   if (error instanceof EvidenceFileError)
-    return new HttpError(error.status, 'bad_request', error.message, { Connection: 'close' });
+    return new HttpError(error.status, error.status === 500 ? 'internal' : 'bad_request', error.message, { Connection: 'close' });
   if (error instanceof HttpError) return error;
   if (request && (request.destroyed || request.readableAborted || (error as { code?: string })?.code === 'ECONNRESET'))
     return new HttpError(400, 'bad_request', 'The upload was interrupted.', { Connection: 'close' });

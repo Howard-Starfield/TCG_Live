@@ -13,7 +13,26 @@ export interface CardPayload {
   allowedMentions: { parse: [] };
 }
 
-export type ButtonAction = 'checkin' | 'signupJoin' | 'signupWithdraw' | 'signupRoster' | 'ready' | 'pause' | 'resume' | 'won' | 'lost' | 'confirm' | 'dispute' | 'judge';
+export type ButtonAction = 'checkin' | 'signupJoin' | 'signupWithdraw' | 'signupRoster' | 'ready' | 'pause' | 'resume' | 'won' | 'lost' | 'confirm' | 'dispute' | 'judge' | 'evidence';
+
+/** Evidence stays open this long after a match's final result (players may still send a clip). */
+export const EVIDENCE_WINDOW_MS = 24 * 3_600_000;
+
+/** Runtime extras for card rendering; every field is optional so pure callers keep the old output. */
+export interface CardOptions {
+  /** Match IDs whose voice room is being recorded now ("🔴 Audio recording active"). */
+  recording?: ReadonlySet<string>;
+  /** The recording policy line for the signup card; null/absent when recording mode is off. */
+  recordingNotice?: string | null;
+  /** Current time, for the evidence window; Date.now() when absent. */
+  nowMs?: number;
+}
+
+/** "Submit evidence" is offered while a judge is needed or a dispute is open, and for 24 h after the result. */
+export function evidenceWindowOpen(match: MatchState, nowMs: number): boolean {
+  if (match.judgeAttention || match.proposal?.decision === 'disputed' || match.phase === 'expired') return true;
+  return match.phase === 'final' && (match.finalAtMs === undefined || nowMs - match.finalAtMs <= EVIDENCE_WINDOW_MS);
+}
 export interface ParsedButton {
   eventId: string;
   slot: CardSlot;
@@ -23,7 +42,7 @@ export interface ParsedButton {
 
 const codes: Record<ButtonAction, string> = {
   checkin: 'C', signupJoin: 'sj', signupWithdraw: 'sw', signupRoster: 'sr', ready: 'R', pause: 'P', resume: 'S', won: 'W', lost: 'L',
-  confirm: 'F', dispute: 'D', judge: 'J'
+  confirm: 'F', dispute: 'D', judge: 'J', evidence: 'E'
 };
 const actions = Object.fromEntries(Object.entries(codes).map(([action, code]) => [code, action])) as Record<string, ButtonAction>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -54,7 +73,7 @@ export function parseButtonId(raw: string): ParsedButton {
 
 function row(buttons: Array<{ label: string; action: ButtonAction; revision?: number; disabled?: boolean }>, eventId: string, slot: CardSlot) {
   return { type: 1 as const, components: buttons.map(button => ({
-    type: 2 as const, style: ['dispute', 'judge'].includes(button.action) ? 4 :
+    type: 2 as const, style: ['dispute', 'judge'].includes(button.action) ? 4 : button.action === 'evidence' ? 1 :
       ['confirm', 'resume'].includes(button.action) ? 3 : 2, label: button.label,
     custom_id: buttonId(eventId, slot, button.action, button.revision),
     ...(button.disabled ? { disabled: true } : {})
@@ -62,7 +81,8 @@ function row(buttons: Array<{ label: string; action: ButtonAction; revision?: nu
 }
 
 function matchCard(state: EventState, match: MatchState, runnerId?: string,
-  players?: Record<Player, string>): CardPayload {
+  players?: Record<Player, string>, options: CardOptions = {}): CardPayload {
+  const recordingLine = options.recording?.has(match.id) ? '🔴 Audio recording active' : '';
   const slot = match.id;
   const interrupted = match.phase === 'running' && !!runnerId && match.runnerId !== runnerId;
   const visual: VisualState = match.phase === 'final' ? 'final' : interrupted ? 'error' :
@@ -83,8 +103,9 @@ function matchCard(state: EventState, match: MatchState, runnerId?: string,
     'Finished';
   const details = match.phase === 'final' ? [
     `Practice BO1 CAM · ${match.players.map(mention).join(' vs ')}`, finalText,
-    match.confirmedBy ? `Agreed by ${mention(match.confirmedBy)}` : ''
+    match.confirmedBy ? `Agreed by ${mention(match.confirmedBy)}` : '', recordingLine
   ].filter(Boolean).join('\n') : [
+    recordingLine,
     awaitingSignup ? 'Awaiting signup; players will be assigned on close' : `Practice BO1 CAM · ${match.players.map(mention).join(' vs ')}`,
     `State: ${interrupted ? 'interrupted; local prepare --replace required' : match.phase}`,
     !state.published && state.startsAtMs !== undefined
@@ -117,6 +138,8 @@ function matchCard(state: EventState, match: MatchState, runnerId?: string,
     }
     buttons.push({ label: 'Call judge', action: 'judge' });
   }
+  if (!interrupted && state.published && evidenceWindowOpen(match, options.nowMs ?? Date.now()))
+    buttons.push({ label: 'Submit evidence', action: 'evidence' });
   return {
     embeds: [{ title: `Practice match ${slot}`, description: details,
       color: match.phase === 'final' ? 0x22c55e : match.phase === 'paused' ? 0xef4444 : 0xf59e0b,
@@ -144,10 +167,10 @@ export function renderTournamentRecap(state: EventState, players: Record<Player,
 }
 
 export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
-  players?: Record<Player, string>, tournament?: TournamentDetailsDto, signupChannelId?: string): CardPayload {
+  players?: Record<Player, string>, tournament?: TournamentDetailsDto, signupChannelId?: string, options: CardOptions = {}): CardPayload {
   if (slot !== 'checkin') {
     const match = state.matches.find(item => item.id === slot as MatchId)!;
-    return matchCard(state, match, runnerId, players);
+    return matchCard(state, match, runnerId, players, options);
   }
   if (state.signup) {
     const signup = state.signup;
@@ -159,6 +182,7 @@ export function renderCard(state: EventState, slot: CardSlot, runnerId?: string,
       ...(startsAtMs !== undefined ? [`🗓️ **Scheduled start:** <t:${Math.floor(startsAtMs / 1000)}:F>`] : []),
       ...(signupChannelId ? [`📍 **Signup channel:** <#${signupChannelId}>`] : []),
       `🎥 **Format:** ${state.firstRound ? 'BO1' : '4-player rehearsal · BO1'} · camera play · ${state.durationMs / 60_000} min per match`,
+      ...(options.recordingNotice ? [`🎙️ **Recording:** ${literal(options.recordingNotice)} Players can opt out with /tcg-test recording-optout.`] : []),
       ...(tournament?.description ? ['', '📝 **Tournament details**', literal(tournament.description)] : []),
       '',
       `👥 **Signup:** ${assigned ? 'closed' : 'open'} · ${signup.roster.length}/${signup.capacity ?? 4} joined`,

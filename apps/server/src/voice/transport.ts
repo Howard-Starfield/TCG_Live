@@ -1,3 +1,4 @@
+import type { VoiceBotErrorCode } from '@tcg-live/core';
 // The narrow seam between the voice runtime and @discordjs/voice + opusscript. Everything above this
 // interface (pool assignment, recorder, loudness) runs against fakes in tests; connection.ts is the only
 // module that touches the real libraries.
@@ -11,7 +12,23 @@ export interface VoiceChannelHandle {
   subscribe(userId: string, onPacket: (packet: Buffer) => void): VoicePacketSubscription;
   /** Fires once if the connection drops for good (kicked, channel deleted, reconnect failed). */
   onLost(listener: () => void): void;
+  /**
+   * Connection state changes while joined: 'ready' after a reconnect, anything else while audio is not
+   * flowing. Optional so simple fakes can omit it.
+   */
+  onState?(listener: (state: VoiceConnectionPhase) => void): void;
   leave(): void;
+}
+
+export type VoiceConnectionPhase = 'ready' | 'disconnected' | 'signalling' | 'connecting';
+
+/** Token-free health of one bot. */
+export interface VoiceBotHealth {
+  lastReadyAtMs: number | null;
+  lastErrorCode: VoiceBotErrorCode | null;
+  consecutiveFailures: number;
+  /** A transient login failure is retried no sooner than this (null: no wait). */
+  nextRetryAtMs: number | null;
 }
 
 export type VoiceBotLoginState = 'idle' | 'logging-in' | 'ready' | 'login failed' | 'not in server';
@@ -28,6 +45,9 @@ export interface VoiceBotTransport {
   join(channelId: string): Promise<VoiceChannelHandle>;
   /** Leaves any channel and logs out (helpers) or detaches (main bot). Never rejects. */
   destroy(): Promise<void>;
+  health?(): VoiceBotHealth;
+  /** Clears a login failure (even an invalid token) so the next ensureReady() logs in again at once. */
+  resetFailure?(): void;
 }
 
 export interface OpusDecoder {

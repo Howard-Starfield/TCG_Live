@@ -4,30 +4,50 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from '../../data';
 import { TabPanel, TabStrip } from '../../ui';
 import { useAdminToolsAccess } from './api';
-import { ADMIN_TOOLS_TAB_EVENT, AdminToolsNavigationContext, readStoredTab, storeTab, type AdminToolsNavigation } from './navigation';
+import { ADMIN_TOOLS_TAB_EVENT, AdminToolsNavigationContext, currentConsoleRoute, parseConsoleHash, readStoredTab, storeTab, writeConsoleRoute,
+  type AdminToolsNavigation } from './navigation';
 import { adminToolsTabs, visibleAdminToolsTabs, type AdminToolsTab } from './registry';
 import { useWheelScrollX } from './useWheelScrollX';
-import './admin-tools.css';
 
 export function AdminToolsPage({ tabs = adminToolsTabs, initialTab }: { tabs?: readonly AdminToolsTab[]; initialTab?: string }) {
   const session = useSession();
   const access = useAdminToolsAccess();
   const visible = useMemo(() => visibleAdminToolsTabs(capability => session.hasCapability(capability), tabs), [session, tabs]);
-  const [selected, setSelected] = useState(() => initialTab ?? readStoredTab() ?? visible[0]?.id ?? '');
-  const [memberId, setMemberId] = useState<string | null>(null);
+  // A deep link (#/admin-tools/<tab>/<item>) wins over the remembered tab, so a reload keeps your place.
+  const [linked] = useState(() => { const route = currentConsoleRoute(); return route?.page === 'admin-tools' ? route : null; });
+  const [selected, setSelected] = useState(() => initialTab ?? linked?.tab ?? readStoredTab() ?? visible[0]?.id ?? '');
+  const [item, setItem] = useState<string | null>(() => (!initialTab && linked?.tab ? linked.item : null));
+  const [memberId, setMemberIdState] = useState<string | null>(() => (!initialTab && linked?.tab === 'members' ? linked.item : null));
   const current = visible.find(tab => tab.id === selected) ?? visible[0];
-  const select = useCallback((tab: string) => { setSelected(tab); storeTab(tab); }, []);
+  const select = useCallback((tab: string) => { setSelected(tab); storeTab(tab); setItem(null); }, []);
+  const setMemberId = useCallback((id: string | null) => { setMemberIdState(id); setItem(id); }, []);
+  // The address bar follows the page: tab and open item.
+  const currentId = current?.id ?? null;
+  useEffect(() => { if (currentId) writeConsoleRoute({ page: 'admin-tools', tab: currentId, item }); }, [currentId, item]);
+  // Editing the hash by hand (or Back) moves the page.
+  useEffect(() => {
+    const onHash = () => {
+      const route = parseConsoleHash(window.location.hash);
+      if (route?.page !== 'admin-tools' || !route.tab || !visible.some(tab => tab.id === route.tab)) return;
+      setSelected(route.tab); storeTab(route.tab); setItem(route.item);
+      if (route.tab === 'members') setMemberIdState(route.item);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, [visible]);
   const membersVisible = visible.some(tab => tab.id === 'members');
   const navigation = useMemo<AdminToolsNavigation>(() => ({
     selectTab: tab => { if (visible.some(item => item.id === tab)) select(tab); },
     memberId, setMemberId,
-    openMember: membersVisible ? id => { setMemberId(id); select('members'); } : null
-  }), [memberId, membersVisible, select, visible]);
+    openMember: membersVisible ? id => { select('members'); setMemberId(id); } : null,
+    item, setItem
+  }), [item, memberId, membersVisible, select, setMemberId, visible]);
   // Requests from outside the page (the permission banner) switch tabs while the page is open.
   useEffect(() => {
     const onRequest = (event: Event) => {
       const tab = (event as CustomEvent<string>).detail;
-      if (typeof tab === 'string' && visible.some(item => item.id === tab)) setSelected(tab);
+      // A new tab drops the open item, so the address bar never pairs it with another tab's item.
+      if (typeof tab === 'string' && visible.some(item => item.id === tab)) { setSelected(tab); setItem(null); }
     };
     window.addEventListener(ADMIN_TOOLS_TAB_EVENT, onRequest);
     return () => window.removeEventListener(ADMIN_TOOLS_TAB_EVENT, onRequest);

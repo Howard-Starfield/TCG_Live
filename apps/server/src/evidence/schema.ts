@@ -8,7 +8,7 @@ import { requireDirectorySchema } from '../tournaments/directory.js';
 /** A RuleError, so the shared isDatabaseUnavailable() maps it to a 503 with this setup hint. */
 export class EvidenceSchemaUnavailableError extends RuleError {}
 
-export const EVIDENCE_SETUP_HINT = 'Evidence and moderation storage is not set up. Restart with the launcher or run npm run db:evidence-setup -w @tcg-live/server.';
+export const EVIDENCE_SETUP_HINT = 'Evidence and moderation storage is not set up. Restart with npm start or run npm run db:evidence-setup.';
 
 /** Every evidence, moderation and ops-audit query checks this first, like requireDirectorySchema. */
 export async function requireEvidenceSchema(client: pg.Client): Promise<void> {

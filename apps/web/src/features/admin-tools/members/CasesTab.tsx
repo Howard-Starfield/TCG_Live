@@ -1,25 +1,59 @@
 // Cases tab: numbered cases with filters (member, kind, moderator), case detail with reason and evidence
 // editing and audited delete, plus the mod-action audit trail (our cases merged with Discord's audit log).
-import { MOD_CASE_KINDS, type ModCaseDto, type ModCaseKind } from '@tcg-live/core';
+import { MOD_CASE_KINDS, type ModCaseDto, type ModCaseKind, type ModCasePageDto } from '@tcg-live/core';
+import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Badge, Button, ConfirmDialog, Dialog, Field, Input, Select, Textarea } from '../../../ui';
+import { useAdminData } from '../../../data';
+import { adminToolsKeys, useAdminToolsAccess } from '../api';
+import { retryTransient } from '../../evidence/api';
+import { collectPages, ExportButtons, type ExportRow } from '../shared/exportData';
+import { Badge, Button, ConfirmDialog, Dialog, Disclosure, Field, Input, Select, Textarea } from '../../../ui';
+import { CaseEvidencePicker } from './CaseEvidencePicker';
 import { describeError } from '../../evidence/api';
-import { SNOWFLAKE, useCanModerate, useCases, useDeleteCase, useDebouncedValue, useModAudit, useUpdateCase, type CaseFilter } from './api';
+import { caseQueryString, SNOWFLAKE, useCanModerate, useCases, useDeleteCase, useDebouncedValue, useModAudit, useUpdateCase, type CaseFilter } from './api';
 import { useAdminToolsNavigation } from '../navigation';
 import { formatDateTime } from './MembersTab';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const moderatorLabel = (id: string) => id === 'local-admin' ? 'Dashboard admin' : id === 'bot' ? 'Bot' : id;
+export const caseNumberOf = (item: string | null | undefined): number | null => (item && /^[1-9]\d{0,9}$/.test(item) ? Number(item) : null);
+
+/** One case by number (deep links to a case that is not on the loaded page). */
+function useCaseByNumber(number: number | null, enabled: boolean) {
+  const { api } = useAdminData();
+  const access = useAdminToolsAccess();
+  return useQuery({ queryKey: adminToolsKeys.feature('members', 'case', number), enabled: access && enabled && number !== null, retry: retryTransient,
+    queryFn: ({ signal }) => api.request<ModCaseDto>('GET', `/admin-tools/cases/${number}`, { signal }) });
+}
+
+/** Every case matching the filter, newest first (capped), for CSV / JSON export. */
+function useCaseExport(filter: CaseFilter) {
+  const { api } = useAdminData();
+  return () => collectPages<number>(0, async before => {
+    const page = await api.request<ModCasePageDto>('GET', `/admin-tools/cases?${caseQueryString(filter, before || null)}`);
+    return { rows: page.cases as unknown as ExportRow[], next: page.nextBefore };
+  });
+}
+
+const moderatorLabel = (id: string) => id === 'local-admin' ? 'Dashboard (local admin)' : id === 'bot' ? 'Bot' : id;
 
 export function CasesTab() {
   const [filter, setFilter] = useState<CaseFilter>({ targetId: '', kind: '', moderatorId: '' });
   const debounced = useDebouncedValue(filter);
   const cases = useCases(debounced);
-  const [open, setOpen] = useState<ModCaseDto | null>(null);
+  // The open case is part of the deep link (#/admin-tools/cases/<number>), so a reload reopens it.
+  const navigation = useAdminToolsNavigation();
+  const [openNumber, setOpenNumber] = useState<number | null>(() => caseNumberOf(navigation.item));
+  const setOpen = (item: ModCaseDto | null) => { setOpenNumber(item?.number ?? null); navigation.setItem?.(item ? String(item.number) : null); };
   const memberInvalid = filter.targetId.trim() !== '' && !SNOWFLAKE.test(filter.targetId.trim());
   const rows = cases.data?.pages.flatMap(page => page.cases) ?? [];
+  const listed = openNumber === null ? undefined : rows.find(item => item.number === openNumber);
+  const fetched = useCaseByNumber(openNumber, !listed && !cases.isPending);
+  const open = listed ?? fetched.data ?? null;
+  const exporter = useCaseExport(debounced);
   return <div className="flex flex-col gap-6">
     <section aria-label="Case log" className="flex flex-col gap-3">
+      <div className="flex items-center gap-2"><h3 className="flex-1 text-[13px] font-semibold text-fg">Case log</h3>
+        <ExportButtons name="cases" label="cases" collect={exporter} /></div>
       <div className="grid gap-2 sm:grid-cols-3">
         <Field label="Member ID" error={memberInvalid ? 'Enter a Discord ID.' : undefined}>
           <Input value={filter.targetId} placeholder="Any member" onChange={event => setFilter({ ...filter, targetId: event.target.value })} />
@@ -84,9 +118,17 @@ export function CaseDetailDialog({ item, onClose }: { item: ModCaseDto | null; o
       </> : <Button onClick={close}>Close</Button>}>
       <div className="flex flex-col gap-3">
         <Field label="Reason" required><Textarea rows={3} value={reason} disabled={!canModerate} maxLength={500} onChange={event => setReason(event.target.value)} /></Field>
-        <Field label="Evidence IDs" description="Match evidence IDs, one per line (up to 10)." error={evidenceInvalid ? 'Use evidence IDs from the Evidence drawer.' : undefined}>
+        {item.eventId && item.matchId ? <>
+          <CaseEvidencePicker eventId={item.eventId} matchId={item.matchId} value={evidenceIds} disabled={!canModerate}
+            onChange={ids => setEvidence(ids.join('\n'))} />
+          <Disclosure summary="Evidence IDs" meta={`${evidenceIds.length} attached`}>
+            <Field label="Evidence IDs" description="Paste IDs from another match, one per line (up to 10)." error={evidenceInvalid ? 'Use evidence IDs from the Evidence drawer.' : undefined}>
+              <Textarea rows={2} value={evidence} disabled={!canModerate} onChange={event => setEvidence(event.target.value)} />
+            </Field>
+          </Disclosure>
+        </> : <Field label="Evidence IDs" description="Match evidence IDs, one per line (up to 10). Copy them in the Evidence drawer." error={evidenceInvalid ? 'Use evidence IDs from the Evidence drawer.' : undefined}>
           <Textarea rows={2} value={evidence} disabled={!canModerate} onChange={event => setEvidence(event.target.value)} />
-        </Field>
+        </Field>}
         {navigation.openMember && <span><Button size="sm" variant="ghost"
           onClick={() => { const open = navigation.openMember!; close(); open(item.targetId); }}>Open member profile</Button></span>}
         {item.matchId && <p className="text-xs text-fg-muted">From match {item.matchId}.</p>}

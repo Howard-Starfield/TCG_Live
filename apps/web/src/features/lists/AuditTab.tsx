@@ -6,7 +6,8 @@
 import type { AuditEntryDto, EventSnapshotDto } from '@tcg-live/core';
 import { Bot, ChevronRight, FileClock, History, Search, ShieldCheck, Terminal, X } from 'lucide-react';
 import { useId, useMemo, useState } from 'react';
-import { formatAuditEntry, formatTimeOfDay, useAudit } from '../../data';
+import { formatAuditEntry, formatTimeOfDay, useAdminData, useAudit } from '../../data';
+import { collectPages, ExportButtons, type ExportRow } from '../admin-tools/shared/exportData';
 import { Avatar, Button, Chip, CodeBlock, DataTable, Disclosure, EmptyState, IconButton, Input, SegmentedControl, Select, cx,
   type Column, type SortState } from '../../ui';
 import { OpsAuditView, useOpsAuditAccess } from '../moderation/OpsAuditView';
@@ -135,6 +136,13 @@ export function AuditTab({ snapshot }: { snapshot: EventSnapshotDto }) {
 
 function CommandAudit({ snapshot }: { snapshot: EventSnapshotDto }) {
   const audit = useAudit(snapshot.eventId);
+  const { api } = useAdminData();
+  // The whole applied-command audit of the event (oldest first, capped), with the readable summary per row.
+  const collect = () => collectPages<number>(0, async after => {
+    const page = await api.getAudit(snapshot.eventId, { after, limit: 500 });
+    return { rows: page.map(entry => ({ ...entry, summary: formatAuditEntry(entry, snapshot).text }) as unknown as ExportRow),
+      next: page.length === 500 ? page[page.length - 1]!.sequence : null };
+  });
   const [filters, setFilters] = useState<AuditFilters>(EMPTY_AUDIT_FILTERS);
   const [selected, setSelected] = useState<number | null>(null);
   const types = useMemo(() => commandTypes(audit.entries), [audit.entries]);
@@ -213,6 +221,7 @@ function CommandAudit({ snapshot }: { snapshot: EventSnapshotDto }) {
         </p>
         {audit.pageError && <p role="alert" className="text-2xs font-medium text-danger">{audit.pageError.message}</p>}
         <div className="flex items-center gap-1.5">
+          <ExportButtons name={`audit-${snapshot.eventId.slice(0, 8)}`} label="the event audit" collect={collect} />
           {audit.hasMore && (
             <Button size="sm" onClick={() => void audit.fetchMore()} loading={audit.isFetchingMore}>Load newer</Button>
           )}

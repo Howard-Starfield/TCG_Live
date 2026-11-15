@@ -2,7 +2,7 @@
 // context-aware suggestions and seat/member mentions resolved against the snapshot.
 //
 //   /publish | /signup-close | /signup-reopen | /refresh
-//   /signup-remove <member>
+//   /signup-remove <member>     /signup-add <member>     /checkin-for <seat|member>
 //   /resolve <match> <winner> <reason…>      /correct <match> <winner> <reason…>
 //   /judge-resume <match> <reason…>
 //
@@ -13,10 +13,10 @@ import { isSeatId, type EventAdminAction, type EventSnapshotDto, type MatchAdmin
   type Seat, type SessionDto, type Snowflake } from '@tcg-live/core';
 import { memberName } from '../../data';
 import { seatWithName } from '../shell/labels';
-import { availableEventActions, availableMatchActions, canRefreshPanels, canRun, checkReason, isWritable,
+import { availableEventActions, availableMatchActions, canAddToSignup, canRefreshPanels, canRun, checkinForSeats, checkReason, isWritable,
   MATCH_ACTION_LABEL, type CommandType } from './model';
 
-type ArgName = 'match' | 'winner' | 'member' | 'reason';
+type ArgName = 'match' | 'winner' | 'member' | 'seat' | 'reason';
 
 export interface CommandSpec {
   /** Subcommand name as in Discord, e.g. `judge-resume`. */
@@ -31,6 +31,8 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   { name: 'signup-close', kind: 'signupClose', description: 'Close signup and assign seats A–D', args: [] },
   { name: 'signup-reopen', kind: 'signupReopen', description: 'Reopen signup before publication', args: [] },
   { name: 'signup-remove', kind: 'signupRemove', description: 'Remove a member from the open signup', args: ['member'] },
+  { name: 'signup-add', kind: 'signupAdd', description: 'Add a member to the open signup', args: ['member'] },
+  { name: 'checkin-for', kind: 'checkinFor', description: 'Check a seated player in for them', args: ['seat'] },
   { name: 'refresh', kind: 'refresh', description: 'Create or repair the Discord cards', args: [] },
   { name: 'resolve', kind: 'resolve', description: 'Resolve a match', args: ['match', 'winner', 'reason'] },
   { name: 'correct', kind: 'correct', description: 'Correct a final result', args: ['match', 'winner', 'reason'] },
@@ -38,9 +40,10 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
 ];
 
 /** Named option keys, Discord's first. */
-const KEYS: Record<string, ArgName> = { match: 'match', winner: 'winner', 'member-id': 'member', member: 'member', reason: 'reason' };
+const KEYS: Record<string, ArgName> = { match: 'match', winner: 'winner', 'member-id': 'member', member: 'member', seat: 'seat',
+  player: 'seat', reason: 'reason' };
 
-const ARG_LABEL: Record<ArgName, string> = { match: 'match', winner: 'winner', member: 'member', reason: 'reason' };
+const ARG_LABEL: Record<ArgName, string> = { match: 'match', winner: 'winner', member: 'member', seat: 'seat or member', reason: 'reason' };
 
 /** `/resolve <match> <winner> <reason>`. */
 export function usage(spec: CommandSpec): string {
@@ -56,6 +59,8 @@ export type ComposerIntent =
   | { kind: 'event'; type: 'publish' | 'signupClose' | 'signupReopen' }
   | { kind: 'refresh' }
   | { kind: 'remove'; memberId: Snowflake }
+  | { kind: 'signupAdd'; memberId: Snowflake }
+  | { kind: 'checkinFor'; seat: Seat }
   /** `winner` is null when the command did not name one; `reason` is null when it gave none. */
   | { kind: 'match'; action: MatchAdminAction; matchId: MatchId; winner: Seat | null; reason: string | null };
 
@@ -131,11 +136,12 @@ function scan(text: string, limit = text.length): Scan {
   }
   let index = 1;
   let name = first.text.slice(1).toLowerCase();
-  if (name === 'tcg-test') {
+  if (name === 'tcg-test' || name === 'tcg-staff') {
+    const root = name;
     name = tokens[1]?.text.toLowerCase() ?? '';
     index = 2;
     if (!name) {
-      result.error = 'Add a subcommand after /tcg-test, for example /tcg-test publish.';
+      result.error = `Add a subcommand after /${root}, for example /${root} publish.`;
       return result;
     }
   }
@@ -192,7 +198,7 @@ const accept = <T,>(value: T): Resolved<T> => ({ ok: true, value });
 const reject = <T,>(error: string): Resolved<T> => ({ ok: false, error });
 
 function resolveMatch(snapshot: EventSnapshotDto, raw: string): Resolved<MatchDto> {
-  const id = /^m?([12])$/i.exec(raw);
+  const id = /^m?([1-9]\d{0,3})$/i.exec(raw);
   const match = id ? snapshot.matches.find(item => item.id === `M${id[1]}`) : undefined;
   return match ? accept(match)
     : reject(`Unknown match "${raw}". Use ${snapshot.matches.map(item => item.id).join(' or ') || 'M1 or M2'}.`);
@@ -241,6 +247,31 @@ export function parseCommand(text: string, context: ComposerContext): ParseResul
   if (!canRun(session, spec.kind)) return fail(`This console session cannot run /${spec.name}.`);
 
   switch (spec.kind) {
+    case 'signupAdd': {
+      if (!canAddToSignup(session, snapshot))
+        return fail(`/${spec.name} is not available right now. It works while signup is open and not full.`);
+      const raw = scanned.values.member;
+      if (!raw) return fail(`Name the member to add: ${usage(spec)}, for example their member ID.`);
+      const mention = resolveMention(snapshot, raw);
+      if ('error' in mention) return fail(mention.error);
+      if ('seat' in mention) return fail('Signup has no seats yet; mention the member or give their member ID.');
+      if (snapshot.signup?.roster.includes(mention.memberId)) return fail(`${memberName(snapshot, mention.memberId)} is already signed up.`);
+      if (mention.memberId === snapshot.adminId) return fail('The organizer cannot play in their own tournament.');
+      return { kind: 'ok', spec, intent: { kind: 'signupAdd', memberId: mention.memberId } };
+    }
+    case 'checkinFor': {
+      const seats = checkinForSeats(session, snapshot);
+      if (!seats.length) return fail(`/${spec.name} is not available right now. It works after signup closes, before the round is published.`);
+      const raw = scanned.values.seat;
+      if (!raw) return fail(`Name the player: ${usage(spec)}, for example @A or @ and a name.`);
+      const mention = resolveMention(snapshot, raw);
+      if ('error' in mention) return fail(mention.error);
+      const seat = 'seat' in mention ? mention.seat
+        : (Object.keys(snapshot.seats) as Seat[]).find(item => snapshot.seats[item] === mention.memberId);
+      if (!seat || !snapshot.seats[seat]) return fail(`${'seat' in mention ? `Seat ${mention.seat}` : memberName(snapshot, mention.memberId)} has no seat in this tournament.`);
+      if (!seats.includes(seat)) return fail(`${seatWithName(snapshot, seat)} is already checked in.`);
+      return { kind: 'ok', spec, intent: { kind: 'checkinFor', seat } };
+    }
     case 'publish':
     case 'signupClose':
     case 'signupReopen':
@@ -309,6 +340,8 @@ export function availableSpecs(context: ComposerContext): CommandSpec[] {
   return COMMAND_SPECS.filter(spec => {
     switch (spec.kind) {
       case 'refresh': return canRefreshPanels(session);
+      case 'signupAdd': return canAddToSignup(session, snapshot);
+      case 'checkinFor': return checkinForSeats(session, snapshot).length > 0;
       case 'publish':
       case 'signupClose':
       case 'signupReopen':
@@ -364,6 +397,13 @@ export function suggest(text: string, caret: number, context: ComposerContext): 
       .filter(match => matchesQuery(query, match.id, match.id.slice(1)))
       .map(match => ({ id: `match-${match.id}`, label: match.id, insertText: `${prefix}${match.id}`,
         description: `${match.seats.join(' vs ')} · ${match.phase}${match.judge ? ' · needs a judge' : ''}` }));
+  } else if (arg === 'seat') {
+    const bare = query.replace(/^@/, '');
+    items = checkinForSeats(context.session, snapshot)
+      .filter(seat => matchesQuery(bare, seat, slugOf(memberName(snapshot, snapshot.seats[seat]))))
+      .map(seat => ({ id: `seat-${seat}`, label: `@${seat}`, insertText: `${prefix}@${seat}`, description: seatWithName(snapshot, seat) }));
+  } else if (spec.kind === 'signupAdd') {
+    return null;
   } else if (arg === 'winner') {
     const resolved = scanned.values.match ? resolveMatch(snapshot, scanned.values.match) : null;
     if (!resolved?.ok) return null;
@@ -380,7 +420,7 @@ export function suggest(text: string, caret: number, context: ComposerContext): 
       .map((memberId, index) => ({ id: `member-${memberId}`, label: mentionFor(snapshot, memberId), insertText: `${prefix}${mentionFor(snapshot, memberId)}`,
         description: `${memberName(snapshot, memberId)} · joined #${(snapshot.signup?.roster.indexOf(memberId) ?? index) + 1}` }));
   }
-  const heading = arg === 'match' ? 'Matches' : arg === 'winner' ? 'Winner' : 'Members';
+  const heading = arg === 'match' ? 'Matches' : arg === 'winner' ? 'Winner' : arg === 'seat' ? 'Players' : 'Members';
   return items.length ? { heading, start, end: caret, items } : null;
 }
 

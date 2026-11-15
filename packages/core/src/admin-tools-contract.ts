@@ -303,7 +303,11 @@ export type AnnouncementStatus = typeof ANNOUNCEMENT_STATUSES[number];
 export interface AnnouncementDto {
   id: string; guildId: Snowflake; channelId: Snowflake;
   body: MessageBodyDto;
-  /** Role IDs to ping; @everyone is never pinged. */
+  /**
+   * Role IDs to ping (never the @everyone role ID). @everyone is pinged only when the announcement opts in
+   * with the separate `mentionEveryone` switch (an extra wire field of the save request); text typed as
+   * "@everyone" never pings on its own.
+   */
   mentionRoleIds: Snowflake[];
   /** Null sends immediately; scheduled sends need the PC on (catch-up on restart if within the grace window). */
   scheduledAtMs: number | null;
@@ -335,7 +339,11 @@ export interface WelcomeSettingsDto {
   /** Optional leave message with the same placeholders; null for none. */
   leaveMessage: string | null;
 }
-export interface AutoRoleSettingsDto { enabled: boolean; roleIds: Snowflake[] }
+export interface AutoRoleSettingsDto {
+  enabled: boolean; roleIds: Snowflake[];
+  /** Skip bot accounts; absent means true (only human members get the auto-roles). */
+  skipBots?: boolean;
+}
 export interface MessageLogSettingsDto {
   enabled: boolean;
   /** Also post edit/delete entries to this Discord channel; null logs to the dashboard only. */
@@ -371,6 +379,11 @@ export interface CaseSettingsDto {
   dmMembers: boolean;
   /** Post each new case to this channel; null for none. */
   logChannelId: Snowflake | null;
+  /**
+   * Tournament staff roles (next wave): members with one of these roles may run the staff commands
+   * (/tcg-staff and the /tcg-admin moderation subcommands). Absent on documents saved before it existed (= none).
+   */
+  staffRoleIds?: Snowflake[];
 }
 
 /** One versioned document per guild (tcg_admin_tools_settings). Stickies, panels and jobs have their own tables. */

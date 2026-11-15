@@ -4,7 +4,9 @@ import { isJudgeRequestCategory, MAX_JUDGE_REQUEST_LENGTH, type ArtworkGame, typ
 import { RuleError, scheduledPublishDue, signupTournamentComplete } from '../rehearsal/domain.js';
 import { applyDiscordCommand, applyWebCommand, type WebCommandContext } from '../rehearsal/store.js';
 import type { MatchLifecycleEvent } from './features.js';
-import { parseButtonId, renderCard, renderTournamentRecap, type CardPayload, type ParsedButton } from './cards.js';
+import { evidenceWindowOpen, parseButtonId, renderCard, renderTournamentRecap, type CardOptions, type CardPayload,
+  type ParsedButton } from './cards.js';
+import { isTournamentStaff, STAFF_DENIED } from './staff.js';
 import { channelForSlot, type PrivateDiscordConfig } from './config.js';
 import { activateSignupDraft, adoptSessionClocks, bindCard, claimResumeReminder, clearDeletedSessionCards, completeStickyCard, deleteActiveTournament, deletedSessionsWithCards, getSessionState, messageId, sessionSlots, NoActiveSessionError, replaceStickyCard, suspendStickyCard,
   resolvePlayers, type CardSlot, type SessionRow } from './session.js';
@@ -22,9 +24,16 @@ export interface PrivateInteraction {
   messageId?: string;
   subcommand?: string;
   matchId?: MatchId;
-  winner?: Player;
+  /** A seat, or (free text from `/tcg-staff`) a member mention or ID; resolved against the match. */
+  winner?: string;
   reason?: string;
   memberId?: string;
+  /** `/tcg-staff checkin-for player:` — a seat (A, P3) or a member mention/ID. */
+  player?: string;
+  /** Role IDs of the interacting member (tournament staff check). */
+  roleIds?: string[];
+  /** The "Submit evidence" card button: opens the evidence form. */
+  showEvidenceForm?(): Promise<void>;
   acknowledge(): Promise<void>;
   reply(message: string, attachment?: { name: string; attachment: Buffer }): Promise<void>;
 }
@@ -122,6 +131,10 @@ export class PrivateDiscordController {
   private publishDecided: string | undefined;
   /** The configured home signup channel; a draft without its own channel opens here. */
   private readonly homeChannelId: string;
+  /** Tournament staff role IDs (admin-tools settings); none until the runtime sets a source. */
+  private staffRoles: () => Promise<readonly string[]> = async () => [];
+  /** Recording badge and recording policy for card rendering. */
+  private cardOptions: () => CardOptions = () => ({});
 
   constructor(
     readonly config: PrivateDiscordConfig,
@@ -143,6 +156,81 @@ export class PrivateDiscordController {
     private readonly adoptClocks = adoptSessionClocks
   ) {
     this.homeChannelId = config.channelId;
+  }
+
+  /** Where the staff role IDs come from (the runtime reads the saved admin-tools settings). */
+  setStaffRoles(source: () => Promise<readonly string[]>): void { this.staffRoles = source; }
+
+  /** Runtime extras for every rendered card (recording badge, recording policy). */
+  setCardOptions(source: () => CardOptions): void { this.cardOptions = source; }
+
+  private render(state: EventState, slot: CardSlot, session: SessionRow): CardPayload {
+    let options: CardOptions = {};
+    try { options = this.cardOptions(); } catch { /* Extras never block a card. */ }
+    return renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament, session.channel_id,
+      { nowMs: this.clock(), ...options });
+  }
+
+  /** 'admin' for the configured organizer, 'staff' for a member with a staff role, null otherwise. */
+  async staffLevel(userId: string, roleIds: readonly string[] = []): Promise<'admin' | 'staff' | null> {
+    if (userId === this.config.adminId) return 'admin';
+    let staffRoleIds: readonly string[] = [];
+    try { staffRoleIds = await this.staffRoles(); } catch { /* Settings unavailable: only the organizer. */ }
+    return isTournamentStaff({ userId, adminId: this.config.adminId, roleIds, staffRoleIds }) ? 'staff' : null;
+  }
+
+  /**
+   * May this member submit evidence for the match now? Players of the match and staff, while the match
+   * needs a judge or is disputed, and for 24 h after its result. Returns the refusal text, or null.
+   */
+  async evidenceRefusal(userId: string, roleIds: readonly string[], eventId: string, matchId: string): Promise<string | null> {
+    let current: Awaited<ReturnType<typeof getSessionState>>;
+    try { current = await this.read(this.config); } catch { return 'There is no active tournament.'; }
+    const match = current.state.matches.find(item => item.id === matchId);
+    if (current.state.id !== eventId || !match) return 'This match is no longer in the current round.';
+    const players = resolvePlayers(current.session, current.state);
+    const seated = match.players.some(seat => players?.[seat] === userId);
+    if (!seated && !await this.staffLevel(userId, roleIds))
+      return 'Only the two players in this match or tournament staff can submit evidence for it.';
+    if (!evidenceWindowOpen(match, this.clock()))
+      return 'Evidence for this match closed 24 hours after its result. Ask the organizer if you still need to send something.';
+    return null;
+  }
+
+  /**
+   * `/tcg-staff` autocomplete: match IDs from the live round, the seats of the chosen match (winner), seats
+   * waiting to check in (player) or the signup roster (member-id). `nameOf` turns a Discord ID into a name.
+   */
+  async autocomplete(subcommand: string, focused: string, query: string, matchValue: string | null,
+    nameOf: (id: string) => string | undefined = () => undefined): Promise<Array<{ name: string; value: string }>> {
+    let current: Awaited<ReturnType<typeof getSessionState>>;
+    try { current = await this.read(this.config); } catch { return []; }
+    const { state, session } = current;
+    const players = resolvePlayers(session, state) as Record<string, string> | null;
+    const label = (seat: string) => {
+      const id = players?.[seat];
+      return id ? `${seat} · ${nameOf(id) ?? `member …${id.slice(-4)}`}` : seat;
+    };
+    const wanted = query.trim().toLowerCase();
+    const fits = (...texts: string[]) => !wanted || texts.some(text => text.toLowerCase().includes(wanted));
+    let choices: Array<{ name: string; value: string }> = [];
+    if (focused === 'match') {
+      choices = state.matches.filter(match => subcommand === 'correct' ? match.phase === 'final'
+        : subcommand === 'judge-resume' ? match.phase === 'paused' : match.phase !== 'final' && match.phase !== 'setup')
+        .map(match => ({ value: match.id, name: `${match.id} · ${match.players.map(label).join(' vs ')} · ${match.phase}` +
+          (match.judgeAttention ? ' · judge needed' : '') }))
+        .filter(choice => fits(choice.value, choice.name));
+    } else if (focused === 'winner') {
+      const match = state.matches.find(item => item.id === (matchValue ?? '').trim().toUpperCase());
+      choices = (match?.players ?? []).map(seat => ({ value: seat, name: label(seat) })).filter(choice => fits(choice.name));
+    } else if (focused === 'player') {
+      const seats = Object.keys(players ?? {}).filter(seat => !state.checkins.includes(seat as Player));
+      choices = state.published ? [] : seats.map(seat => ({ value: seat, name: label(seat) })).filter(choice => fits(choice.name));
+    } else if (focused === 'member-id') {
+      choices = (state.signup?.roster ?? []).map(id => ({ value: id, name: nameOf(id) ?? id }))
+        .filter(choice => fits(choice.name, choice.value));
+    }
+    return choices.slice(0, 25).map(choice => ({ name: choice.name.slice(0, 100), value: choice.value }));
   }
 
   /**
@@ -316,7 +404,7 @@ export class PrivateDiscordController {
       const id = messageId(session, slot);
       // After an activation whose first post failed, a background retry creates the signup card.
       const signupCard = slot === 'checkin' && this.signupCardPending === state.id;
-      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament, session.channel_id);
+      const payload = this.render(state, slot, session);
       const dynamicMatch = state.firstRound && slot !== 'checkin' &&
         state.matches.some(match => match.id === slot && match.phase !== 'final') && this.transport.findMatchCard;
       const nonce = dynamicMatch || signupCard ? createHash('sha256').update(`${state.id}:${slot}`).digest('hex').slice(0, 25) : undefined;
@@ -463,7 +551,7 @@ export class PrivateDiscordController {
       if (channelForSlot(this.config, slot) !== channelId || session.identity_map.stickySuspended?.includes(slot)) continue;
       const oldId = messageId(session, slot);
       if (!oldId || BigInt(observedId) <= BigInt(oldId)) continue;
-      const payload = renderCard(state, slot, this.runnerId, resolvePlayers(session, state) ?? undefined, session.tournament, session.channel_id);
+      const payload = this.render(state, slot, session);
       // Persist a reservation before POST: a crash or ambiguous response leaves
       // this slot suspended until a deliberate admin refresh.
       if (!await this.stickyStore.suspend(this.config, session.event_id, slot, oldId)) continue;
@@ -585,6 +673,22 @@ export class PrivateDiscordController {
         this.isControlChannel(interaction.channelId));
     if (!scope) return;
     await this.track((async () => {
+      if (interaction.showEvidenceForm) {
+        try {
+          const parsed = this.canonicalButton(interaction, (await this.read(this.config)).session);
+          const refusal = parsed.action !== 'evidence' || parsed.slot === 'checkin' ? 'Invalid private Discord control.'
+            : await this.evidenceRefusal(interaction.userId, interaction.roleIds ?? [], parsed.eventId, parsed.slot);
+          if (refusal) throw new RuleError(refusal);
+          if (!this.accepting) return;
+          await interaction.showEvidenceForm();
+        } catch (error) {
+          try {
+            await interaction.acknowledge();
+            await interaction.reply(error instanceof RuleError ? error.message : 'The evidence form could not be opened.');
+          } catch { /* Discord may already have accepted the modal. */ }
+        }
+        return;
+      }
       if (interaction.showJudgeRequest) {
         try {
           if (!this.canPost()) throw new RuleError('The Discord bot is unavailable.');
@@ -748,7 +852,7 @@ export class PrivateDiscordController {
       const id = messageId(session, slot);
       if (!id || session.identity_map.stickySuspended?.includes(slot)) { pending = true; continue; }
       try {
-        await this.transport.edit(id, renderCard(state, slot, this.runnerId, players, session.tournament, session.channel_id), slot);
+        await this.transport.edit(id, this.render(state, slot, session), slot);
         changed = true;
       } catch { pending = true; }
     }
@@ -829,8 +933,10 @@ export class PrivateDiscordController {
   private async handleAcknowledged(interaction: PrivateInteraction): Promise<void> {
     let committed: AdminApplyResult | undefined;
     try {
+      // Staff commands: the organizer or a member with a tournament staff role (admin-tools settings).
+      const level = interaction.kind === 'command' ? await this.staffLevel(interaction.userId, interaction.roleIds) : null;
+      if (interaction.kind === 'command' && !level) throw new RuleError(STAFF_DENIED);
       if (interaction.kind === 'command' && interaction.subcommand === 'refresh') {
-        this.requireAdmin(interaction.userId);
         await interaction.reply((await this.explicitRefresh()).reply);
         return;
       }
@@ -851,10 +957,13 @@ export class PrivateDiscordController {
         }
         return;
       }
+      if (level === 'staff' && Object.values(resolvePlayers(session, state) ?? {}).includes(interaction.userId))
+        throw new RuleError('Staff who play in this tournament cannot run staff commands for it. Ask the organizer or another staff member.');
       const { command, slot } = this.commandFor(interaction, session, state);
       const cardId = slot && interaction.kind === 'judgeRequest' ? messageId(session, slot) : interaction.messageId;
+      // A staff member acts as the organizer in the domain; principal_id keeps the real Discord user.
       committed = await this.commit(session.event_id, command, () => this.apply({ config: this.config, eventId: session.event_id,
-        principalId: interaction.userId, interactionId: interaction.id,
+        principalId: interaction.userId, interactionId: interaction.id, ...(level === 'staff' ? { staff: true } : {}),
         ...(slot && cardId ? { message: { slot, id: cardId, channelId: interaction.channelId! } } : {}) }, command, this.runnerId, this.clock),
         interaction.userId);
       if (committed.degraded) {
@@ -873,10 +982,6 @@ export class PrivateDiscordController {
     }
   }
 
-  private requireAdmin(userId: string): void {
-    if (userId !== this.config.adminId) throw new RuleError('Private test admin action denied.');
-  }
-
   private canonicalButton(interaction: PrivateInteraction, session: SessionRow): ParsedButton {
     const parsed = parseButtonId(interaction.customId ?? '');
     if (parsed.eventId !== session.event_id || interaction.channelId !== channelForSlot(this.config, parsed.slot) || !interaction.messageId ||
@@ -886,21 +991,41 @@ export class PrivateDiscordController {
 
   private commandFor(interaction: PrivateInteraction, session: SessionRow, state: EventState): { command: Command; slot?: CardSlot } {
     if (interaction.kind === 'command') {
-      this.requireAdmin(interaction.userId);
-      const matchId = interaction.matchId;
-      const winner = interaction.winner;
+      // The organizer or tournament staff only: checked (asynchronously) in handleAcknowledged.
+      const matchId = interaction.matchId ? interaction.matchId.trim().toUpperCase() as MatchId : undefined;
       const reason = interaction.reason;
+      const players = resolvePlayers(session, state) as Record<string, string> | null;
+      /** A seat letter (A, P3), a `<@id>` mention or a bare member ID, as the seat it names. */
+      const seatOf = (raw: string | undefined): Player | undefined => {
+        const text = (raw ?? '').trim();
+        const id = /^<@!?(\d{15,22})>$/.exec(text)?.[1] ?? (/^\d{15,22}$/.test(text) ? text : null);
+        if (id) return Object.entries(players ?? {}).find(([, member]) => member === id)?.[0] as Player | undefined;
+        return text ? text.toUpperCase() as Player : undefined;
+      };
+      const winner = seatOf(interaction.winner);
+      if (interaction.subcommand === 'signup-add') {
+        if (!interaction.memberId) throw new RuleError('Choose the member to add.');
+        if (interaction.memberId === session.identity_map.adminId) throw new RuleError('Signup admin cannot play.');
+        return { command: { type: 'signupAdd', memberId: interaction.memberId } };
+      }
+      if (interaction.subcommand === 'checkin-for') {
+        const seat = seatOf(interaction.player);
+        if (!seat || !players?.[seat]) throw new RuleError('Choose a seated player (for example A or P3, or mention them).');
+        return { command: { type: 'checkinFor', seat } };
+      }
       if (interaction.subcommand === 'publish') return { command: { type: 'publish' } };
       if (interaction.subcommand === 'signup-close') return { command: { type: 'signupClose', adminId: session.identity_map.adminId } };
       if (interaction.subcommand === 'signup-reopen') return { command: { type: 'signupReopen' } };
       if (interaction.subcommand === 'signup-remove' && interaction.memberId)
         return { command: { type: 'signupRemove', memberId: interaction.memberId } };
-      if (!matchId || !state.matches.some(match => match.id === matchId)) throw new RuleError('Invalid match option.');
+      if (!matchId || !state.matches.some(match => match.id === matchId))
+        throw new RuleError(`Unknown match. Choose one of ${state.matches.map(match => match.id).join(', ') || 'none (no round yet)'}.`);
       if (interaction.subcommand === 'judge-resume' && reason?.trim())
         return { command: { type: 'judgeResume', matchId, reason } };
       if ((interaction.subcommand === 'resolve' || interaction.subcommand === 'correct') && winner && reason?.trim()) {
         const match = state.matches.find(item => item.id === matchId);
-        if (!match?.players.includes(winner)) throw new RuleError('Winner is not in the selected match.');
+        if (!match?.players.includes(winner))
+          throw new RuleError(`Winner is not in the selected match (${match?.players.join(' vs ') ?? matchId}).`);
         return { command: { type: interaction.subcommand, matchId, winner, reason } };
       }
       throw new RuleError('Invalid admin command options.');

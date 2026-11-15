@@ -5,6 +5,7 @@ import { evidenceRoutes } from '../../evidence/routes.js';
 import { moderationRoutes } from '../../moderation/routes.js';
 import { adminToolsRoutes } from '../../admin-tools/routes.js';
 import { tournamentRoutes } from '../../tournaments/routes.js';
+import { localSettingsRoutes } from '../../onboarding/settings.js';
 import { AUDIT_PAGE_LIMIT, type Capability, type SessionDto, type SessionGrantDto } from '@tcg-live/core';
 import { sessionCapabilities } from '../commands.js';
 import type { AdminHandler, AdminHandlerOptions } from '../mount.js';
@@ -71,7 +72,19 @@ function eventIdParam(raw: string | undefined): string {
 export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHttpInternals = {}): AdminHttp {
   const { runtime, port } = options;
   const now = internals.now ?? Date.now;
-  const capabilities: Capability[] = [...(internals.capabilities ?? sessionCapabilities(options.commandsEnabled))];
+  // Re-evaluated on every request: the guided "Allow dashboard actions" switch applies to current sessions.
+  const commandsNow = (): boolean => options.commandsLive ? options.commandsLive() : options.commandsEnabled;
+  const capabilitiesNow = (): Capability[] => [...(internals.capabilities ?? sessionCapabilities(commandsNow()))];
+  const commandsOff = () => new HttpError(403, 'forbidden', 'Dashboard actions are turned off for this console.');
+  /** Deleting a draft is a dashboard action too; the directory's other methods are unchanged. */
+  const guardedDirectory = (directory: NonNullable<typeof options.tournaments>): NonNullable<typeof options.tournaments> => {
+    if (!directory.deleteDraft) return directory;
+    const remove = directory.deleteDraft.bind(directory);
+    return Object.create(directory, { deleteDraft: { value: async (id: string) => {
+      if (!commandsNow()) throw commandsOff();
+      return remove(id);
+    } } });
+  };
   const print = options.printLoginUrl ?? ((url: string) => { process.stdout.write(`Admin console: ${url}\n`); });
   const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
@@ -103,10 +116,10 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
   function describe(session: Session): SessionDto {
     return {
       principal: { kind: 'local', id: 'local-admin', label: 'Local admin' },
-      capabilities: [...capabilities],
+      capabilities: capabilitiesNow(),
       ...sessions.expiry(session),
       mode: options.mode,
-      commandsEnabled: options.commandsEnabled,
+      commandsEnabled: commandsNow(),
       ...(options.launchDemo ? { demoAvailable: true } : {}),
       ...(options.persistentSessions && options.mode === 'discord' ? { persistent: true as const } : {}),
       ...(options.setup ? { setup: true as const } : {}),
@@ -114,7 +127,8 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       ...(options.tournaments ? { tournaments: true as const } : {}),
       ...(options.evidence ? { evidence: true as const } : {}),
       ...(options.moderation ? { moderation: true as const } : {}),
-      ...(options.adminTools ? { adminTools: true as const } : {})
+      ...(options.adminTools ? { adminTools: true as const } : {}),
+      ...(options.localSettings ? { localSettings: true as const } : {})
     };
   }
 
@@ -168,6 +182,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       POST: { access: 'session' as const, run: async ({ request, response, query }: Context) => {
         await readEmptyBody(request);
         if (closed) throw unavailable();
+        if (!commandsNow()) throw commandsOff();
         const sample = query.get('players');
         if ([...query.keys()].some(key => key !== 'players') || query.getAll('players').length > 1 ||
             (sample !== null && !['5', '8', '9', '100'].includes(sample))) throw badRequest('Invalid demo roster size.');
@@ -232,16 +247,23 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       } }
     ] satisfies Route[] : []),
     ...(options.artwork ? artworkRoutes(options.artwork, options.applyArtwork) : []),
-    ...(options.tournaments ? tournamentRoutes(options.tournaments,
+    ...(options.tournaments ? tournamentRoutes(guardedDirectory(options.tournaments),
       () => options.artwork?.describe().activeGame ?? 'one-piece', async game => {
         await options.artwork?.selectGame(game);
         return await options.applyArtwork?.() ?? { status: 'pending', message: 'Existing Discord panels are not available yet.' };
-      }, options.openSignup, options.signupChannels, options.deleteTournament) : []),
+      }, options.openSignup && (async (id, expected) => {
+        if (!commandsNow()) throw commandsOff();
+        return options.openSignup!(id, expected);
+      }), options.signupChannels, options.deleteTournament && (async id => {
+        if (!commandsNow()) throw commandsOff();
+        return options.deleteTournament!(id);
+      })) : []),
+    ...(options.localSettings ? localSettingsRoutes(options.localSettings) : []),
     ...(options.evidence ? evidenceRoutes({ ...options.evidence, sessionLive: session => sessions.isLive(session) }) : []),
     ...(options.moderation ? moderationRoutes(options.moderation) : []),
     ...(options.adminTools ? adminToolsRoutes({ ...options.adminTools, snapshot: eventId => runtime.snapshot(eventId),
       listEvents: () => runtime.listEvents() }) : []),
-    ...commandRoutes({ runtime, commandsEnabled: options.commandsEnabled, can: capability => capabilities.includes(capability) })
+    ...commandRoutes({ runtime, commandsEnabled: commandsNow, can: capability => capabilitiesNow().includes(capability) })
   ];
 
   async function dispatch(request: IncomingMessage, response: ServerResponse, pathname: string, search: string): Promise<void> {
@@ -263,7 +285,7 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
     if (endpoint.access !== 'public') {
       session = sessions.authenticate(request.headers.authorization);
       if (!session) throw new HttpError(401, 'unauthenticated', 'Sign in with the console link.', { 'WWW-Authenticate': 'Bearer' });
-      if (endpoint.access !== 'session' && !capabilities.includes(endpoint.access)) {
+      if (endpoint.access !== 'session' && !capabilitiesNow().includes(endpoint.access)) {
         throw new HttpError(403, 'forbidden', 'This session may not do that.');
       }
     }

@@ -2,7 +2,7 @@
 // results and errors read. No React here; the hook and components build on these.
 import { ADMIN_REASON_MAX_LENGTH, COMMAND_CAPABILITY, type AdminCommandDto, type AdminCommandResultDto,
   type CommandPreconditionDto, type EventAdminAction, type EventSnapshotDto, type MatchAdminAction, type MatchDto,
-  type MatchId, type PanelRefreshResultDto, type SessionDto, type Snowflake } from '@tcg-live/core';
+  type MatchId, type PanelRefreshResultDto, type Seat, type SessionDto, type Snowflake } from '@tcg-live/core';
 import { memberName, type ApiError } from '../../data';
 import { seatWithName } from '../shell/labels';
 
@@ -55,6 +55,19 @@ export function canRemoveMember(session: Gate, snapshot: EventSnapshotDto, membe
     && !!snapshot.signup?.roster.includes(memberId);
 }
 
+/** The organizer may add members to the signup now (open and not full). */
+export function canAddToSignup(session: Gate, snapshot: EventSnapshotDto): boolean {
+  return isWritable(snapshot) && canRun(session, 'signupAdd') && snapshot.signup?.status === 'open'
+    && snapshot.signup.roster.length < snapshot.signup.capacity;
+}
+
+/** Seats the organizer may check in now: seated, not checked in, round not published. */
+export function checkinForSeats(session: Gate, snapshot: EventSnapshotDto): Seat[] {
+  if (!isWritable(snapshot) || !canRun(session, 'checkinFor') || snapshot.published) return [];
+  if (snapshot.signup && snapshot.signup.status !== 'assigned') return [];
+  return (Object.keys(snapshot.seats) as Seat[]).filter(seat => !!snapshot.seats[seat] && !snapshot.checkins.includes(seat));
+}
+
 // ---------------------------------------------------------------- requests
 
 /** What the admin saw when deciding; the server refuses with 409 when it no longer holds. */
@@ -62,9 +75,11 @@ export function preconditionFor(snapshot: EventSnapshotDto, command: AdminComman
   switch (command.type) {
     case 'publish':
     case 'delayStart':
+    case 'checkinFor':
       return { eventVersion: snapshot.version };
     case 'signupClose':
     case 'signupReopen':
+    case 'signupAdd':
     case 'signupRemove': {
       const signup = signupPrecondition(snapshot);
       return signup ? { signup } : {};
@@ -117,6 +132,8 @@ export function newCommandId(): string {
 export function actionKey(command: AdminCommandDto | { type: 'refresh' }): string {
   switch (command.type) {
     case 'signupRemove': return `signupRemove:${command.memberId}`;
+    case 'signupAdd': return `signupAdd:${command.memberId}`;
+    case 'checkinFor': return `checkinFor:${command.seat}`;
     case 'judgeResume':
     case 'resolve':
     case 'correct': return `${command.type}:${command.matchId}`;
@@ -170,6 +187,8 @@ export function commandVerb(snapshot: EventSnapshotDto, command: AdminCommandDto
     case 'signupClose': return 'close signup';
     case 'signupReopen': return 'reopen signup';
     case 'signupRemove': return `remove ${memberName(snapshot, command.memberId)}`;
+    case 'signupAdd': return `add ${memberName(snapshot, command.memberId)} to the signup`;
+    case 'checkinFor': return `check in ${seatWithName(snapshot, command.seat)}`;
     case 'judgeResume': return `resume ${command.matchId}`;
     case 'resolve': return `resolve ${command.matchId}`;
     case 'correct': return `correct ${command.matchId}`;
@@ -184,6 +203,8 @@ export function commandDone(snapshot: EventSnapshotDto, command: AdminCommandDto
     case 'signupClose': return 'Signup closed and seats assigned';
     case 'signupReopen': return 'Signup reopened';
     case 'signupRemove': return `Removed ${memberName(snapshot, command.memberId)} from the signup`;
+    case 'signupAdd': return `Added ${memberName(snapshot, command.memberId)} to the signup`;
+    case 'checkinFor': return `Checked in ${seatWithName(snapshot, command.seat)}`;
     case 'judgeResume': return `${command.matchId} resumed by judge override`;
     case 'resolve': return `${command.matchId} resolved: ${seatWithName(snapshot, command.winner)} wins`;
     case 'correct': return `${command.matchId} corrected: ${seatWithName(snapshot, command.winner)} wins`;

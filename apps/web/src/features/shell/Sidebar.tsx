@@ -1,4 +1,4 @@
-import { ChevronRight, FileClock, History, House, PanelLeftClose, PanelLeftOpen, Plus, Search, ShieldCheck } from 'lucide-react';
+import { ChevronRight, FileClock, History, House, PanelLeftClose, PanelLeftOpen, Plus, Search, ShieldAlert, ListChecks, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TournamentDirectoryEntryDto } from '@tcg-live/core';
 import { useServerNow, useStreamConnection } from '../../data';
@@ -12,6 +12,9 @@ import { CreateTournamentDialog } from '../tournaments/CreateTournamentDialog';
 import { useTournamentDirectory } from '../tournaments/directory';
 import { useTournamentMenu } from '../tournaments/useTournamentMenu';
 import { useAdminToolsAccess } from '../admin-tools/api';
+import { ModerationSettings } from '../moderation/ModerationSettings';
+import { useModerationAccess } from '../moderation/api';
+import { LocalSettingsDialog } from '../setup/DashboardActionsSwitch';
 
 /** Events (active first, retired as history), stream status and the account. */
 export function Sidebar() {
@@ -28,6 +31,10 @@ export function Sidebar() {
   const { events, viewed } = shell;
   const directoryEnabled = !!shell.session.tournaments;
   const adminToolsEnabled = useAdminToolsAccess();
+  const moderationEnabled = useModerationAccess();
+  const localSettingsEnabled = shell.session.localSettings === true;
+  const [moderationOpen, setModerationOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(query.trim()), 250);
     return () => clearTimeout(timer);
@@ -103,12 +110,20 @@ export function Sidebar() {
         </Tooltip>}
       </div>
       <SidebarList label="Dashboard" collapsed={collapsed}
-        onSelect={id => id === 'drafts' ? shell.showDrafts() : id === 'admin-tools' ? shell.showAdminTools() : shell.showHome()}
+        onSelect={id => id === 'drafts' ? shell.showDrafts() : id === 'admin-tools' ? shell.showAdminTools()
+          : id === 'moderation' ? setModerationOpen(true) : id === 'options' ? setOptionsOpen(true)
+          : id === 'capabilities' ? shell.showCapabilities() : shell.showHome()}
         className="shell-sidebar-home" items={[
           { id: 'home', label: 'Home', icon: <House />, active: shell.home && !shell.draftsOpen },
           ...(directoryEnabled ? [{ id: 'drafts', label: 'Drafts', icon: <FileClock />, active: shell.draftsOpen || !!shell.draft }] : []),
-          ...(adminToolsEnabled ? [{ id: 'admin-tools', label: 'Admin tools', icon: <ShieldCheck />, active: shell.adminTools }] : [])
+          ...(adminToolsEnabled ? [{ id: 'admin-tools', label: 'Admin tools', icon: <ShieldCheck />, active: shell.adminTools }] : []),
+          ...(moderationEnabled ? [{ id: 'moderation', label: 'Moderation & evidence', icon: <ShieldAlert />, active: moderationOpen }] : []),
+          ...(localSettingsEnabled ? [{ id: 'options', label: 'Dashboard options', icon: <SlidersHorizontal />, active: optionsOpen }] : []),
+          { id: 'capabilities', label: 'Capabilities', icon: <ListChecks />, active: shell.capabilities }
         ]} />
+      {moderationEnabled && <ModerationSettings open={moderationOpen} onClose={() => setModerationOpen(false)}
+        {...(adminToolsEnabled ? { onOpenAdminTools: () => { setModerationOpen(false); shell.showAdminTools(); } } : {})} />}
+      {localSettingsEnabled && <LocalSettingsDialog open={optionsOpen} onClose={() => setOptionsOpen(false)} />}
       <div className="shell-sidebar-scroll">
         {listState === 'loading' && (
           <div aria-busy="true" aria-label="Loading events" className="flex flex-col gap-2 px-2 pt-2">

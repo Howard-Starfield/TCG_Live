@@ -34,6 +34,10 @@ export interface ModCaseStore {
   counts(guildId: string, targetIds: readonly string[]): Promise<Map<string, number>>;
   /** Newest 'ban' case per target (ban list links). */
   latestBans(guildId: string, targetIds: readonly string[]): Promise<Map<string, ModCaseDto>>;
+  /** Tempban cases whose expiry has passed and was not handled yet, oldest expiry first (tempban scheduler). */
+  dueTempbans?(guildId: string, nowMs: number, limit: number): Promise<ModCaseDto[]>;
+  /** Marks a case's expiry as carried out; false when it already was (another pass won). */
+  markExpiryHandled?(guildId: string, number: number, atMs: number): Promise<boolean>;
 }
 
 export interface ModNoteStore {
@@ -137,6 +141,12 @@ export function pgModCaseStore(now: () => number = Date.now): ModCaseStore {
         WHERE guild_id = $1 AND target_id = ANY($2::text[]) GROUP BY target_id`, [guildId, targetIds]);
       return new Map(result.rows.map(row => [row.target_id, row.count]));
     }) : Promise.resolve(new Map()),
+    dueTempbans: (guildId, nowMs, limit) => run(async client => (await client.query<CaseRow>(`SELECT ${CASE_COLUMNS}
+      FROM public.tcg_mod_cases WHERE guild_id = $1 AND kind = 'ban' AND expires_at_ms IS NOT NULL AND expires_at_ms <= $2
+      AND expiry_handled_at_ms IS NULL ORDER BY expires_at_ms LIMIT $3`, [guildId, nowMs, limit])).rows.map(caseFromRow)),
+    markExpiryHandled: (guildId, number, atMs) => run(async client => ((await client.query(`UPDATE public.tcg_mod_cases
+      SET expiry_handled_at_ms = $3 WHERE guild_id = $1 AND number = $2 AND expires_at_ms IS NOT NULL AND expiry_handled_at_ms IS NULL`,
+    [guildId, number, atMs])).rowCount ?? 0) > 0),
     latestBans: (guildId, targetIds) => targetIds.length ? run(async client => {
       const result = await client.query<CaseRow>(`SELECT DISTINCT ON (target_id) ${CASE_COLUMNS} FROM public.tcg_mod_cases
         WHERE guild_id = $1 AND kind = 'ban' AND target_id = ANY($2::text[]) ORDER BY target_id, number DESC`, [guildId, targetIds]);
@@ -248,6 +258,16 @@ export class MemoryModCaseStore implements ModCaseStore {
     const counts = new Map<string, number>();
     for (const item of this.cases) if (item.guildId === guildId && targetIds.includes(item.targetId)) counts.set(item.targetId, (counts.get(item.targetId) ?? 0) + 1);
     return counts;
+  }
+  async dueTempbans(guildId: string, nowMs: number, limit: number) {
+    return this.cases.filter(item => item.guildId === guildId && item.kind === 'ban' && item.expiresAtMs !== null && item.expiresAtMs <= nowMs
+      && item.expiryHandledAtMs === null).sort((a, b) => a.expiresAtMs! - b.expiresAtMs!).slice(0, limit).map(item => structuredClone(item));
+  }
+  async markExpiryHandled(guildId: string, number: number, atMs: number) {
+    const item = this.cases.find(entry => entry.guildId === guildId && entry.number === number);
+    if (!item || item.expiresAtMs === null || item.expiryHandledAtMs !== null) return false;
+    item.expiryHandledAtMs = atMs;
+    return true;
   }
   async latestBans(guildId: string, targetIds: readonly string[]) {
     const latest = new Map<string, ModCaseDto>();

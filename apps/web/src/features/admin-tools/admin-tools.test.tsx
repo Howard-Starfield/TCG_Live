@@ -42,7 +42,7 @@ function mountWith(ui: ReactNode, setup: (server: FakeServer) => void) {
 describe('admin tools tab registry', () => {
   it('lists the initial tabs once each, with Settings last', () => {
     const ids = adminToolsTabs.map(tab => tab.id);
-    expect(ids).toEqual(['members', 'bans', 'cases', 'stickies', 'channels', 'tickets', 'roles', 'announcements', 'logs', 'settings']);
+    expect(ids).toEqual(['members', 'bans', 'cases', 'stickies', 'channels', 'tickets', 'roles', 'announcements', 'lfg', 'bots', 'logs', 'settings']);
     expect(new Set(ids).size).toBe(ids.length);
   });
 

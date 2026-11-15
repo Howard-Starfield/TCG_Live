@@ -10,7 +10,7 @@ import { AdminDataProvider } from '../../data';
 import { json, type FakeServer } from '../../data/test/fakes';
 import { EvidenceDrawer } from '../evidence';
 import { validateSettings } from './validate';
-import { VOICE_DISABLED_TEXT, VoiceBots } from './VoiceBots';
+import { VOICE_DISABLED_ENV_TEXT, VOICE_DISABLED_TEXT, VoiceBots } from './VoiceBots';
 
 MotionGlobalConfig.skipAnimations = true;
 
@@ -59,7 +59,8 @@ describe('VoiceBots runtime state', () => {
     const pool: VoiceBotPoolDto = { runtime: 'disabled', rooms: [], bots: [{ id: 'main', label: 'TCG Live', kind: 'main', userId: null,
       connected: false, assignedChannelId: null, assignedMatchId: null, addedAtMs: null }] };
     mountWith(<VoiceBots disabled={false} />, server => server.always('GET /moderation/voice-bots', () => json(200, pool)));
-    expect(await screen.findByText(VOICE_DISABLED_TEXT)).toBeInTheDocument();
+    expect(await screen.findByText(/^Voice features are turned off/)).toBeInTheDocument();
+    expect([VOICE_DISABLED_TEXT, VOICE_DISABLED_ENV_TEXT]).toContain(screen.getByText(/^Voice features are turned off/).textContent);
   });
 
   it('shows per-bot status such as login failed, room status, and Remove only for helpers', async () => {
@@ -73,7 +74,7 @@ describe('VoiceBots runtime state', () => {
     expect(await screen.findByText(/Login failed: check the token/)).toBeInTheDocument();
     expect(screen.getByText('M1: recording')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(1);
-    expect(screen.queryByText(VOICE_DISABLED_TEXT)).toBeNull();
+    expect(screen.queryByText(/^Voice features are turned off/)).toBeNull();
   });
 });
 
