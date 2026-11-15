@@ -42,6 +42,9 @@ export interface ShellModel {
   directory: TournamentDirectoryDto | undefined;
   directoryState: 'loading' | 'error' | 'ready';
   home: boolean;
+  /** The Admin tools page is shown (no event view). */
+  adminTools: boolean;
+  showAdminTools(): void;
   showDrafts(): void;
   draftsOpen: boolean;
   showHome(): void;
@@ -124,6 +127,7 @@ export function useShellModel(session: SessionDto): ShellModel {
   const [selected, setSelected] = useState<string | null>(null);
   const [home, setHome] = useState(session.mode === 'discord');
   const [draftsOpen, setDraftsOpen] = useState(false);
+  const [adminTools, setAdminTools] = useState(false);
   const [draft, setDraft] = useState<TournamentDirectoryEntryDto | null>(null);
   const [liveMatch, setLiveMatch] = useState<MatchId | null>(null);
 
@@ -179,23 +183,25 @@ export function useShellModel(session: SessionDto): ShellModel {
     events,
     directory: directoryQuery.data,
     directoryState,
-    home,
-    draftsOpen: home && draftsOpen,
-    showHome: () => { setDraft(null); setSelected(null); setDraftsOpen(false); setHome(true); dock.dismissSheet(); },
-    showDrafts: () => { setDraft(null); setSelected(null); setDraftsOpen(true); setHome(true); dock.dismissSheet(); },
+    home: home && !adminTools,
+    adminTools,
+    showAdminTools: () => { setDraft(null); setSelected(null); setDraftsOpen(false); setHome(false); setAdminTools(true); dock.dismissSheet(); },
+    draftsOpen: home && !adminTools && draftsOpen,
+    showHome: () => { setDraft(null); setSelected(null); setDraftsOpen(false); setAdminTools(false); setHome(true); dock.dismissSheet(); },
+    showDrafts: () => { setDraft(null); setSelected(null); setDraftsOpen(true); setAdminTools(false); setHome(true); dock.dismissSheet(); },
     draft,
-    selectDraft: entry => { setSelected(null); setDraft(entry); setHome(false); },
+    selectDraft: entry => { setSelected(null); setDraft(entry); setAdminTools(false); setHome(false); },
     eventsState,
     refetchEvents: () => { void refetchEvents(); },
     activeEventId,
     viewed,
-    selectEvent: eventId => { setDraft(null); setSelected(eventId === activeEventId ? null : eventId); setHome(false); },
-    followActive: () => { setDraft(null); setSelected(null); setHome(false); },
+    selectEvent: eventId => { setDraft(null); setSelected(eventId === activeEventId ? null : eventId); setAdminTools(false); setHome(false); },
+    followActive: () => { setDraft(null); setSelected(null); setAdminTools(false); setHome(false); },
     canvasView,
     liveMatch,
     setCanvas,
     openMatch,
     dock
-  }), [session, statusData, events, directoryQuery.data, directoryState, home, draftsOpen, draft, eventsState, refetchEvents, activeEventId, viewed,
+  }), [session, statusData, events, directoryQuery.data, directoryState, home, adminTools, draftsOpen, draft, eventsState, refetchEvents, activeEventId, viewed,
     canvasView, liveMatch, setCanvas, openMatch, dock]);
 }

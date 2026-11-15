@@ -1,0 +1,12 @@
+/* Match the app's thin, arrowless scrollbars (see shell.css) instead of the OS default. */
+.admin-tools-page,
+.admin-tools-page * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-fg-subtle) transparent;
+}
+/* The tab strip scrolls sideways on narrow windows; hide its bar entirely. */
+.admin-tools-page .admin-tools-tabs { scrollbar-width: none; }
+@supports selector(::-webkit-scrollbar) {
+  .admin-tools-page .admin-tools-tabs::-webkit-scrollbar { display: none; }
+  .admin-tools-page ::-webkit-scrollbar-button { display: none; }
+}

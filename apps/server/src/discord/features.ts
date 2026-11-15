@@ -1,11 +1,13 @@
 // Runtime seam for optional Discord features (evidence submit, AutoMod, voice pool, loudness, recording).
 // A feature is registered in feature-registry.ts and receives everything it needs through
 // DiscordFeatureContext, so adding one never edits controller.ts or runtime.ts.
-import type { Client, GatewayIntentBits } from 'discord.js';
-import type { MatchId, ModerationFlagDto, ModerationSettingsDto, OpsAuditEntryDto } from '@tcg-live/core';
+import type { Client, GatewayIntentBits, Guild } from 'discord.js';
+import type { AdminToolsSettingsBodyDto, AdminToolsSettingsDto, AdminToolsStatusDto, MatchId, ModerationFlagDto,
+  ModerationSettingsDto, OpsAuditEntryDto, OpsAuditKind, PrivilegedIntentName, PrivilegedIntentState } from '@tcg-live/core';
 import type { EvidenceStore } from '../evidence/store.js';
 import type { ModerationFlagInput } from '../moderation/flags.js';
-import type { OpsAuditInput } from '../ops/audit.js';
+import type { OpsActor, OpsAuditInput } from '../ops/audit.js';
+import type { FeatureInteractions } from './interactions.js';
 import type { VoicePoolLiveState } from '../voice/pool.js';
 import type { VoiceBotRegistry } from '../voice/tokens.js';
 
@@ -27,7 +29,14 @@ export type DiscordFeatureEvent =
   /** The dashboard saved moderation settings. */
   | { type: 'moderationSettingsChanged'; settings: ModerationSettingsDto }
   /** The dashboard added or removed a helper voice bot. */
-  | { type: 'voiceBotsChanged' };
+  | { type: 'voiceBotsChanged' }
+  /** The dashboard saved admin-tools settings. Intent changes need a restart (see ctx.adminToolsStatus()). */
+  | { type: 'adminToolsSettingsChanged'; settings: AdminToolsSettingsDto }
+  /**
+   * An admin-tools route changed feature data (a sticky, panel, job, announcement...). `area` is the
+   * route module's name; `id` the changed row when there is one. Emitted after the commit.
+   */
+  | { type: 'adminToolsChanged'; area: string; id: string | null };
 export type DiscordFeatureEventType = DiscordFeatureEvent['type'];
 export type DiscordFeatureListener<T extends DiscordFeatureEventType> = (event: Extract<DiscordFeatureEvent, { type: T }>) => void;
 
@@ -65,6 +74,17 @@ export interface MatchRoomInfo {
   judgeCall?: boolean;
 }
 
+/** Tournament member sets for bulk roles; IDs are Discord user IDs, never seats. */
+export interface TournamentMembers {
+  eventId: string;
+  /** Signup roster (signup tournaments), else the seated players. */
+  roster: string[];
+  /** Players who checked in. */
+  checkedIn: string[];
+  /** Players seated in matches of the event. */
+  players: string[];
+}
+
 export interface DiscordFeatureContext {
   readonly client: Client;
   readonly guildId: string;
@@ -88,16 +108,44 @@ export interface DiscordFeatureContext {
   activeMatchRooms(): Promise<MatchRoomInfo[]>;
   /** Token-free operator line on stderr. */
   log(message: string): void;
+
+  // ---- Admin tools seams (docs/ADMIN_TOOLS_PROPOSAL.md) ----
+  /** The configured guild (fetched once, then cached by discord.js). */
+  guild(): Promise<Guild>;
+  /** Saved admin-tools settings (defaults when none or the database is down). */
+  adminToolsSettings(): Promise<AdminToolsSettingsDto>;
+  /** Intents, restart-required and feature states, as the dashboard shows them. */
+  adminToolsStatus(): Promise<AdminToolsStatusDto>;
+  /** What the running gateway has: 'off' (not requested), 'on', or 'missing' (refused by Discord). */
+  privilegedIntents(): Readonly<Record<PrivilegedIntentName, PrivilegedIntentState>>;
+  /** Appends a tcg_ops_audit row for this guild; the actor defaults to the bot. */
+  audit(kind: OpsAuditKind, payload?: Record<string, unknown>, actor?: OpsActor): Promise<OpsAuditEntryDto>;
+  /** Roster, check-ins and seated players of the active tournament, or null when there is none. */
+  tournamentMembers(): Promise<TournamentMembers | null>;
+  /**
+   * Channels the tournament owns (signup/control channel with its card sticky, match rooms, round rooms).
+   * General stickies and ticket panels must never be placed here; the routes reject it.
+   */
+  reservedChannelIds(): Promise<string[]>;
+  /** Button/select/modal custom-id prefixes and `/tcg-admin` subcommands. */
+  readonly interactions: FeatureInteractions;
 }
 
 export interface DiscordFeature {
   readonly name: string;
   /** Extra non-privileged Gateway intents (for example GuildVoiceStates, AutoModerationExecution). */
   readonly intents?: readonly GatewayIntentBits[];
+  /**
+   * Intents that depend on the saved admin-tools settings, read once at login. May include the privileged
+   * GuildMembers / MessageContent (use privilegedIntentsForSettings from @tcg-live/core). When Discord
+   * refuses them the feature still starts; ctx.privilegedIntents() then reports 'missing'.
+   */
+  intentsFor?(settings: AdminToolsSettingsBodyDto): readonly GatewayIntentBits[];
   start(context: DiscordFeatureContext): Promise<void> | void;
   stop(): Promise<void> | void;
 }
 
+/** Static intents only; conditional ones come from planIntents() in intents.ts. */
 export function featureIntents(features: readonly DiscordFeature[]): GatewayIntentBits[] {
   return [...new Set(features.flatMap(feature => feature.intents ?? []))];
 }
@@ -109,14 +157,16 @@ const STOP_BUDGET_MS = 1_500;
  * running. stop() runs in reverse order with a per-feature time budget and never rejects.
  */
 export async function startDiscordFeatures(features: readonly DiscordFeature[], context: DiscordFeatureContext):
-  Promise<{ readonly started: string[]; stop(): Promise<void> }> {
+  Promise<{ readonly started: string[]; readonly failed: string[]; stop(): Promise<void> }> {
   const running: DiscordFeature[] = [];
+  const failed: string[] = [];
   for (const feature of features) {
     if (!context.isActive()) break;
     try {
       await feature.start(context);
       running.push(feature);
     } catch {
+      failed.push(feature.name);
       context.log(`Discord feature ${feature.name} could not start; continuing without it.`);
       try { await feature.stop(); } catch { /* Partial start cleanup is best effort. */ }
     }
@@ -124,6 +174,7 @@ export async function startDiscordFeatures(features: readonly DiscordFeature[], 
   let stopping: Promise<void> | undefined;
   return {
     started: running.map(feature => feature.name),
+    failed,
     stop() {
       stopping ??= (async () => {
         for (const feature of [...running].reverse()) {

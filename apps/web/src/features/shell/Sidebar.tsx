@@ -1,4 +1,4 @@
-import { ChevronRight, FileClock, History, House, PanelLeftClose, PanelLeftOpen, Plus, Search } from 'lucide-react';
+import { ChevronRight, FileClock, History, House, PanelLeftClose, PanelLeftOpen, Plus, Search, ShieldCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TournamentDirectoryEntryDto } from '@tcg-live/core';
 import { useServerNow, useStreamConnection } from '../../data';
@@ -11,6 +11,7 @@ import { useShell } from './model';
 import { CreateTournamentDialog } from '../tournaments/CreateTournamentDialog';
 import { useTournamentDirectory } from '../tournaments/directory';
 import { useTournamentMenu } from '../tournaments/useTournamentMenu';
+import { useAdminToolsAccess } from '../admin-tools/api';
 
 /** Events (active first, retired as history), stream status and the account. */
 export function Sidebar() {
@@ -26,6 +27,7 @@ export function Sidebar() {
   const [historyOpen, setHistoryOpen] = useState(true);
   const { events, viewed } = shell;
   const directoryEnabled = !!shell.session.tournaments;
+  const adminToolsEnabled = useAdminToolsAccess();
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(query.trim()), 250);
     return () => clearTimeout(timer);
@@ -100,10 +102,12 @@ export function Sidebar() {
             onClick={() => setCreateOpen(true)} />
         </Tooltip>}
       </div>
-      <SidebarList label="Dashboard" collapsed={collapsed} onSelect={id => id === 'drafts' ? shell.showDrafts() : shell.showHome()}
+      <SidebarList label="Dashboard" collapsed={collapsed}
+        onSelect={id => id === 'drafts' ? shell.showDrafts() : id === 'admin-tools' ? shell.showAdminTools() : shell.showHome()}
         className="shell-sidebar-home" items={[
           { id: 'home', label: 'Home', icon: <House />, active: shell.home && !shell.draftsOpen },
-          ...(directoryEnabled ? [{ id: 'drafts', label: 'Drafts', icon: <FileClock />, active: shell.draftsOpen || !!shell.draft }] : [])
+          ...(directoryEnabled ? [{ id: 'drafts', label: 'Drafts', icon: <FileClock />, active: shell.draftsOpen || !!shell.draft }] : []),
+          ...(adminToolsEnabled ? [{ id: 'admin-tools', label: 'Admin tools', icon: <ShieldCheck />, active: shell.adminTools }] : [])
         ]} />
       <div className="shell-sidebar-scroll">
         {listState === 'loading' && (

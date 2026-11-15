@@ -25,7 +25,9 @@ export function bodyOf(settings: ModerationSettingsDto): ModerationSettingsBodyD
   return { text, voice, recording, retention, noticeText };
 }
 
-export function ModerationSettings({ open, onClose }: { open: boolean; onClose(): void }) {
+export function ModerationSettings({ open, onClose, onOpenAdminTools }: { open: boolean; onClose(): void;
+  /** Shown as a link to the Admin tools page (members, bans, cases, stickies...) when given. */
+  onOpenAdminTools?: () => void }) {
   const { api } = useAdminData();
   const allowed = useModerationAccess();
   const [saved, setSaved] = useState<ModerationSettingsDto | null>(null);
@@ -111,7 +113,10 @@ export function ModerationSettings({ open, onClose }: { open: boolean; onClose()
   </div>;
 
   return <Dialog open={open} onClose={onClose} title="Moderation & evidence" width="xl" dismissible={!saving}
-    description="Keyword filter, volume flags, voice recording and the voice bot pool for this Discord server."
+    description={<>Keyword filter, volume flags, voice recording and the voice bot pool for this Discord server.
+      {onOpenAdminTools && <> Bans, cases, stickies and server tools are on the{' '}
+        <button type="button" className="font-medium text-accent underline-offset-2 hover:underline" disabled={saving}
+          onClick={onOpenAdminTools}>Admin tools page</button>.</>}</>}
     footer={<div className="flex w-full items-center gap-2">
       <span className="min-w-0 flex-1 text-xs">
         {saveError && <span role="alert" className="text-danger">{saveError}</span>}

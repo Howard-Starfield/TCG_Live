@@ -1,5 +1,6 @@
 // Moderation contract v1, shared by apps/server and apps/web. See docs/VIDEO_EVIDENCE_AND_MODERATION_PLAN.md.
 import type { MatchId, Snowflake } from './admin-contract.js';
+import { ADMIN_TOOLS_AUDIT_KINDS } from './admin-tools-contract.js';
 
 // ---- Text moderation (Discord AutoMod-backed) ----
 
@@ -192,7 +193,8 @@ export interface AddVoiceBotRequestDto { label: string; token: string }
 export const OPS_AUDIT_KINDS = ['evidence.submitted', 'evidence.viewed', 'evidence.deleted', 'evidence.hold',
   'evidence.failed', 'evidence.retention', 'moderation.settings', 'moderation.voice_bot.added',
   'moderation.voice_bot.removed', 'automod.synced', 'automod.executed', 'voice.spike',
-  'voice.recording.start', 'voice.recording.stop', 'voice.notice_failed', 'voice.recording.stopped_storage'] as const;
+  'voice.recording.start', 'voice.recording.stop', 'voice.notice_failed', 'voice.recording.stopped_storage',
+  ...ADMIN_TOOLS_AUDIT_KINDS] as const;
 export type OpsAuditKind = typeof OPS_AUDIT_KINDS[number];
 export type OpsActorKind = 'admin' | 'player' | 'bot' | 'system';
 

@@ -7,6 +7,7 @@ import { useMemo } from 'react';
 import { DataTable, EmptyState, type Column } from '../../ui';
 import { memberName } from '../../data';
 import { RemoveMemberAction, useRemoveAvailable } from '../commands';
+import { ModerateMemberAction, useModerateAvailable } from '../admin-tools/members/ModerateMemberAction';
 import { hasSeats, playerRows, type PlayerRow } from './model';
 import { MemberName, None, ScrollCue, SeatTag, StatusChip, ToneBadge, useElementWidth } from './shared';
 
@@ -38,6 +39,8 @@ export function PlayersTab({ snapshot }: { snapshot: EventSnapshotDto }) {
   const key = visible.join(',');
   // Wave 3 (L10): a remove column while signup is open and the session may manage it.
   const removable = useRemoveAvailable(snapshot);
+  // Admin tools (A): Moderate menu (warn/timeout/kick/ban) when the session may moderate members.
+  const moderatable = useModerateAvailable();
 
   const columns = useMemo<Array<Column<PlayerRow>>>(() => {
     const show = new Set<OptionalColumn>(key ? key.split(',') as OptionalColumn[] : []);
@@ -88,8 +91,13 @@ export function PlayersTab({ snapshot }: { snapshot: EventSnapshotDto }) {
       list.push({ id: 'actions', header: <span className="sr-only">Actions</span>, width: '40px', align: 'end',
         cell: row => <RemoveMemberAction snapshot={snapshot} memberId={row.memberId} /> });
     }
+    if (moderatable) {
+      list.push({ id: 'moderate', header: <span className="sr-only">Moderate</span>, width: '40px', align: 'end',
+        cell: row => <ModerateMemberAction memberId={row.memberId} name={row.memberId ? memberName(snapshot, row.memberId) : ''}
+          eventId={snapshot.eventId} matchId={row.match?.id ?? null} /> });
+    }
     return list;
-  }, [compact, key, removable, seated, snapshot]);
+  }, [compact, key, moderatable, removable, seated, snapshot]);
 
   return (
     <div ref={measure} className="flex min-h-0 flex-1 flex-col gap-2" data-width={width ?? undefined}>

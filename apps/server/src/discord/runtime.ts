@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ChannelType, ChatInputCommandInteraction, Events, LabelBuilder, MessageFlags, MessageType, ModalBuilder,
   PermissionFlagsBits, Routes, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
-  SlashCommandBuilder, type Guild, type GuildMember, type Interaction, type TextChannel, type VoiceChannel
+  SlashCommandBuilder, type Client, type Guild, type GuildMember, type Interaction, type TextChannel, type VoiceChannel
 } from 'discord.js';
 import { JUDGE_REQUEST_CATEGORIES, MAX_JUDGE_REQUEST_LENGTH } from '@tcg-live/core';
 import { readAdminConfig, type AdminConfig } from '../admin/config.js';
@@ -17,7 +17,7 @@ import { buttonId, type CardPayload } from './cards.js';
 import { readPrivateDiscordConfig, type ConfiguredRooms, type PrivateDiscordConfig } from './config.js';
 import { PrivateDiscordController, type CardTransport, type PrivateInteraction } from './controller.js';
 import { acquireAdvisoryLease, bindRoundRoom, dueSignupDrafts, getSessionState, resolvePlayers, type SessionRow, prepareSession, prepareSignupSession, type AdvisoryLease } from './session.js';
-import { privateDiscordClient, privateDiscordRest } from './sdk.js';
+import { baseIntents, privateDiscordClient, privateDiscordRest } from './sdk.js';
 import { backupRoomOverwrites, MatchRoomReconciler, roomPlan, sameOverwrites, type Room, type RoomOverwrite, type RoomTransport } from './match-rooms.js';
 import { filenameFromThumbnail, noticeEmbed, retainedVisual, setVisualArtworkStore, visualFile, visualThumbnail } from './visuals.js';
 import { defaultArtworkStore } from '../artwork/store.js';
@@ -30,7 +30,13 @@ import { pgOpsAuditStore } from '../ops/audit.js';
 import { VoiceBotTokenStore } from '../voice/tokens.js';
 import { discordFeatures } from './feature-registry.js';
 import { DiscordFeatureEvents, featureIntents, startDiscordFeatures, VoicePoolState, type DiscordFeatureContext,
-  type MatchRoomInfo } from './features.js';
+  type MatchRoomInfo, type TournamentMembers } from './features.js';
+import { ADMIN_COMMAND_NAME, adminCommandDefinition } from './admin-command.js';
+import { FeatureInteractionRouter, isFeatureInteractionId } from './interactions.js';
+import { loginWithIntentFallback, planIntents } from './intents.js';
+import { HttpError } from '../admin/http/respond.js';
+import { adminToolsBody, defaultAdminToolsSettings, pgAdminToolsSettingsStore } from '../admin-tools/settings.js';
+import { AdminToolsRuntimeState } from '../admin-tools/status.js';
 
 function safeError(error: unknown): string {
   return error instanceof RuleError ? error.message : 'Private Discord operation failed.';
@@ -92,10 +98,13 @@ export async function registerPrivateCommand(config: PrivateDiscordConfig): Prom
   const rest = privateDiscordRest(config.token);
   const route = Routes.applicationGuildCommands(config.applicationId, config.guildId);
   const commands = await rest.get(route) as Array<{ id: string; name: string }>;
-  const existing = commands.find(command => command.name === 'tcg-test');
-  if (existing) await rest.patch(Routes.applicationGuildCommand(config.applicationId, config.guildId, existing.id),
-    { body: commandDefinition() });
-  else await rest.post(route, { body: commandDefinition() });
+  // `/tcg-test` (controller) and `/tcg-admin` (admin-tools features, discord/admin-command.ts).
+  const definitions: Array<[string, unknown]> = [['tcg-test', commandDefinition()], [ADMIN_COMMAND_NAME, adminCommandDefinition()]];
+  for (const [name, body] of definitions) {
+    const existing = commands.find(command => command.name === name);
+    if (existing) await rest.patch(Routes.applicationGuildCommand(config.applicationId, config.guildId, existing.id), { body });
+    else await rest.post(route, { body });
+  }
 }
 
 export function discordTransport(channel: TextChannel | (() => TextChannel), matches?: ConfiguredRooms<VoiceChannel>, botId?: string, roundRoom?: (slot: MatchId) => VoiceChannel | undefined): CardTransport {
@@ -256,6 +265,8 @@ function judgeModal(buttonId: string, requesterId: string) {
 
 export function adapt(interaction: Interaction): PrivateInteraction | null {
   if (!interaction.isButton() && !interaction.isChatInputCommand() && !interaction.isModalSubmit()) return null;
+  // Feature-owned controls (discord/interactions.ts) never reach the controller.
+  if ((interaction.isButton() || interaction.isModalSubmit()) && isFeatureInteractionId(interaction.customId)) return null;
   if (interaction.isChatInputCommand() && (interaction.commandName !== 'tcg-test' ||
     interaction.options.getSubcommand(false) === 'evidence')) return null;
   const base = {
@@ -381,7 +392,24 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   setVisualArtworkStore(artwork);
   const runnerId = randomUUID();
   const features = discordFeatures();
-  const client = privateDiscordClient(!!config.publicMatchRooms, featureIntents(features));
+  // Placeholder until login: the real client is created with the planned intents (see loginWithIntentFallback).
+  let client: Client = privateDiscordClient(!!config.publicMatchRooms, featureIntents(features));
+  const adminToolsSettings = pgAdminToolsSettingsStore();
+  const adminToolsState = new AdminToolsRuntimeState(features, 'discord');
+  const featureLog = (message: string) => { process.stderr.write(`${message.replace(/[^\x20-\x7e]/g, '?').slice(0, 300)}\n`); };
+  const interactions = new FeatureInteractionRouter({ applicationId: config.applicationId, guildId: config.guildId }, featureLog);
+  let signupChannelId: string | null = null;
+  /** Channels the tournament owns: general stickies and ticket panels are refused there. */
+  const reservedChannelIds = async (): Promise<string[]> => {
+    const ids = new Set<string | undefined>([config.channelId, ...Object.values(config.matchChannels ?? {}), ...Object.values(config.roundRooms ?? {})]);
+    if (signupChannelId) ids.add(signupChannelId);
+    try {
+      const current = await getSessionState(config);
+      ids.add(current.session.channel_id);
+      for (const room of Object.values(current.session.identity_map.roundRooms ?? {})) if (room) ids.add(room);
+    } catch { /* No active tournament or database down: the configured channels still count. */ }
+    return [...ids].filter((id): id is string => !!id);
+  };
   // Evidence and moderation storage (migration 012). Routes answer 503 until the schema exists.
   const opsAudit = pgOpsAuditStore();
   const moderationSettings = pgModerationSettingsStore();
@@ -418,6 +446,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         // Ends console streams and polling first, so open streams cannot hold the watchdog budget.
         await admin?.close();
         await featureHandle?.stop();
+        adminToolsState.recordStopped();
         await controller?.stop();
         await roomSync?.stop();
         await client.destroy();
@@ -463,12 +492,32 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         guildId: () => config.guildId, mainBotUserId: () => client.user?.id ?? null,
         onSettingsSaved: settings => featureEvents.emit({ type: 'moderationSettingsChanged', settings }),
         onVoiceBotsChanged: () => featureEvents.emit({ type: 'voiceBotsChanged' }),
-        automodSync: discordAutoModSync(client, moderationSettings) },
+        // Lazy: the client is replaced at login.
+        automodSync: (guildId, settings) => discordAutoModSync(client, moderationSettings)(guildId, settings) },
+      adminTools: { settings: adminToolsSettings, audit: opsAudit, storage: 'postgres', guildId: () => config.guildId,
+        status: adminToolsState, reservedChannelIds,
+        discord: {
+          guild: async () => {
+            if (!client.isReady()) throw new HttpError(503, 'unavailable', 'Discord is not connected. Try again when the bot is online.');
+            return client.guilds.fetch(config.guildId);
+          },
+          botUserId: () => client.user?.id ?? null
+        },
+        onSettingsSaved: settings => featureEvents.emit({ type: 'adminToolsSettingsChanged', settings }),
+        onChanged: (area, id) => featureEvents.emit({ type: 'adminToolsChanged', area, id }) },
       ...(guided ? { persistentSessions: true, ...(guided.launcher ? { launcher: guided.launcher } : {}) } : {}) });
     health = await startServer(healthConfig, admin ? { admin: admin.handler } : {});
     admin?.announce();
     ensureActive();
-    await loginAndWaitReady(client, config.token!, () => stopping || lease?.isLost() === true);
+    // Privileged intents are opt-in per feature and read from the saved admin-tools settings at login.
+    const toolsSettings = await adminToolsSettings.get(config.guildId).catch(() => defaultAdminToolsSettings(config.guildId));
+    const plan = planIntents(baseIntents(!!config.publicMatchRooms), features, adminToolsBody(toolsSettings));
+    await client.destroy();
+    const login = await loginWithIntentFallback({ plan, log: featureLog,
+      create: intents => { client = privateDiscordClient(!!config.publicMatchRooms, intents); return client; },
+      login: (candidate, refused) => loginAndWaitReady(candidate, config.token!, () => stopping || lease?.isLost() === true || refused()) });
+    client = login.client;
+    adminToolsState.recordLogin({ requested: [...login.plan.privileged, ...login.missing], missing: login.missing });
     ensureActive();
     if (client.application?.id !== config.applicationId) throw new RuleError('Authenticated Discord application ID differs from configuration.');
     const channel = await client.channels.fetch(config.channelId);
@@ -476,6 +525,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     if (channel?.type !== ChannelType.GuildText || channel.guildId !== config.guildId)
       throw new RuleError('Configured private Discord channel is not a text channel.');
     let signupChannel = channel;
+    signupChannelId = channel.id;
     const guild = await client.guilds.fetch(config.guildId);
     admin?.attachClient(discordGateway(client), guildMembers(guild));
     const bot = await guild.members.fetchMe();
@@ -524,6 +574,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       return () => {
         const previous = discordTransport(signupChannel, matches, botId);
         signupChannel = target;
+        signupChannelId = target.id;
         return async (messageId, slot) => { await previous.remove?.(messageId, slot); };
       };
     };
@@ -627,6 +678,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     }
     ensureActive();
     client.on('interactionCreate', interaction => { if (!stopping && !lease?.isLost()) {
+      if (interactions.dispatch(interaction)) return;
       const adapted = adapt(interaction);
       if (adapted) void controller?.handle(adapted).catch(() => {});
     } });
@@ -659,6 +711,18 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
           playerIds: match.players.flatMap(player => players?.[player] ? [players[player]] : []),
           phase: match.phase, judgeCall: match.judgeAttention || match.proposal?.decision === 'disputed' }));
       };
+      const tournamentMembers = async (): Promise<TournamentMembers | null> => {
+        try {
+          const current = await getSessionState(config);
+          const players = resolvePlayers(current.session, current.state) as Record<string, string> | null;
+          const user = (seat: string) => players?.[seat];
+          const ids = (list: Array<string | undefined>) => [...new Set(list.filter((id): id is string => !!id))];
+          return { eventId: current.state.id,
+            roster: ids(current.state.signup?.roster ?? Object.values(players ?? {})),
+            checkedIn: ids(current.state.checkins.map(user)),
+            players: ids(current.state.matches.flatMap(match => match.players.map(user))) };
+        } catch { return null; }
+      };
       const featureContext: DiscordFeatureContext = {
         client, guildId: config.guildId, adminId: config.adminId, isActive,
         moderationSettings: () => moderationSettings.get(config.guildId),
@@ -669,9 +733,19 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         on: (type, listener) => featureEvents.on(type, listener),
         matchRoom: async matchId => (await roomsOf()).find(room => room.matchId === matchId) ?? null,
         activeMatchRooms: roomsOf,
-        log: message => { process.stderr.write(`${message.replace(/[^\x20-\x7e]/g, '?').slice(0, 300)}\n`); }
+        log: featureLog,
+        guild: () => client.guilds.fetch(config.guildId),
+        adminToolsSettings: () => adminToolsSettings.get(config.guildId).catch(() => defaultAdminToolsSettings(config.guildId)),
+        adminToolsStatus: async () => adminToolsState.describe(adminToolsBody(
+          await adminToolsSettings.get(config.guildId).catch(() => defaultAdminToolsSettings(config.guildId)))),
+        privilegedIntents: () => adminToolsState.privilegedIntents(),
+        audit: (kind, payload = {}, actor = { kind: 'bot', id: 'bot' }) => opsAudit.append({ kind, actor, guildId: config.guildId, payload }),
+        tournamentMembers,
+        reservedChannelIds,
+        interactions
       };
       featureHandle = await startDiscordFeatures(features, featureContext);
+      adminToolsState.recordFeatures(featureHandle);
       ensureActive();
     }
     process.stdout.write(`Private Discord runtime ready; health on 127.0.0.1:${health.port}.\n`);
