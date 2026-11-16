@@ -9,3 +9,4 @@ export * from './permissions-contract.js';
 export * from './local-settings-contract.js';
 export * from './lfg-contract.js';
 export * from './staff-contract.js';
+export * from './match-rooms-contract.js';
