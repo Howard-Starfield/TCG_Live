@@ -97,6 +97,17 @@ describe('ToggleTab', () => {
   });
 });
 
+describe('ToggleTab shortcut hint', () => {
+  it('keeps the shortcut for screen readers when the visible hint is off', () => {
+    const { rerender } = render(<ToggleTab pressed={false} onPressedChange={() => {}} shortcut={['Alt', '1']}>Live preview</ToggleTab>);
+    expect(screen.getByRole('button', { name: /live preview/i })).toHaveTextContent('Alt');
+    rerender(<ToggleTab pressed={false} onPressedChange={() => {}} shortcut={['Alt', '1']} showShortcut={false}>Live preview</ToggleTab>);
+    const button = screen.getByRole('button', { name: 'Live preview' });
+    expect(button).not.toHaveTextContent('Alt');
+    expect(button).toHaveAttribute('aria-keyshortcuts', 'Alt+1');
+  });
+});
+
 describe('SegmentedControl', () => {
   it('is a radio group whose arrow keys change the value', async () => {
     const user = userEvent.setup();

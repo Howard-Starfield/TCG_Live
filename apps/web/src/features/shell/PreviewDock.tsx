@@ -1,4 +1,4 @@
-import { CalendarX, DatabaseZap, LoaderCircle, Table2, Workflow, X } from 'lucide-react';
+import { CalendarX, Columns3, DatabaseZap, LoaderCircle, Table2, Workflow, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { useServerClock } from '../../data';
@@ -6,7 +6,8 @@ import { LivePreview } from '../flow';
 import { ListPreview, ListTabStrip, type ListTab } from '../lists';
 import { Button, EmptyState, IconButton, PaneHeader, ScrollFade, SplitPane, focusableWithin, springs, useSafeTransition, useSafeVariants, variants } from '../../ui';
 import { useConsolePreferences } from '../../app/preferences';
-import { useShell } from './model';
+import { useShell, type PaneKey } from './model';
+import { TaskBoard } from './TaskBoard';
 
 export const DOCK_MIN = 320;
 export const DOCK_DEFAULT = 480;
@@ -28,7 +29,7 @@ export function PreviewDock({ bodyWidth }: { bodyWidth: number }) {
   const [preferences, update] = useConsolePreferences();
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const spring = useSafeTransition(springs.pane);
-  const open = !dock.narrow && (dock.visible.live || dock.visible.list);
+  const open = !dock.narrow && (dock.visible.live || dock.visible.list || dock.visible.kanban);
   const width = clampDockWidth(dragWidth ?? preferences.sizes.dockWidth, bodyWidth || 1440);
 
   return (
@@ -161,22 +162,36 @@ export function PreviewSheet() {
   );
 }
 
-/** One pane, or both stacked with a resizable divider. */
+/** One pane, or several stacked with resizable dividers (live, list, kanban in that order). */
 function DockPanes() {
   const { dock } = useShell();
   const [preferences, update] = useConsolePreferences();
-  const { live, list } = dock.visible;
-  if (live && list) {
+  const [lowerSplit, setLowerSplit] = useState(0.5);
+  const { live, list, kanban } = dock.visible;
+  const shown = ([live && 'live', list && 'list', kanban && 'kanban'] as const).filter((pane): pane is PaneKey => !!pane);
+  const pane = (key: PaneKey) => key === 'live' ? <LivePane /> : key === 'list' ? <ListPane /> : <KanbanPane />;
+  if (shown.length === 3) {
     return (
       <SplitPane direction="vertical" ratio={preferences.sizes.split} onChange={split => update({ sizes: { split } })}
-        minFirst={180} minSecond={160} label="Resize live and list previews"
-        first={<LivePane />} second={<ListPane />} />
+        minFirst={180} minSecond={320} label="Resize live and list previews"
+        first={<LivePane />}
+        second={<SplitPane direction="vertical" ratio={lowerSplit} onChange={setLowerSplit} minFirst={160} minSecond={160}
+          label="Resize list preview and kanban" first={<ListPane />} second={<KanbanPane />} />} />
     );
   }
-  return live ? <LivePane /> : list ? <ListPane /> : null;
+  if (shown.length === 2) {
+    return (
+      <SplitPane direction="vertical" ratio={shown[0] === 'live' ? preferences.sizes.split : lowerSplit}
+        onChange={shown[0] === 'live' ? split => update({ sizes: { split } }) : setLowerSplit}
+        minFirst={180} minSecond={160} label={shown[0] === 'live' && shown[1] === 'list' ? 'Resize live and list previews'
+          : shown[0] === 'live' ? 'Resize live preview and kanban' : 'Resize list preview and kanban'}
+        first={pane(shown[0]!)} second={pane(shown[1]!)} />
+    );
+  }
+  return shown[0] ? pane(shown[0]) : null;
 }
 
-function PaneFrame({ pane, children }: { pane: 'live' | 'list'; children: ReactNode }) {
+function PaneFrame({ pane, children }: { pane: PaneKey; children: ReactNode }) {
   return <div className="shell-pane" data-pane={pane}>{children}</div>;
 }
 
@@ -237,6 +252,22 @@ function ListPane() {
         {snapshot
           ? <ListPreview snapshot={snapshot} tab={preferences.listTab} onTabChange={onTabChange} showTabs={false} idBase={idBase}
               onOpenMatch={shell.openMatch} className="h-full" />
+          : <PaneFallback />}
+      </PaneBody>
+    </PaneFrame>
+  );
+}
+
+/** The kanban board of the event being viewed (active or retired); retired events are read-only. */
+function KanbanPane() {
+  const shell = useShell();
+  const { snapshot } = shell.viewed;
+  return (
+    <PaneFrame pane="kanban">
+      <PaneHeader title="Kanban" icon={<Columns3 />} onClose={() => shell.dock.close('kanban')} />
+      <PaneBody testId="kanban-pane" plain>
+        {snapshot
+          ? <div className="h-full overflow-auto"><TaskBoard key={snapshot.eventId} snapshot={snapshot} /></div>
           : <PaneFallback />}
       </PaneBody>
     </PaneFrame>

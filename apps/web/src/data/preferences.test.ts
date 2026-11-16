@@ -18,7 +18,7 @@ describe('preferences', () => {
       sizes: { dockWidth: 99_999, split: Number.NaN }, theme: 'neon', listTab: 'audit', sidebarCollapsed: 1 }));
     expect(new PreferencesStore(storage, null).getSnapshot()).toEqual({
       ...DEFAULT_PREFERENCES,
-      panes: { live: false, list: false },
+      panes: { live: false, list: false, kanban: false },
       sizes: { dockWidth: 1600, split: 0.5 },
       listTab: 'audit'
     });
@@ -33,7 +33,7 @@ describe('preferences', () => {
     store.update({ panes: { list: true } });
     store.update(current => ({ sizes: { split: current.sizes.split - 0.2 } }));
     const after = store.getSnapshot();
-    expect(after.panes).toEqual({ live: true, list: true });
+    expect(after.panes).toEqual({ live: true, list: true, kanban: false });
     expect(after.sizes.split).toBeCloseTo(0.3);
     expect(JSON.parse(storage.getItem(PREFERENCES_KEY)!)).toEqual(after);
     store.update({ theme: after.theme });

@@ -8,7 +8,7 @@ import { NARROW_QUERY, useMediaQuery } from './useMediaQuery';
 import { useTournamentDirectory } from '../tournaments/directory';
 import { currentConsoleRoute, parseConsoleHash, writeConsoleRoute } from '../admin-tools/navigation';
 
-export type PaneKey = 'live' | 'list';
+export type PaneKey = 'live' | 'list' | 'kanban';
 
 export interface ViewedEvent {
   eventId: string | null;
@@ -96,8 +96,9 @@ function useDock(): DockApi {
 
   const { panes } = preferences;
   const showing = !narrow || sheetOpen;
-  const visible = useMemo(() => ({ live: panes.live && showing, list: panes.list && showing }), [panes.live, panes.list, showing]);
-  const anyOpen = visible.live || visible.list;
+  const visible = useMemo(() => ({ live: panes.live && showing, list: panes.list && showing, kanban: panes.kanban && showing }),
+    [panes.live, panes.list, panes.kanban, showing]);
+  const anyOpen = visible.live || visible.list || visible.kanban;
 
   const open = useCallback((pane: PaneKey) => {
     update({ panes: { [pane]: true } });

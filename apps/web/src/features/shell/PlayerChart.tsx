@@ -1,7 +1,12 @@
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { EventSnapshotDto } from '@tcg-live/core';
+import type { CSSProperties } from 'react';
 
 interface ChartRow { label: string; value: number; color: string }
+
+/** Bar chart margins; the stats row above is inset by the same amounts so both share their left and right edges. */
+const CHART_MARGIN = { top: 10, right: 8, bottom: 0, left: 0 } as const;
+const RING_DIAMETER = 104;
 
 const MOTION = { isAnimationActive: 'auto', animationDuration: 400, animationEasing: 'ease' } as const;
 
@@ -21,6 +26,9 @@ export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }
     Math.round(index * capacity / Math.min(capacity, 4)));
   const joined = snapshot.signup?.roster.length ?? assigned;
   const checkedIn = snapshot.checkins.length;
+  const yAxisWidth = capacity >= 1000 ? 32 : 26;
+  const summaryInsets = { '--home-chart-left': `${CHART_MARGIN.left + yAxisWidth}px`, '--home-chart-right': `${CHART_MARGIN.right}px`,
+    '--home-chart-top': `${CHART_MARGIN.top}px` } as CSSProperties;
   const counts = [
     { label: 'Joined', value: joined, color: 'var(--color-fg-muted)' },
     { label: 'Assigned', value: assigned, color: 'var(--color-accent-fill)' },
@@ -38,11 +46,10 @@ export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }
   };
 
   return <>
-    <div className="home-seat-summary">
-      <p className="home-card-count"><strong>{signup ? joined : assigned}</strong><span> of {capacity} {signup ? 'joined' : 'assigned'}</span></p>
-      <div className="home-seat-donut">
-        <PieChart width={116} height={116} accessibilityLayer aria-label="Seat availability">
-          <Pie data={breakdown} dataKey="value" nameKey="label" innerRadius={37} outerRadius={52}
+    <p className="home-card-count" style={summaryInsets}><strong>{signup ? joined : assigned}</strong><span> of {capacity} {signup ? 'joined' : 'assigned'}</span></p>
+    <div className="home-seat-donut" style={summaryInsets}>
+        <PieChart width={RING_DIAMETER} height={RING_DIAMETER} accessibilityLayer aria-label="Seat availability">
+          <Pie data={breakdown} dataKey="value" nameKey="label" innerRadius={37} outerRadius={RING_DIAMETER / 2}
             paddingAngle={breakdown.length > 1 ? 2 : 0} stroke="none" {...MOTION}>
             {breakdown.map(row => <Cell key={row.label} fill={row.color} />)}
           </Pie>
@@ -52,19 +59,18 @@ export default function PlayerChart({ snapshot }: { snapshot: EventSnapshotDto }
         <div className="home-donut-center" aria-hidden="true">
           <strong>{capacity - joined}</strong><span>open seats</span>
         </div>
-      </div>
     </div>
     <ul className="sr-only" aria-label="Player counts">
       {counts.map(row => <li key={row.label}><span>{row.label}</span><strong>{row.value}</strong></li>)}
     </ul>
     <div className="home-player-chart">
       <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 260, height: 158 }}>
-        <BarChart data={counts} accessibilityLayer margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
+        <BarChart data={counts} accessibilityLayer margin={CHART_MARGIN}>
           <CartesianGrid vertical={false} stroke="var(--color-line-strong)" strokeDasharray="2 4" />
           <XAxis dataKey="label" axisLine={false} tickLine={false} tickMargin={8}
             tick={{ fontSize: 11, fill: 'var(--color-fg-muted)' }} />
           <YAxis domain={[0, capacity]} ticks={ticks}
-            allowDecimals={false} axisLine={false} tickLine={false} width={capacity >= 1000 ? 32 : 26}
+            allowDecimals={false} axisLine={false} tickLine={false} width={yAxisWidth}
             tick={{ fontSize: 10, fill: 'var(--color-fg-muted)' }} />
           <Tooltip {...MOTION} cursor={{ fill: 'var(--color-line-faint)' }}
             content={({ active, label }) => renderDetails(active, counts, label)} />

@@ -10,13 +10,15 @@ export interface ToggleTabProps {
   onPressedChange: (pressed: boolean) => void;
   icon?: ReactNode;
   children: ReactNode;
-  /** Shortcut hint, e.g. ["Alt", "1"]; also added to the tooltip title. The shell binds the keys. */
+  /** The shortcut, e.g. ["Alt", "1"]: always announced through `aria-keyshortcuts`. The shell binds the keys. */
   shortcut?: string[];
+  /** Draw the shortcut as a key hint next to the label (default). Off keeps it for screen readers only. */
+  showShortcut?: boolean;
   className?: string;
 }
 
 /** Toolbar toggle (`aria-pressed`), e.g. the Live preview and List preview tabs. */
-export function ToggleTab({ pressed, onPressedChange, icon, children, shortcut, className }: ToggleTabProps) {
+export function ToggleTab({ pressed, onPressedChange, icon, children, shortcut, showShortcut = true, className }: ToggleTabProps) {
   return (
     <button type="button" aria-pressed={pressed} onClick={() => onPressedChange(!pressed)}
       aria-keyshortcuts={shortcut?.join('+')}
@@ -25,7 +27,7 @@ export function ToggleTab({ pressed, onPressedChange, icon, children, shortcut, 
         pressed ? 'bg-raised text-fg shadow-raised [&_svg]:text-accent-text' : 'text-fg-muted hover:bg-line-faint hover:text-fg', className)}>
       {icon && <span aria-hidden className="grid">{icon}</span>}
       {children}
-      {shortcut && <Kbd keys={shortcut} className="ml-0.5" />}
+      {shortcut && showShortcut && <Kbd keys={shortcut} className="ml-0.5" />}
     </button>
   );
 }

@@ -1,0 +1,19 @@
+/* Match drawer body. Narrow side drawer: a summary strip, the main column, then the property rail underneath.
+   Expanded: main column and a 296px rail side by side. Rail headings are small, uppercase and muted, with thin separators. */
+.match-drawer { display: flex; flex-direction: column; gap: 16px; }
+.match-drawer-main { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
+.match-drawer-strip { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--color-line); }
+.match-drawer-rail { display: flex; min-width: 0; flex-direction: column; }
+.match-drawer-section { display: flex; flex-direction: column; gap: 8px; padding-block: 12px; border-top: 1px solid var(--color-line); }
+.match-drawer-section > h3 { color: var(--color-fg-muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.match-drawer-props { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px 12px; }
+.match-drawer-props dt { color: var(--color-fg-muted); font-size: 12px; }
+.match-drawer-wide { display: grid; grid-template-columns: minmax(0, 1fr) 296px; align-items: start; gap: 0; }
+.match-drawer-wide .match-drawer-main { padding-inline-end: 20px; }
+.match-drawer-wide .match-drawer-rail { padding-inline-start: 18px; border-inline-start: 1px solid var(--color-line); }
+.match-drawer-wide .match-drawer-rail > .match-drawer-section:first-child { border-top: 0; padding-top: 0; }
+@media (max-width: 760px) {
+  .match-drawer-wide { display: flex; flex-direction: column; gap: 16px; }
+  .match-drawer-wide .match-drawer-main { padding-inline-end: 0; }
+  .match-drawer-wide .match-drawer-rail { padding-inline-start: 0; border-inline-start: 0; }
+}

@@ -1,12 +1,12 @@
-import { LayoutGroup, motion, useReducedMotion } from 'motion/react';
-import { ArrowUpRight, CircleCheck, Clock, Gavel, ListChecks, Plus, Search, UserRound } from 'lucide-react';
-import { DEFAULT_MATCH_MINUTES, DEFAULT_SIGNUP_CAPACITY, type MatchDto, type TournamentDirectoryEntryDto } from '@tcg-live/core';
+import { ArrowUpRight, Plus, Search, UserRound } from 'lucide-react';
+import { DEFAULT_MATCH_MINUTES, DEFAULT_SIGNUP_CAPACITY, type TournamentDirectoryEntryDto } from '@tcg-live/core';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { useServerNow } from '../../data';
 import { Button, Input, Menu } from '../../ui';
 import { CreateTournamentDialog, gameLabel } from '../tournaments/CreateTournamentDialog';
-import { eventLabel, seatName, shortDate, STAGE_LABEL } from './labels';
+import { eventLabel, shortDate, STAGE_LABEL } from './labels';
 import { useShell } from './model';
+import { TaskBoard } from './TaskBoard';
 import { useTournamentDirectory } from '../tournaments/directory';
 import { useTournamentMenu } from '../tournaments/useTournamentMenu';
 import './home.css';
@@ -36,7 +36,6 @@ function DraftCard({ draft, menu }: { draft: TournamentDirectoryEntryDto; menu: 
 export function Home() {
   const shell = useShell();
   const tournamentMenu = useTournamentMenu();
-  const reduceMotion = useReducedMotion();
   const [createOpen, setCreateOpen] = useState(false);
   const now = useServerNow(30_000);
   const [search, setSearch] = useState('');
@@ -74,29 +73,6 @@ export function Home() {
   const matches = (shell.session.tournaments ? results.data?.entries ?? [] : localResults)
     .filter(entry => shell.draftsOpen ? entry.status === 'draft' :
       entry.status !== 'draft' || (!entry.isTemplate && entry.signupOpensAtMs !== undefined));
-  const openMatches = snapshot?.matches.filter(match => match.phase !== 'final') ?? [];
-  const judges = openMatches.filter(match => match.judge);
-  const decisions = openMatches.filter(match => !match.judge && match.proposal?.decision === 'open');
-  const underway = openMatches.filter(match => !match.judge && match.proposal?.decision !== 'open');
-  const finished = snapshot?.matches.filter(match => match.phase === 'final') ?? [];
-  const lanes = [
-    { label: 'Judge needed', icon: Gavel, tone: 'danger', matches: judges },
-    { label: 'Decision needed', icon: ListChecks, tone: 'warning', matches: decisions },
-    { label: 'In progress', icon: Clock, tone: 'accent', matches: underway },
-    { label: 'Done', icon: CircleCheck, tone: 'success', matches: finished }
-  ];
-  const matchStatus = (match: MatchDto) => {
-    if (match.judge) {
-      if (match.judge.reasons.includes('dispute')) return 'Result disputed';
-      if (match.judge.reasons.includes('expired')) return 'Clock expired';
-      return 'Judge requested';
-    }
-    if (match.phase === 'final') return snapshot && match.finalWinner ? `${seatName(snapshot, match.finalWinner)} won` : 'Result final';
-    if (match.proposal?.decision === 'open') return 'Awaiting result confirmation';
-    if (match.phase === 'setup') return 'Waiting for Ready';
-    return match.phase === 'paused' ? 'Paused' : 'Playing';
-  };
-  const countsAvailable = !!snapshot || (!activeId && shell.eventsState === 'ready' && shell.status?.database !== 'unavailable');
   return <div className="home-page">
     <div className="home-inner">
       <div className="home-search">
@@ -163,32 +139,10 @@ export function Home() {
             </button>} />
         </li>)}</ul>
       </section>}
-      {!shell.draftsOpen && <section className="home-actions" aria-labelledby="home-actions">
-        <h2 id="home-actions">Action needed</h2>
-        <div className="home-action-grid">
-          {lanes.slice(0, 2).map(({ label, icon: Icon, tone, matches }) => <div key={label} data-tone={tone}>
-            <Icon aria-hidden /><strong>{countsAvailable ? matches.length : '—'}</strong><h3>{label}</h3>
-          </div>)}
-        </div>
-        <LayoutGroup id={activeId ?? 'home'}>
-        <div className="home-task-viewport" role="region" aria-label="Tournament task board" tabIndex={0}>
-          <div className="home-task-board">
-          {lanes.map(({ label, icon: Icon, tone, matches }) => <section key={label} className="home-task-lane" data-tone={tone}>
-            <header><span className="home-task-lane-icon"><Icon aria-hidden /></span><h3>{label}</h3><small>{countsAvailable ? matches.length : '—'}</small></header>
-            {matches.length ? <ul>{matches.map(match => <motion.li key={match.id}
-              layout={reduceMotion ? false : 'position'} layoutId={reduceMotion ? undefined : match.id}
-              transition={{ duration: reduceMotion ? 0 : 0.16, ease: [0.2, 0.8, 0.2, 1] }}>
-              <button type="button" className="home-task-card" aria-label={`Match ${match.id}`}
-                onClick={() => { openActive(); shell.openMatch(match.id); }}>
-                <span className="home-task-card-heading"><small>Match {match.id}</small><ArrowUpRight aria-hidden /></span>
-                {snapshot && <strong>{match.seats.map(seat => seatName(snapshot, seat)).join(' vs ')}</strong>}
-                <span className="home-task-card-footer"><small>{matchStatus(match)}</small></span>
-              </button>
-            </motion.li>)}</ul> : <p className="home-task-empty">{countsAvailable ? 'No matches' : 'Match data unavailable'}</p>}
-          </section>)}
-          </div>
-        </div>
-        </LayoutGroup>
+      {!shell.draftsOpen && <section className="home-actions" aria-labelledby="home-matches">
+        <h2 id="home-matches">Matches</h2>
+        {snapshot ? <TaskBoard snapshot={snapshot} />
+          : <p className="home-task-empty" role="status">{shell.viewed.status === 'error' ? 'Match data unavailable' : 'Loading matches…'}</p>}
       </section>}
       </>}
       {canCreate && <CreateTournamentDialog open={createOpen} defaultGame={shell.directory?.defaultGame ?? 'one-piece'}

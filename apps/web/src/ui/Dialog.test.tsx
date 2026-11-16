@@ -103,6 +103,18 @@ function ConfirmHarness({ onConfirm, requireReason = true }: { onConfirm: (reaso
   );
 }
 
+describe('Dialog header actions and layout', () => {
+  it('renders header actions before the close button and switches between drawer and centred layouts', () => {
+    const view = render(<Dialog open onClose={() => {}} title="Match" layout="drawer" headerActions={<button type="button">Expand</button>} />);
+    const dialog = screen.getByRole('dialog', { name: 'Match' });
+    const buttons = Array.from(dialog.querySelectorAll('header button')).map(button => button.textContent || button.getAttribute('aria-label'));
+    expect(buttons).toEqual(['Expand', 'Close dialog']);
+    expect(dialog.className).toContain('h-[calc(100vh-16px)]');
+    view.rerender(<Dialog open onClose={() => {}} title="Match" layout="center" width="xl" headerActions={<button type="button">Expand</button>} />);
+    expect(screen.getByRole('dialog', { name: 'Match' }).className).toContain('max-w-[880px]');
+  });
+});
+
 describe('ConfirmDialog', () => {
   it('requires a non-empty reason before confirming', async () => {
     const user = userEvent.setup();
