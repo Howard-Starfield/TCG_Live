@@ -66,8 +66,8 @@ export function resolvePlayers(session: SessionRow, state: EventState): Record<P
   if ((kind === 'signup') !== !!state.signup || (kind === 'signup') !== (state.schemaVersion === 2))
     throw new RuleError('Private Discord session and aggregate identity differ.');
   if (kind === 'signup') {
-    if (session.identity_map.players || state.signup?.roster.includes(session.identity_map.adminId))
-      throw new RuleError('Signup roster conflicts with frozen admin identity.');
+    // The organizer may play: adminId on the roster is fine (it is only the frozen setup identity).
+    if (session.identity_map.players) throw new RuleError('Signup roster conflicts with frozen admin identity.');
     return state.signup?.status === 'assigned' ? state.signup.assignment ?? null : null;
   }
   if (!session.identity_map.players) throw new RuleError('Legacy session player identity is missing.');

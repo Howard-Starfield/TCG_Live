@@ -193,7 +193,6 @@ export function toDomainCommand(command: AdminCommandDto, adminId: string): Comm
     case 'signupReopen': return { type: 'signupReopen' };
     case 'signupRemove': return { type: 'signupRemove', memberId: command.memberId };
     case 'signupAdd':
-      if (command.memberId === adminId) throw new RuleError('Signup admin cannot play.');
       return { type: 'signupAdd', memberId: command.memberId };
     case 'checkinFor': return { type: 'checkinFor', seat: command.seat };
     case 'judgeResume': case 'judgeClose': return { type: command.type, matchId: command.matchId, reason: command.reason };

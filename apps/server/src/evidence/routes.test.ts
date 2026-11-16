@@ -115,3 +115,28 @@ test('an evidence POST without a Content-Type is refused with 415, not read as J
     assert.equal(options.store.records.size, 0);
   } finally { await harness.stop(); }
 });
+
+test('the operator seated in a match cannot reply to it or hold or delete its evidence; another match is fine', async () => {
+  const options = { ...evidence(), matchConflict: async (_event: string, matchId: string) => matchId === 'M1' };
+  const harness = await startHarness({ evidence: options });
+  const m2 = `/api/v1/events/${eventId}/matches/M2/evidence`;
+  try {
+    const token = await login(harness);
+    const own = await call(harness.port, base, { method: 'POST', token, body: json({ url: 'https://youtu.be/own' }) });
+    assert.equal(own.status, 201, 'adding evidence is not a ruling');
+    const other = await call(harness.port, m2, { method: 'POST', token, body: json({ url: 'https://youtu.be/other' }) });
+    const ownId = own.json().item.id;
+    const otherId = other.json().item.id;
+    const refused = await call(harness.port, `${base}/replies`, { method: 'POST', token, body: json({ body: 'hi', audience: 'staff' }) });
+    assert.equal(refused.status, 422);
+    assert.equal(refused.json().error.code, 'rule');
+    assert.match(refused.json().error.message, /You are playing in M1, so another organizer or judge must rule on it\. Add a TCG Judge in Admin tools > Settings > Tournament roles\.$/);
+    assert.equal((await call(harness.port, `${base}/replies`, { token })).json().replies.length, 0, 'nothing was stored');
+    assert.equal((await call(harness.port, `/api/v1/evidence/${ownId}`, { method: 'PATCH', token, body: json({ hold: true }) })).status, 422);
+    assert.equal((await call(harness.port, `/api/v1/evidence/${ownId}`, { method: 'DELETE', token, body: json({ reason: 'dup' }) })).status, 422);
+    assert.equal((await call(harness.port, `${base}/replies/22222222-2222-4222-8222-222222222222/retry`, { method: 'POST', token, body: json({}) })).status, 422,
+      'retrying a reply on the operator own match is refused too');
+    assert.equal((await call(harness.port, `${m2}/replies`, { method: 'POST', token, body: json({ body: 'hi', audience: 'staff' }) })).status, 201);
+    assert.equal((await call(harness.port, `/api/v1/evidence/${otherId}`, { method: 'PATCH', token, body: json({ hold: true }) })).status, 200);
+  } finally { await harness.stop(); }
+});

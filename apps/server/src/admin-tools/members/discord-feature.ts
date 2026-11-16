@@ -3,9 +3,9 @@
 // same service as the dashboard (service.ts), so cases, audit rows, DMs and the case log are identical;
 // the actor is the real Discord user and the case source is 'discord'. Replies are ephemeral.
 import { MessageFlags, PermissionFlagsBits, type ChatInputCommandInteraction } from 'discord.js';
-import type { ModAction, ModCaseDto } from '@tcg-live/core';
+import { staffMay, type ModAction, type ModCaseDto } from '@tcg-live/core';
 import type { DiscordFeature, DiscordFeatureContext } from '../../discord/features.js';
-import { isTournamentStaff, memberRoleIds, STAFF_DENIED } from '../../discord/staff.js';
+import { judgeDenied, memberRoleIds, STAFF_DENIED } from '../../discord/staff.js';
 import { HttpError } from '../../admin/http/respond.js';
 import type { OpsActor } from '../../ops/audit.js';
 import { RuleError } from '../../rehearsal/domain.js';
@@ -102,25 +102,24 @@ export function membersDiscordFeature(options: MembersDiscordOptions = {}): Disc
       const cases = options.cases?.() ?? pgModCaseStore(now);
       const notes = options.notes?.() ?? pgModNoteStore(now);
 
-      const allowed = async (interaction: ChatInputCommandInteraction, sub: string): Promise<boolean> => {
-        if (interaction.user.id === ctx.adminId) return true;
+      // Moderation is for a TCG Organizer (the server owner counts as one), or a holder of the matching Discord permission.
+      // A TCG Judge, and a legacy staff role, which counts as judge, may not moderate.
+      const refusal = async (interaction: ChatInputCommandInteraction, sub: string): Promise<string | null> => {
         const permission = PERMISSION[sub];
-        if (permission !== undefined && interaction.memberPermissions?.has(permission)) return true;
-        const settings = await ctx.adminToolsSettings();
-        return isTournamentStaff({ userId: interaction.user.id, adminId: ctx.adminId, roleIds: memberRoleIds(interaction.member),
-          staffRoleIds: settings.cases.staffRoleIds });
+        if (permission !== undefined && interaction.memberPermissions?.has(permission)) return null;
+        const staff = await ctx.staffRoleOf({ userId: interaction.user.id, roleIds: memberRoleIds(interaction.member),
+          ownerId: interaction.guild?.ownerId ?? null });
+        if (!staff) return STAFF_DENIED;
+        return staffMay(staff.role, 'moderation') ? null : judgeDenied('moderation');
       };
 
       /**
-       * Checks for staff other than the organizer: no member at or above the actor's highest role (`hierarchy`),
-       * and no member seated in the current round when the actor is seated too. The server owner is exempt.
+       * Checks for every actor: no member at or above the actor's highest role (`hierarchy`; the server owner is
+       * exempt from this one only), and no member seated in the current round when the actor is seated too.
        */
       const staffRefusal = async (actorId: string, targetId: string, hierarchy: boolean): Promise<string | null> => {
-        if (actorId === ctx.adminId) return null;
-        const self = await backend.target(actorId);
-        if (self.isOwner) return null;
         if (hierarchy) {
-          const refused = actorOutranks(self, await backend.target(targetId));
+          const refused = actorOutranks(await backend.target(actorId), await backend.target(targetId));
           if (refused) return refused;
         }
         const rooms = await ctx.activeMatchRooms().catch(() => []);
@@ -132,8 +131,8 @@ export function membersDiscordFeature(options: MembersDiscordOptions = {}): Disc
           await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           let content: string;
           try {
-            if (!await allowed(interaction, sub)) content = STAFF_DENIED;
-            else content = await run(interaction, { kind: 'admin', id: interaction.user.id });
+            const refused = await refusal(interaction, sub);
+            content = refused ?? await run(interaction, { kind: 'admin', id: interaction.user.id });
           } catch (error) { content = safeMessage(error); }
           await interaction.editReply({ content, allowedMentions: { parse: [] } });
         });

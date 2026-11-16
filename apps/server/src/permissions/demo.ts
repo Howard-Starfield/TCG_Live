@@ -46,7 +46,8 @@ export function demoPermissionConfig(settings: AdminToolsSettingsBodyDto): Permi
       bulkRoleIds: [],
       announcements: []
     },
-    intents: null
+    intents: null,
+    tournamentRoles: { organizerRoleId: DEMO_ROLE_IDS.tcgOrganizer, judgeRoleId: DEMO_ROLE_IDS.tcgJudge }
   };
 }
 

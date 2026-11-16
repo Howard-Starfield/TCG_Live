@@ -280,7 +280,8 @@ test('close by author or staff only, and cards deleted by hand mark their post d
 
   // A configured tournament staff role may close a card too (no Manage Messages needed); other roles may not.
   const STAFF_ROLE = '500000000000000001';
-  const staffEnv: LfgInteractionEnv = { ...env, staffRoleIds: async () => [STAFF_ROLE] };
+  const staffEnv: LfgInteractionEnv = { ...env,
+    staffRole: async ({ roleIds }) => roleIds.includes(STAFF_ROLE) ? { role: 'judge', via: 'legacy-staff-role' } : null };
   const fourth = await post(r, user(5));
   assert.ok(fourth.kind === 'created');
   const clickAs = (roles: string[]) => handleLfgComponent({ customId: LFG_IDS.close(fourth.post.id), channelId: CHANNEL, user: { id: user(8) },

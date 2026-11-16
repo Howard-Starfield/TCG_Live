@@ -30,7 +30,7 @@ function ActorCell({ entry, snapshot }: { entry: AuditEntryDto; snapshot: EventS
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5" title={formatted.actorLabel}>
       {icon}
-      <span className="min-w-0 max-w-[9rem] truncate text-fg">{name}</span>
+      <span className={`min-w-0 truncate text-fg ${actor.kind === 'admin' && actor.staff ? 'max-w-[14rem]' : 'max-w-[9rem]'}`}>{name}</span>
     </span>
   );
 }

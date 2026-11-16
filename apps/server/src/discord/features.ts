@@ -8,6 +8,7 @@ import type { EvidenceStore } from '../evidence/store.js';
 import type { ModerationFlagInput } from '../moderation/flags.js';
 import type { OpsActor, OpsAuditInput } from '../ops/audit.js';
 import type { FeatureInteractions } from './interactions.js';
+import type { ResolvedStaff } from './staff.js';
 import type { VoicePoolLiveState } from '../voice/pool.js';
 import type { VoiceBotRegistry } from '../voice/tokens.js';
 
@@ -90,8 +91,10 @@ export interface TournamentMembers {
 export interface DiscordFeatureContext {
   readonly client: Client;
   readonly guildId: string;
-  /** The organizer's Discord ID (config.adminId). */
+  /** The organizer's Discord ID (config.adminId): setup identity and contact only; it is not a staff source. */
   readonly adminId: string;
+  /** The member's tournament staff role (server owner, TCG Organizer, TCG Judge, legacy staff role), or null. */
+  staffRoleOf(input: { userId: string; roleIds: readonly string[]; ownerId?: string | null }): Promise<ResolvedStaff | null>;
   /** False once the runtime is stopping or the database lease is lost: stop acting. */
   isActive(): boolean;
   moderationSettings(): Promise<ModerationSettingsDto>;

@@ -111,7 +111,9 @@ test('real database: additive migration, global lease, canonical interaction and
       const slot = command.type === 'checkin' ? 'checkin' : 'matchId' in command ? command.matchId : null;
       const id = slot === 'checkin' ? ids[0]! : slot === 'M1' ? ids[2]! : slot === 'M2' ? ids[3]! : null;
       return applyDiscordCommand({ config: changed, eventId: session.event_id, principalId, interactionId,
-        ...(config.adminId !== principalId && id && slot ? { message: { slot, id, channelId: changed.channelId } } : {}) }, command, runner, () => at);
+        // The configured organizer runs slash commands as a verified TCG Organizer; everyone else uses the card.
+        ...(config.adminId === principalId ? { actor: { role: 'organizer' as const } }
+          : id && slot ? { message: { slot, id, channelId: changed.channelId } } : {}) }, command, runner, () => at);
     };
     await run(changed.players.C, ids[5]!, { type: 'checkin' }, 2_100);
     await run(changed.players.D, ids[6]!, { type: 'checkin' }, 2_200);
@@ -191,9 +193,12 @@ test('real database: additive migration, global lease, canonical interaction and
     const signupRun = (principalId: string, command: Parameters<typeof applyDiscordCommand>[1],
       card = false) => applyDiscordCommand({ config: signupConfig, eventId: signupSession.event_id,
         principalId, interactionId: `${sequence++}1010101010101010`, ...(card ?
-          { message: { slot: 'checkin' as const, id: ids[0]!, channelId: signupConfig.channelId } } : {}) },
+          { message: { slot: 'checkin' as const, id: ids[0]!, channelId: signupConfig.channelId } }
+          : principalId === signupConfig.adminId ? { actor: { role: 'organizer' as const } } : {}) },
       command, 'signup-db-runner', () => 10_000 + sequence);
-    await assert.rejects(signupRun(signupConfig.adminId, { type: 'signupJoin' }, true), /member action denied/);
+    // The organizer can play: joining from the card is allowed, like any member's, and so is withdrawing.
+    assert.equal((await signupRun(signupConfig.adminId, { type: 'signupJoin' }, true)).applied, true);
+    assert.equal((await signupRun(signupConfig.adminId, { type: 'signupWithdraw' }, true)).applied, true);
     await assert.rejects(signupRun(ids[3]!, { type: 'signupJoin' }), /canonical card/);
     await assert.rejects(applyDiscordCommand({ config: signupConfig, eventId: signupSession.event_id,
       principalId: ids[3]!, interactionId: '301010101010101010',
@@ -209,7 +214,7 @@ test('real database: additive migration, global lease, canonical interaction and
     await signupRun(ids[5]!, { type: 'signupJoin' }, true);
     await signupRun(ids[6]!, { type: 'signupJoin' }, true);
     const beforeClose = await getSessionState(signupConfig);
-    assert.equal(beforeClose.state.version, 4);
+    assert.equal(beforeClose.state.version, 6, 'four joins, plus the organizer joining and withdrawing');
     await assert.rejects(signupRun(ids[8]!, { type: 'signupJoin' }, true), /full/);
     const closed = await signupRun(signupConfig.adminId,
       { type: 'signupClose', adminId: signupConfig.adminId });
@@ -240,6 +245,9 @@ test('real database: additive migration, global lease, canonical interaction and
     assert.equal(signupAudit.rows.length, (await getSessionState(signupConfig)).state.version,
       'duplicate and rejected commands do not create audit entries');
     assert.equal(signupAudit.rows.filter(row => row.action.type === 'signupClose').length, 2);
+    const closeActors = await withClient(client => client.query<{ actor_id: string }>(
+      "SELECT actor_id FROM public.tcg_rehearsal_audit WHERE event_id=$1 AND action->>'type'='signupClose'", [signupSession.event_id]));
+    assert.ok(closeActors.rows.every(row => row.actor_id === `organizer:${signupConfig.adminId}`), 'a verified staff slash command acts as organizer:<id>');
     assert.ok(signupAudit.rows.filter(row => row.action.type === 'signupClose').every(row => row.outcome.result.includes('"A"')));
     const publicConfig = { ...signupConfig, publicMatchRooms: true,
       matchChannels: { M1: ids[3]!, M2: ids[4]! } };

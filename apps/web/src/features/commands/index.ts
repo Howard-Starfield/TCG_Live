@@ -6,7 +6,7 @@ export { useAdminCommand } from './useAdminCommand';
 export type { AdminCommandApi, CommandOutcome, RunOptions } from './useAdminCommand';
 export { createCommandClient, isRetryable, RETRY_DELAYS_MS } from './client';
 export type { CommandClient, CommandClientOptions } from './client';
-export { EventActions, MatchActions, RemoveMemberAction, useMatchActionsAvailable, useRemoveAvailable } from './actions';
+export { EventActions, MatchActions, StaffConflictNotice, RemoveMemberAction, useMatchActionsAvailable, useRemoveAvailable } from './actions';
 export type { MatchActionsProps } from './actions';
 export { ConsoleComposer } from './ConsoleComposer';
 export type { ConsoleComposerProps } from './ConsoleComposer';
@@ -15,5 +15,5 @@ export { COMMAND_SPECS, parseCommand, suggest, usage, mentionFor, resolveMention
 export type { CommandSpec, ComposerIntent, ParseResult, Suggestion, SuggestionList } from './grammar';
 export {
   availableEventActions, availableMatchActions, canCloseJudgeIssue, canRefreshPanels, canRemoveMember, canRun, canRunAny, checkReason,
-  commandsEnabled, errorMessage, isWritable, preconditionFor
+  commandsEnabled, errorMessage, isWritable, preconditionFor, STAFF_CONFLICT_TEXT
 } from './model';

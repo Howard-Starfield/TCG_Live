@@ -49,12 +49,24 @@ describe('capabilities data', () => {
     const sub = (command: string) => new Set(syntax.filter(item => item.startsWith(`/${command} `)).flatMap(item => item.split(' ')[1]!.split('|')));
     // /tcg-test is the player command: evidence and recording-optout only.
     expect([...sub('tcg-test')].sort()).toEqual(['evidence', 'recording-optout']);
-    for (const name of ['publish', 'signup-close', 'signup-reopen', 'signup-remove', 'signup-add', 'checkin-for', 'refresh', 'resolve', 'correct', 'judge-resume'])
+    for (const name of ['publish', 'signup-close', 'signup-reopen', 'signup-remove', 'signup-add', 'checkin-for', 'refresh', 'resolve', 'correct', 'judge-resume', 'judge-close', 'evidence-reply'])
       expect(sub('tcg-staff').has(name), name).toBe(true);
     for (const name of ['status', 'warn', 'timeout', 'untimeout', 'kick', 'ban', 'unban', 'case', 'note'])
       expect(sub('tcg-admin').has(name), name).toBe(true);
     // A temporary ban is `ban` with a duration, not its own subcommand.
     expect(sub('tcg-admin').has('tempban')).toBe(false);
+  });
+
+  it('states who may use each staff action, and that /tcg-staff is visible to everyone', () => {
+    const entry = (id: string) => CAPABILITIES.find(item => item.id === id)!;
+    expect(entry('tcg-staff-command').what).toContain('visible to everyone');
+    expect(entry('tcg-publish').who).toContain('TCG Organizer');
+    expect(entry('tcg-publish').who).toContain('TCG Judge cannot');
+    for (const id of ['tcg-resolve', 'tcg-correct', 'tcg-judge-resume', 'tcg-judge-close', 'tcg-evidence-reply'])
+      expect(entry(id).who, id).toMatch(/TCG Judge.*not on a match they are playing in/);
+    expect(entry('tcg-checkin-for').who).toContain('TCG Judge');
+    expect(entry('tcg-signup-add').what).toContain('organizers may play');
+    expect(CAPABILITIES.map(item => item.who + item.what).join(' ')).not.toContain('Manage Server by default');
   });
 
   it('lists every required shortcut', () => {

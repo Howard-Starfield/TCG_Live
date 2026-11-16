@@ -14,6 +14,9 @@ export const ADMIN_TOOLS_MIGRATION = new URL('../../../../database/migrations/01
 /** Migration 014 (LFG), applied right after 013 by setupAdminToolsSchema. */
 export const LFG_MIGRATION = new URL('../../../../database/migrations/014_lfg.sql', import.meta.url);
 
+/** Migration 016 (the actor snapshot column on the rehearsal audit), applied right after 014 by setupAdminToolsSchema. */
+export const STAFF_ACTOR_SNAPSHOT_MIGRATION = new URL('../../../../database/migrations/016_staff_actor_snapshot.sql', import.meta.url);
+
 /** Tables only (sequences are implied by their bigserial owners). */
 const REQUIRED = ADMIN_TOOLS_TABLES.filter(name => !name.endsWith('_seq'));
 
@@ -34,7 +37,7 @@ export async function requireLfgSchema(client: pg.Client): Promise<void> {
 }
 
 /**
- * Explicit additive migrations 013 and 014 (LFG), run after setupEvidenceSchema(). Uses its own advisory lock and the
+ * Explicit additive migrations 013, 014 (LFG) and 016 (actor snapshot), run after setupEvidenceSchema(). Uses its own advisory lock and the
  * exact-table-list guard: it runs only on the known evidence shape (or reapplies on its own shape).
  */
 export async function setupAdminToolsSchema(): Promise<'created' | 'already_ready'> {
@@ -47,6 +50,7 @@ export async function setupAdminToolsSchema(): Promise<'created' | 'already_read
     await client.query(await readFile(ADMIN_TOOLS_MIGRATION, 'utf8'));
     const hadLfg = classifyPublicSchema(objects.rows.map(row => row.relname)) === 'v2_directory_evidence_admin_tools_lfg';
     await client.query(await readFile(LFG_MIGRATION, 'utf8'));
+    await client.query(await readFile(STAFF_ACTOR_SNAPSHOT_MIGRATION, 'utf8'));
     return decision === 'already_ready' && hadLfg ? 'already_ready' : 'created';
   }));
 }

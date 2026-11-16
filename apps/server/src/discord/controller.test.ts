@@ -114,7 +114,7 @@ test('only explicit admin refresh creates cards; startup edits known cards only'
   assert.equal(f.calls.includes('send'), false);
   const replies: string[] = [];
   await f.controller.handle({ id: ids[0]!, applicationId: config.applicationId,
-    guildId: config.guildId, channelId: config.channelId, userId: config.adminId,
+    guildId: config.guildId, channelId: config.channelId, userId: config.adminId, ownerId: config.adminId,
     kind: 'command', subcommand: 'refresh', acknowledge: async () => {}, reply: async text => { replies.push(text); } });
   assert.equal(f.calls.filter(call => call === 'send').length, 3);
   assert.equal(f.calls.filter(call => call.startsWith('pin:')).length, 1);
@@ -183,7 +183,7 @@ test('ambiguous initial send is attempted once and never auto-replayed', async (
   const f = fixture();
   f.failSend = true;
   await f.controller.handle({ id: ids[0]!, applicationId: config.applicationId,
-    guildId: config.guildId, channelId: config.channelId, userId: config.adminId,
+    guildId: config.guildId, channelId: config.channelId, userId: config.adminId, ownerId: config.adminId,
     kind: 'command', subcommand: 'refresh', acknowledge: async () => {}, reply: async () => {} });
   assert.deepEqual(f.calls, ['send']);
   await f.controller.stop();
@@ -204,7 +204,7 @@ test('explicit refresh retries pinning an already bound check-in card', async ()
   const f = fixture();
   const replies: string[] = [];
   const refresh: PrivateInteraction = { id: ids[0]!, applicationId: config.applicationId,
-    guildId: config.guildId, channelId: config.channelId, userId: config.adminId,
+    guildId: config.guildId, channelId: config.channelId, userId: config.adminId, ownerId: config.adminId,
     kind: 'command', subcommand: 'refresh', acknowledge: async () => {}, reply: async text => { replies.push(text); } };
   f.failPin = true;
   await f.controller.handle(refresh);
@@ -389,7 +389,7 @@ test('explicit refresh replaces only a confirmed deleted card; forbidden card is
   });
   const replies: string[] = [];
   const refresh: PrivateInteraction = { id: ids[4]!, applicationId: config.applicationId,
-    guildId: config.guildId, channelId: config.channelId, userId: config.adminId,
+    guildId: config.guildId, channelId: config.channelId, userId: config.adminId, ownerId: config.adminId,
     kind: 'command', subcommand: 'refresh', acknowledge: async () => {}, reply: async text => { replies.push(text); } };
   await controller.handle(refresh);
   assert.deepEqual(sends, ['missing']);
@@ -425,7 +425,7 @@ test('slot-aware routing sends match cards to their channels and rejects copied 
     session = { ...session, [slot === 'checkin' ? 'checkin_message_id' : slot === 'M1' ? 'm1_message_id' : 'm2_message_id']: id };
   });
   const admin: PrivateInteraction = { id: ids[6]!, applicationId: routed.applicationId,
-    guildId: routed.guildId, channelId: routed.channelId, userId: routed.adminId,
+    guildId: routed.guildId, channelId: routed.channelId, userId: routed.adminId, ownerId: routed.adminId,
     kind: 'command', subcommand: 'refresh', acknowledge: async () => {}, reply: async () => {} };
   await controller.handle(admin);
   assert.deepEqual(sends, ['checkin', 'M1', 'M2']);

@@ -7,6 +7,7 @@ import type { CreateEvidenceResponseDto, EvidenceItemDto, EvidenceItemResponseDt
 import { readJsonBody, strictObject } from '../admin/http/body.js';
 import { HttpError, sendJson } from '../admin/http/respond.js';
 import type { Session } from '../admin/http/sessions.js';
+import { rulingConflictText } from '../discord/staff.js';
 import { LOCAL_ADMIN, type OpsActor, type OpsAuditStore } from '../ops/audit.js';
 import { mapOpsError } from '../ops/errors.js';
 import { badRequest, notImplemented, onlyParams, UUID, type OpsContext, type OpsRoute } from '../ops/http.js';
@@ -75,6 +76,11 @@ export interface EvidenceRouteOptions {
    * staff-only replies never need it.
    */
   replyDelivery?: EvidenceReplyDelivery;
+  /**
+   * True when the operator behind the dashboard (the organizer ID of the setup) is seated in this match, so replying
+   * to it and holding or deleting its evidence is refused. Without it nothing is refused.
+   */
+  matchConflict?: (eventId: string, matchId: MatchId) => Promise<boolean>;
   /** Supplied by the admin handler. */
   sessionLive?: (session: Session) => boolean;
 }
@@ -99,6 +105,11 @@ async function guarded<T>(run: () => Promise<T>): Promise<T> {
 
 export function evidenceRoutes(options: EvidenceRouteOptions): OpsRoute[] {
   const { store, audit, seams = {}, replyDelivery } = options;
+  /** 422 `rule` when the operator plays in the match: the same rule and words as a ruling from the dashboard. */
+  const refuseOwnMatch = async (eventId: string, matchId: MatchId): Promise<void> => {
+    if (options.matchConflict && await options.matchConflict(eventId, matchId))
+      throw new HttpError(422, 'rule', rulingConflictText(matchId, true));
+  };
   return [
     { pattern: /^\/api\/v1\/events\/([^/]+)\/matches\/([^/]+)\/evidence$/, methods: {
       GET: { access: 'evidence.read', run: async ({ response, params, query }) => {
@@ -151,6 +162,7 @@ export function evidenceRoutes(options: EvidenceRouteOptions): OpsRoute[] {
         onlyParams(query, []);
         const where = eventMatch(params);
         const { body, audience } = strictObject(await readJsonBody(request), ['body', 'audience']);
+        await refuseOwnMatch(where.eventId, where.matchId);
         if (audience === 'players' && !replyDelivery)
           throw new HttpError(503, 'unavailable', 'Discord delivery is not available. Send a staff-only note, or try again when the bot is online.');
         const created = await guarded(() => store.createReply({ ...where, body: body as string, audience: audience as 'players' | 'staff',
@@ -167,6 +179,7 @@ export function evidenceRoutes(options: EvidenceRouteOptions): OpsRoute[] {
         const where = eventMatch(params);
         const id = params[2];
         if (!id || !UUID.test(id)) throw new HttpError(404, 'not_found', 'Reply not found.');
+        await refuseOwnMatch(where.eventId, where.matchId);
         strictObject(await readJsonBody(request) ?? {}, []);
         if (!replyDelivery) throw new HttpError(503, 'unavailable', 'Discord delivery is not available. Try again when the bot is online.');
         const existing = await guarded(() => store.getReply(id));
@@ -183,6 +196,8 @@ export function evidenceRoutes(options: EvidenceRouteOptions): OpsRoute[] {
         const id = evidenceId(params[0]);
         const { hold } = strictObject(await readJsonBody(request), ['hold']);
         if (typeof hold !== 'boolean') throw badRequest('hold must be true or false.');
+        const current = options.matchConflict ? await guarded(() => store.get(id)) : null;
+        if (current) await refuseOwnMatch(current.eventId, current.matchId);
         const item = await guarded(() => store.setHold(id, hold, LOCAL_ADMIN));
         const body: EvidenceItemResponseDto = { item };
         sendJson(response, 200, body);
@@ -190,6 +205,8 @@ export function evidenceRoutes(options: EvidenceRouteOptions): OpsRoute[] {
       DELETE: { access: 'evidence.manage', run: async ({ request, response, params }) => {
         const id = evidenceId(params[0]);
         const { reason } = strictObject(await readJsonBody(request), ['reason']);
+        const current = options.matchConflict ? await guarded(() => store.get(id)) : null;
+        if (current) await refuseOwnMatch(current.eventId, current.matchId);
         const record = await guarded(() => store.softDelete(id, reason as string, LOCAL_ADMIN));
         if (record.storagePath && seams.removeFile) {
           try { await seams.removeFile(record); } catch { /* Retention retries file removal for deleted rows. */ }

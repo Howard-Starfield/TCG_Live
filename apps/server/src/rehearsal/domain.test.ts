@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  ADMIN, adoptRunningClocks, createFixture, createTournamentFirstRound, deriveFixture, SCHEDULED_PUBLISH_WINDOW_MS, scheduledPublishDue, transition, type Command, type EventState, type Player
+  ADMIN, adoptRunningClocks, createFixture, createSignupFixture, createTournamentFirstRound, deriveFixture, rulingConflict, SCHEDULED_PUBLISH_WINDOW_MS, scheduledPublishDue, StaffConflictError, transition, type Command, type EventState, type Player
 } from './domain.js';
 
 const runner = 'runner-one';
@@ -219,4 +219,61 @@ test('scheduled publication is due only within the window after the start, with 
   assert.equal(scheduledPublishDue(state, 10_000 + SCHEDULED_PUBLISH_WINDOW_MS - 1), true);
   assert.equal(scheduledPublishDue(state, 10_000 + SCHEDULED_PUBLISH_WINDOW_MS), false, 'a missed start waits for the admin');
   assert.equal(scheduledPublishDue({ ...state, published: true }, 10_000), false);
+});
+
+const ORG = 'organizer:210000000000000001';
+const JUDGE = 'judge:210000000000000002';
+
+test('roles: a judge rules and checks players in but cannot publish or run signup; an organizer does everything', () => {
+  const roster = ['111111111111111111', '222222222222222222', '333333333333333333', '444444444444444444'];
+  let signup = createSignupFixture('signup', 10_000);
+  for (const id of roster) signup = apply(signup, `member:${id}`, { type: 'signupJoin' });
+  for (const command of [{ type: 'signupRemove', memberId: roster[0]! }, { type: 'signupAdd', memberId: '555555555555555555' },
+    { type: 'signupClose', adminId: '999999999999999999' }, { type: 'signupReopen' }, { type: 'publish' },
+    { type: 'delayStart', delayMinutes: 5 }] as Command[])
+    assert.throws(() => apply(signup, JUDGE, command), /Organizer action denied/, command.type);
+  assert.equal(apply(signup, ORG, { type: 'signupClose', adminId: '999999999999999999' }).signup?.status, 'assigned');
+  // Organizer actors are not refused at signupClose even when the configured organizer ID is on the roster.
+  assert.equal(apply(signup, ORG, { type: 'signupClose', adminId: roster[0]! }).signup?.status, 'assigned');
+
+  const fresh = createFixture('fixture');
+  assert.deepEqual(apply(fresh, JUDGE, { type: 'checkinFor', seat: 'A' }).checkins, ['A'], 'a judge checks a player in');
+  assert.throws(() => apply(fresh, JUDGE, { type: 'publish' }), /Organizer action denied/);
+  const running = started();
+  for (const actor of [JUDGE, ORG]) {
+    assert.equal(apply(running, actor, { type: 'resolve', matchId: 'M1', winner: 'A', reason: 'r' }).matches[0]!.phase, 'final', actor);
+    const paused = apply(running, 'player:A', { type: 'pause', matchId: 'M1' });
+    assert.equal(apply(paused, actor, { type: 'judgeResume', matchId: 'M1', reason: 'r' }).matches[0]!.phase, 'running', actor);
+    const called = apply(running, 'player:A', { type: 'callJudge', matchId: 'M1' });
+    assert.equal(apply(called, actor, { type: 'judgeClose', matchId: 'M1', reason: 'r' }).matches[0]!.judgeAttention, false, actor);
+    const done = apply(running, ADMIN, { type: 'resolve', matchId: 'M1', winner: 'A', reason: 'r' });
+    assert.equal(apply(done, actor, { type: 'correct', matchId: 'M1', winner: 'B', reason: 'r' }).matches[0]!.finalWinner, 'B', actor);
+  }
+  // Players and malformed staff actors are refused.
+  for (const actor of ['player:A', 'organizer:x', 'judge:', 'admin:other', 'member:111111111111111111'])
+    assert.throws(() => apply(running, actor, { type: 'resolve', matchId: 'M1', winner: 'A', reason: 'r' }), /denied/, actor);
+});
+
+test('roles: clockCheck is for the system (ADMIN) only', () => {
+  const running = started();
+  const later = now + 5_000;
+  assert.equal(transition(running, ADMIN, { type: 'clockCheck', matchId: 'M1' }, later, runner).outcome.applied, true);
+  for (const actor of [ORG, JUDGE, 'player:A'])
+    assert.throws(() => transition(running, actor, { type: 'clockCheck', matchId: 'M1' }, later, runner), /System action denied/, actor);
+});
+
+test('rulingConflict: only rulings, only on the match the member is seated in; evidence replies count', () => {
+  const state = published();
+  const players = { A: '111111111111111111', B: '222222222222222222', C: '333333333333333333', D: '444444444444444444' };
+  for (const type of ['resolve', 'correct', 'judgeResume', 'judgeClose', 'evidenceReply'])
+    assert.equal(rulingConflict(state, players, players.A, { type, matchId: 'M1' }), 'M1', type);
+  assert.equal(rulingConflict(state, players, players.A, { type: 'resolve', matchId: 'M2' }), null, 'another match');
+  assert.equal(rulingConflict(state, players, players.C, { type: 'resolve', matchId: 'M2' }), 'M2');
+  assert.equal(rulingConflict(state, players, '999999999999999999', { type: 'resolve', matchId: 'M1' }), null, 'not seated');
+  assert.equal(rulingConflict(state, players, players.A, { type: 'checkinFor' }), null, 'check-in is not a ruling');
+  assert.equal(rulingConflict(state, players, players.A, { type: 'pause', matchId: 'M1' }), null);
+  assert.equal(rulingConflict(state, null, players.A, { type: 'resolve', matchId: 'M1' }), null, 'no seating yet');
+  assert.equal(rulingConflict(state, players, null, { type: 'resolve', matchId: 'M1' }), null);
+  assert.match(new StaffConflictError('M1', false).message, /^You are playing in M1, so another organizer or judge must rule on it\.$/);
+  assert.match(new StaffConflictError('M1', true).message, /Add a TCG Judge in Admin tools > Settings > Tournament roles\.$/);
 });

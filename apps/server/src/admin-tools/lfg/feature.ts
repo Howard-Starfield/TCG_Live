@@ -51,11 +51,12 @@ export interface LfgInteractionEnv {
   voiceNames(ids: readonly string[]): Promise<VoiceNames>;
   /** A card was posted in this channel (the panel moves below it, debounced). */
   onPosted(channelId: string, messageId: string): void;
-  /** Tournament staff roles (admin-tools settings, Cases); they may close any card. */
-  staffRoleIds?(): Promise<readonly string[]>;
+  /** Tournament staff (owner, TCG Organizer or Judge, legacy staff role); they may close any card. */
+  staffRole?(input: { userId: string; roleIds: readonly string[]; ownerId: string | null }): Promise<unknown>;
 }
 
-type Component = Pick<MessageComponentInteraction, 'customId' | 'channelId' | 'user' | 'member' | 'memberPermissions' | 'reply' | 'deferReply' | 'editReply' | 'showModal'>;
+type Component = Pick<MessageComponentInteraction, 'customId' | 'channelId' | 'user' | 'member' | 'memberPermissions' | 'reply' | 'deferReply' | 'editReply' | 'showModal'> &
+  { guild?: { ownerId?: string | null } | null };
 type Modal = Pick<ModalSubmitInteraction, 'customId' | 'channelId' | 'user' | 'fields' | 'reply' | 'deferReply' | 'editReply'>;
 const ephemeral = MessageFlags.Ephemeral;
 const quiet = { parse: [] as never[] };
@@ -77,10 +78,10 @@ export async function handleLfgComponent(interaction: Component, env: LfgInterac
   if (parsed.action === 'close') {
     const post = await env.deps.store.get(env.deps.guildId, parsed.postId);
     if (!post) { await answer('This post no longer exists.'); return; }
-    // The author, members with Manage Messages, or a configured tournament staff role.
-    const staffRoles = new Set(await env.staffRoleIds?.().catch((): readonly string[] => []) ?? []);
+    // The author, members with Manage Messages, or tournament staff.
     const staff = !!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages) ||
-      memberRoleIds(interaction.member).some(id => staffRoles.has(id));
+      !!await env.staffRole?.({ userId: interaction.user.id, roleIds: memberRoleIds(interaction.member),
+        ownerId: interaction.guild?.ownerId ?? null }).catch(() => null);
     if (post.authorId !== interaction.user.id && !staff) { await answer('Only the member who posted this or the staff can close it.'); return; }
     const by = post.authorId === interaction.user.id ? 'author' : 'staff';
     const closed = await endLfgPost(env.deps, post.id, 'closed', by, { kind: by === 'author' ? 'player' : 'admin', id: interaction.user.id });
@@ -199,7 +200,7 @@ export function lfgFeature(options: LfgFeatureOptions = {}): DiscordFeature {
       stops.push(runtime.registerRefresher(() => reloadPanels(true)));
 
       const env: LfgInteractionEnv = { deps, voiceNames: ids => io.voiceNames(ids),
-        staffRoleIds: async () => (await ctx.adminToolsSettings()).cases.staffRoleIds ?? [],
+        staffRole: input => ctx.staffRoleOf(input),
         onPosted: (channelId, messageId) => sticky.onMessage({ channelId, messageId, authorId: 'lfg-card', bot: false }) };
       stops.push(ctx.interactions.onComponent(FEATURE_INTERACTION_PREFIXES.lfg, interaction => handleLfgComponent(interaction, env)));
       stops.push(ctx.interactions.onModal(FEATURE_INTERACTION_PREFIXES.lfg, interaction => handleLfgModal(interaction, env)));

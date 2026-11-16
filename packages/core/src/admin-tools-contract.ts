@@ -458,7 +458,8 @@ export const ADMIN_TOOLS_AUDIT_KINDS = ['admin_tools.settings', 'admin_tools.int
   'button_roles.saved', 'button_roles.published', 'button_roles.deleted',
   'bulk_roles.queued', 'bulk_roles.finished', 'bulk_roles.cancelled',
   'announcement.saved', 'announcement.sent', 'announcement.failed', 'announcement.deleted',
-  'logging.retention', 'welcome.failed', 'auto_role.failed'] as const;
+  'logging.retention', 'welcome.failed', 'auto_role.failed',
+  'tournament_roles.created', 'tournament_roles.updated', 'tournament_roles.member_added', 'tournament_roles.member_removed'] as const;
 export type AdminToolsAuditKind = typeof ADMIN_TOOLS_AUDIT_KINDS[number];
 
 // ---------------------------------------------------------------- limits and defaults

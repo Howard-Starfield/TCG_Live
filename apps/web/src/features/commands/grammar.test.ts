@@ -29,6 +29,12 @@ describe('organizer signup-add and checkin-for (next wave)', () => {
     expect(error('/signup-add 900000000000000099', ctx(checkin))).toMatch(/not available/);
   });
 
+  it('lets the organizer add themselves: organizers may play', () => {
+    const organizer = signupOpen.adminId;
+    expect(signupOpen.signup!.roster).not.toContain(organizer);
+    expect(ok(`/signup-add ${organizer}`, ctx(signupOpen))).toEqual({ kind: 'signupAdd', memberId: organizer });
+  });
+
   it('checks in a seat by letter or mention while check-in is open', () => {
     const waiting = { ...checkin, checkins: ['A'] } as EventSnapshotDto;
     expect(ok('/checkin-for B', ctx(waiting))).toEqual({ kind: 'checkinFor', seat: 'B' });

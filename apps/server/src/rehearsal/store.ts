@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
-import { MAX_SIGNUP_CAPACITY } from '@tcg-live/core';
+import { MAX_SIGNUP_CAPACITY, type TournamentRoleKind } from '@tcg-live/core';
 import { parseDatabaseUrl } from '../config.js';
-import { createFixture, PLAYERS, scheduledPublishDue, type Command, type EventState, type Outcome, RuleError, transition } from './domain.js';
+import { createFixture, PLAYERS, rulingConflict, scheduledPublishDue, StaffConflictError, type Command, type EventState, type Outcome, RuleError, transition } from './domain.js';
+import { STAFF_DENIED, type StaffVia } from '../discord/staff.js';
 import { channelForSlot, type PrivateDiscordConfig } from '../discord/config.js';
 import { PUBLIC_RELATIONS_SQL, privateDiscordSetupDecision, rehearsalSetupDecision } from './schema-tables.js';
 import { assertSessionConfig, messageId, resolvePlayers, type CardSlot, type SessionRow } from '../discord/session.js';
@@ -252,10 +253,12 @@ export interface DiscordCommandContext {
   principalId: string;
   interactionId?: string;
   /**
-   * The caller verified this principal as tournament staff (a configured staff role). A staff slash command
-   * (never a card control) then acts as the organizer, while principal_id keeps the real Discord user.
+   * The caller verified this principal as tournament staff (controller: resolveStaff, then staffMay). A staff
+   * slash command (never a card control) then acts as `${role}:${principalId}`. A slash command without it is refused.
    */
-  staff?: boolean;
+  actor?: { role: TournamentRoleKind; via?: StaffVia; username?: string | null; displayName?: string | null; roleName?: string | null };
+  /** Names stored with the audit row (actor_snapshot) when migration 016 has run; never part of the command hash. */
+  snapshot?: { username?: string | null; displayName?: string | null };
   message?: { slot: CardSlot; id: string; channelId: string };
   scheduledPublish?: { startsAtMs: number };
   timer?: { matchId: import('./domain.js').MatchId; pauseGeneration: number; deadlineMs: number };
@@ -280,6 +283,30 @@ export type PrincipalCommandContext =
   | ({ kind: 'web' } & WebCommandContext);
 
 type QueryClient = Pick<pg.Client, 'query'>;
+
+/** The column from migration 016 exists. Only a "yes" is remembered, so a command works before setup and notices it after. */
+let snapshotColumn = false;
+export function resetSnapshotColumnCache(): void { snapshotColumn = false; }
+async function hasSnapshotColumn(client: QueryClient): Promise<boolean> {
+  if (snapshotColumn) return true;
+  const found = await client.query(
+    "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'tcg_rehearsal_audit' AND column_name = 'actor_snapshot'");
+  snapshotColumn = found.rows.length > 0;
+  return snapshotColumn;
+}
+
+const cleanName = (value: string | null | undefined): string | null => {
+  const text = (value ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 100);
+  return text || null;
+};
+
+/** `{v:1,userId,username,displayName,role,via,roleName}` for a Discord principal; every string cleaned, trimmed and capped. */
+export function actorSnapshot(context: DiscordCommandContext): Record<string, unknown> {
+  return { v: 1, userId: context.principalId,
+    username: cleanName(context.snapshot?.username ?? context.actor?.username),
+    displayName: cleanName(context.snapshot?.displayName ?? context.actor?.displayName),
+    role: context.actor?.role ?? null, via: context.actor?.via ?? null, roleName: cleanName(context.actor?.roleName) };
+}
 
 /** The stored command ID and content hash. Validates identity before any connection is opened. */
 function principalCommand(context: PrincipalCommandContext, command: Command): { commandId: string; hash: string } {
@@ -374,20 +401,29 @@ export async function runPrincipalCommand(
       (!event.state.firstRound || ('matchId' in command && command.matchId === match.id)))) {
     throw new RuleError('Private Discord session has an interrupted running clock; stop and prepare --replace.');
   }
-  // A console principal is the configured admin (decision 4); timers act as the admin too.
+  // A console principal, a timer and the scheduler act as the admin. A card control acts as the member (player or
+  // signup member, even for staff); a slash command acts as its verified staff role, and is refused without one.
   let actor = 'admin:fixture';
+  // The staff member whose seat decides the conflict rule: the Discord staff member, or the operator behind the dashboard.
+  let staffMemberId: string | null = web ? session.identity_map.adminId : null;
   if (discord && !discord.timer && !discord.scheduledPublish) {
     const player = (Object.entries(players ?? {}) as Array<['A' | 'B' | 'C' | 'D', string]>)
       .find(([, id]) => id === context.principalId)?.[0];
-    if (context.principalId === session.identity_map.adminId || (discord.staff && !discord.message)) actor = 'admin:fixture';
-    else if (command.type === 'signupJoin' || command.type === 'signupWithdraw') actor = `member:${context.principalId}`;
-    else if (player) actor = `player:${player}`;
-    else throw new RuleError('Discord actor is not in the private fixture.');
-    if (player && !discord.message) throw new RuleError('Player action requires its canonical card.');
-    if ((command.type === 'signupJoin' || command.type === 'signupWithdraw') && !discord.message)
-      throw new RuleError('Signup action requires its canonical card.');
+    const signupControl = command.type === 'signupJoin' || command.type === 'signupWithdraw';
+    if (discord.message) {
+      if (signupControl) actor = `member:${context.principalId}`;
+      else if (player) actor = `player:${player}`;
+      else throw new RuleError('Discord actor is not in the private fixture.');
+    } else {
+      if (signupControl) throw new RuleError('Signup action requires its canonical card.');
+      if (!discord.actor) throw new RuleError(STAFF_DENIED);
+      actor = `${discord.actor.role}:${context.principalId}`;
+      staffMemberId = context.principalId;
+    }
   }
-  if (command.type === 'signupAdd' && command.memberId === session.identity_map.adminId) throw new RuleError('Signup admin cannot play.');
+  // Before the prior-result lookup for Discord; a console replay is answered first (see the web lookup above).
+  const conflict = rulingConflict(event.state, players as Record<string, string> | null, staffMemberId, command);
+  if (conflict) throw new StaffConflictError(conflict, !!web);
   if ((web || (discord && !discord.timer)) && command.type === 'signupClose' && command.adminId !== session.identity_map.adminId)
     throw new RuleError('Signup admin identity differs from the saved session.');
   if (discord) {
@@ -419,11 +455,14 @@ export async function runPrincipalCommand(
   }
   await client.query('UPDATE public.tcg_rehearsal_events SET version = $2, state = $3::jsonb WHERE id = $1',
     [context.eventId, result.state.version, JSON.stringify(result.state)]);
+  const values: unknown[] = [context.eventId, result.state.version, commandId, actor, hash, JSON.stringify(command),
+    JSON.stringify(result.outcome), nowMs, 'matchId' in command ? 'CAM' : null,
+    discord?.timer || discord?.scheduledPublish ? 'system' : context.kind, context.principalId, discord?.interactionId ?? null];
+  const snapshot = discord && !discord.timer && !discord.scheduledPublish && await hasSnapshotColumn(client) ? actorSnapshot(discord) : null;
+  if (snapshot) values.push(JSON.stringify(snapshot));
   await client.query(
-    'INSERT INTO public.tcg_rehearsal_audit (event_id,sequence,command_id,actor_id,command_hash,action,outcome,occurred_at_ms,mode,principal_kind,principal_id,interaction_id) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12)',
-    [context.eventId, result.state.version, commandId, actor, hash, JSON.stringify(command),
-      JSON.stringify(result.outcome), nowMs, 'matchId' in command ? 'CAM' : null,
-      discord?.timer || discord?.scheduledPublish ? 'system' : context.kind, context.principalId, discord?.interactionId ?? null]
+    `INSERT INTO public.tcg_rehearsal_audit (event_id,sequence,command_id,actor_id,command_hash,action,outcome,occurred_at_ms,mode,principal_kind,principal_id,interaction_id${snapshot ? ',actor_snapshot' : ''}) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,$10,$11,$12${snapshot ? ',$13::jsonb' : ''})`,
+    values
   );
   return result.outcome;
 }

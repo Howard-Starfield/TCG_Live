@@ -24,7 +24,7 @@ const SESSION_COLUMNS = `s.event_id::text AS event_id, s.application_id, s.guild
   s.status, s.checkin_message_id, s.m1_message_id, s.m2_message_id,
   s.created_at_ms::float8 AS created_at_ms, s.retired_at_ms::float8 AS retired_at_ms`;
 const AUDIT_COLUMNS = `sequence, command_id, actor_id, action, outcome, occurred_at_ms::float8 AS occurred_at_ms,
-  mode, principal_kind, principal_id`;
+  mode, principal_kind, principal_id, to_jsonb(a.*)->'actor_snapshot' AS actor_snapshot`;
 
 async function readOnly<T>(client: pg.Client, operation: () => Promise<T>): Promise<T> {
   // One snapshot for session, aggregate and audit, so a concurrent commit cannot split them.
@@ -70,7 +70,7 @@ export function pgAdminStore(): AdminStore {
         if (!event.rows[0]) throw new RuleError('Private Discord event is missing.');
         verifyState(event.rows[0].state, eventId, event.rows[0].version);
         const audit = await client.query<AdminAuditRow>(
-          `SELECT ${AUDIT_COLUMNS} FROM public.tcg_rehearsal_audit WHERE event_id = $1 ORDER BY sequence`, [eventId]);
+          `SELECT ${AUDIT_COLUMNS} FROM public.tcg_rehearsal_audit a WHERE event_id = $1 ORDER BY sequence`, [eventId]);
         return { session: session.rows[0], state: event.rows[0].state, audit: audit.rows };
       });
     }),
@@ -80,7 +80,7 @@ export function pgAdminStore(): AdminStore {
         const session = await client.query("SELECT 1 FROM public.tcg_rehearsal_sessions s WHERE event_id = $1 AND to_jsonb(s)->>'deleted_at_ms' IS NULL", [eventId]);
         if (!session.rows[0]) return null;
         const audit = await client.query<AdminAuditRow>(
-          `SELECT ${AUDIT_COLUMNS} FROM public.tcg_rehearsal_audit WHERE event_id = $1 AND sequence > $2
+          `SELECT ${AUDIT_COLUMNS} FROM public.tcg_rehearsal_audit a WHERE event_id = $1 AND sequence > $2
            ORDER BY sequence LIMIT $3`, [eventId, afterSequence, limit]);
         return audit.rows;
       });

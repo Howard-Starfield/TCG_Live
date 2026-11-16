@@ -189,3 +189,35 @@ it('pressing Enter twice while Discord is creating a channel sends one request',
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New text channel' })).not.toBeInTheDocument());
   expect(server.callsTo('POST /setup/channels')).toHaveLength(1);
 });
+
+it('the organizer field says it gets the TCG Organizer role and may play', async () => {
+  const user = userEvent.setup();
+  mountSetup({ prerequisite: null, activeEventId: null, selection: null,
+    frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
+  await user.selectOptions(await screen.findByRole('combobox', { name: /Discord server/ }), ids[0]!);
+  expect(screen.getByText(/Gets the TCG Organizer role and may also play/)).toBeInTheDocument();
+  expect(screen.queryByText(/cannot join as a player/)).not.toBeInTheDocument();
+});
+
+it('step 3 reports the roles result, with the fallback when creation failed', async () => {
+  const user = userEvent.setup();
+  renderConsole({ setup: server => {
+    server.always('GET /session', () => json(200, { ...sessionFixture, setup: true }));
+    server.always('GET /setup', () => json(200, { prerequisite: null, activeEventId: null, selection,
+      frozen: false, botName: 'BoBoAssist', check: ready, openingDashboard: false }));
+    server.always('GET /setup/guilds', () => json(200, guilds));
+    server.always('GET /setup/channels', () => json(200, channels));
+    server.always('POST /setup/check', () => json(200, ready));
+    server.always('POST /setup/finish', () => json(200, { openingDashboard: true, eventId: 'event',
+      roles: { organizer: 'created', judge: 'failed', assigned: ids[4], problem: 'The bot needs Manage Roles.' } }));
+  } });
+  await user.click(await screen.findByRole('button', { name: 'Next: channels' }));
+  await user.click(screen.getByRole('button', { name: 'Check readiness' }));
+  expect(await screen.findByText(/also creates the/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Save and Start' }));
+  const roles = await screen.findByRole('alert', { name: 'Tournament roles' });
+  expect(roles).toHaveTextContent('TCG Organizer: created.');
+  expect(roles).toHaveTextContent('TCG Judge: could not be created.');
+  expect(roles).toHaveTextContent('The bot needs Manage Roles.');
+  expect(roles).toHaveTextContent('only the server owner and this dashboard act as organizer');
+});

@@ -54,16 +54,18 @@ export interface CapabilityEntry {
 }
 
 const ADMIN = 'Admin (dashboard)';
-/** /tcg-staff and the /tcg-admin moderation subcommands: Discord shows them to Manage Server; the bot lets the organizer and staff roles run them. */
-const STAFF = 'The organizer and members with a tournament staff role. Discord shows the command to Manage Server by default; allow the staff roles in Server Settings > Integrations > TCG Live.';
+/** /tcg-staff: Discord shows it to everyone; the bot checks the TCG Organizer and TCG Judge roles (the server owner counts as organizer). */
+const STAFF = 'TCG Organizer (and the server owner). TCG Judge cannot use it.';
+const JUDGE = 'TCG Organizer or TCG Judge (and the server owner), but not on a match they are playing in.';
+const JUDGE_ANY = 'TCG Organizer or TCG Judge (and the server owner).';
 const EVENT: CapabilityLink = { page: 'event' };
 const tab = (id: string): CapabilityLink => ({ page: 'admin-tools', tab: id });
 
 export const CAPABILITIES: readonly CapabilityEntry[] = [
   // ---------------------------------------------------------------- Tournament
-  { id: 'tcg-staff-command', area: 'Tournament', name: 'Staff command (/tcg-staff)', what: 'Tournament staff tools in Discord: publish, signup changes, check in for a player, refresh, resolve, correct and judge-resume. Match and player options autocomplete from the live round. The old /tcg-test form of these subcommands is still accepted.',
-    where: [{ kind: 'command', syntax: '/tcg-staff <subcommand>' }, { kind: 'dashboard', path: 'Admin tools > Settings > Cases > Tournament staff roles', link: tab('settings') }],
-    who: STAFF, wave: 'next' },
+  { id: 'tcg-staff-command', area: 'Tournament', name: 'Staff command (/tcg-staff)', what: 'Tournament staff tools in Discord: publish, signup changes, check in for a player, refresh, resolve, correct, judge-resume, judge-close and evidence-reply. Match and player options autocomplete from the live round. The command is visible to everyone in Discord; the bot checks your role and refuses anyone without one. The old /tcg-test form of these subcommands is still accepted.',
+    where: [{ kind: 'command', syntax: '/tcg-staff <subcommand>' }, { kind: 'dashboard', path: 'Admin tools > Settings > Tournament roles', link: tab('settings') }],
+    who: 'Per subcommand: organizer-only for publish, signup changes and refresh; judges may also check in, resolve, correct, judge-resume, judge-close and reply to evidence', wave: 'next' },
   { id: 'tcg-refresh', area: 'Tournament', name: 'Refresh the cards', what: 'Creates or repairs the signup and match cards in the tournament channel.',
     where: [{ kind: 'command', syntax: '/tcg-staff refresh' }, { kind: 'dashboard', path: 'Event > composer: /refresh', link: EVENT }],
     who: STAFF, needs: 'View Channel, Send Messages, Embed Links, Read Message History', checks: ['perm:tournament.signup'] },
@@ -77,28 +79,34 @@ export const CAPABILITIES: readonly CapabilityEntry[] = [
   { id: 'tcg-signup-remove', area: 'Tournament', name: 'Remove a signup', what: 'Removes one member from an open signup.',
     where: [{ kind: 'command', syntax: '/tcg-staff signup-remove member-id:<Discord ID>' }, { kind: 'dashboard', path: 'Event > Players tab > Remove', link: EVENT }],
     who: STAFF },
-  { id: 'tcg-signup-add', area: 'Tournament', name: 'Add a player to signup', what: 'Staff add a member to the open signup on their behalf.',
+  { id: 'tcg-signup-add', area: 'Tournament', name: 'Add a player to signup', what: 'An organizer adds a member to the open signup on their behalf. The organizer can be added too: organizers may play.',
     where: [{ kind: 'command', syntax: '/tcg-staff signup-add member:<@member>' }, { kind: 'dashboard', path: 'Event > composer: /signup-add', link: EVENT }],
     who: STAFF, wave: 'next' },
   { id: 'tcg-checkin-for', area: 'Tournament', name: 'Check in for a player', what: 'Checks a seated player in on their behalf (a seat such as A or P3, or a mention).',
     where: [{ kind: 'command', syntax: '/tcg-staff checkin-for player:<seat or @member>' }, { kind: 'dashboard', path: 'Event > composer: /checkin-for', link: EVENT }],
-    who: STAFF, wave: 'next' },
+    who: JUDGE_ANY, wave: 'next' },
   { id: 'tcg-resolve', area: 'Tournament', name: 'Resolve a match', what: 'Decides a match winner with a required reason (disputes, expired clocks).',
     where: [{ kind: 'command', syntax: '/tcg-staff resolve match:<M1> winner:<seat> reason:<text>' }, { kind: 'dashboard', path: 'Event > Needs you / Matches tab > Resolve', link: EVENT }],
-    who: STAFF, checks: ['dashboard-actions'] },
+    who: JUDGE, checks: ['dashboard-actions'] },
   { id: 'tcg-correct', area: 'Tournament', name: 'Correct a result', what: 'Changes the winner of a finished match, with a reason.',
     where: [{ kind: 'command', syntax: '/tcg-staff correct match:<M1> winner:<seat> reason:<text>' }, { kind: 'dashboard', path: 'Event > Matches tab > Correct', link: EVENT }],
-    who: STAFF, checks: ['dashboard-actions'] },
+    who: JUDGE, checks: ['dashboard-actions'] },
+  { id: 'tcg-judge-close', area: 'Tournament', name: 'Close a judge call', what: 'Closes a plain judge call with a note, without choosing a winner.',
+    where: [{ kind: 'command', syntax: '/tcg-staff judge-close match:<M1> note:<text>' }, { kind: 'dashboard', path: 'Event > Needs you > Close issue', link: EVENT }],
+    who: JUDGE, checks: ['dashboard-actions'], wave: 'next' },
+  { id: 'tcg-evidence-reply', area: 'Tournament', name: 'Reply to match evidence', what: 'Answers on the evidence thread of a match; the reply is delivered to the seated players, or kept staff-only.',
+    where: [{ kind: 'command', syntax: '/tcg-staff evidence-reply match:<M1> text:<text> staff-only:<true|false>' }, { kind: 'dashboard', path: 'Event > Matches tab > Evidence', link: EVENT }],
+    who: JUDGE, checks: ['evidence'], wave: 'next' },
   { id: 'tcg-judge-resume', area: 'Tournament', name: 'Resume after a judge call', what: 'Ends a judge pause and restarts the match clock.',
     where: [{ kind: 'command', syntax: '/tcg-staff judge-resume match:<M1> reason:<text>' }, { kind: 'dashboard', path: 'Event > Needs you > Resume', link: EVENT }],
-    who: STAFF, checks: ['dashboard-actions'] },
+    who: JUDGE, checks: ['dashboard-actions'] },
   { id: 'signup-card', area: 'Tournament', name: 'Signup card', what: 'Players join or withdraw, check in, and anyone can view the roster (CSV). While recording is on, the card states the recording policy and how to opt out.',
     where: [{ kind: 'button', label: 'Join · Withdraw · Check in · View roster', on: 'the signup card' }], who: 'Everyone in the channel; check-in for signed-up players',
     needs: 'Send Messages, Embed Links, Pin Messages (optional)', checks: ['perm:tournament.'] },
   { id: 'match-card', area: 'Tournament', name: 'Match card', what: 'Players mark ready, pause and resume, report "I won", agree or disagree, and call a judge with a short form. "🔴 Audio recording active" shows while the room is recorded.',
     where: [{ kind: 'button', label: 'Ready · Pause · Resume · I won · Agree · Disagree · Call judge', on: 'each match card' }], who: 'The two seated players' },
   { id: 'match-card-evidence', area: 'Tournament', name: 'Submit evidence button', what: 'Opens a form on the match card for a clip link or note. Shown while a judge is needed or a result is disputed, and for 24 hours after the result.',
-    where: [{ kind: 'button', label: 'Submit evidence', on: 'each match card' }], who: 'The two seated players and tournament staff', checks: ['evidence'], wave: 'next' },
+    where: [{ kind: 'button', label: 'Submit evidence', on: 'each match card' }], who: 'The two seated players, TCG Organizer and TCG Judge', checks: ['evidence'], wave: 'next' },
   { id: 'home-directory', area: 'Tournament', name: 'Tournament directory', what: 'Search, create (from templates) and delete tournaments; drafts list pending ones.',
     where: [{ kind: 'dashboard', path: 'Home', link: { page: 'home' } }, { kind: 'dashboard', path: 'Sidebar > Drafts', link: { page: 'drafts' } }],
     who: ADMIN, checks: ['tournaments'] },
@@ -118,7 +126,7 @@ export const CAPABILITIES: readonly CapabilityEntry[] = [
   // ---------------------------------------------------------------- Evidence
   { id: 'evidence-command', area: 'Evidence', name: 'Submit evidence from Discord', what: 'Attach a clip (up to 100 MB) or a link with a note to your match.',
     where: [{ kind: 'command', syntax: '/tcg-test evidence match:<M1> file:<attachment> link:<https://…> note:<text>' }],
-    who: 'Seated players and the organizer', needs: 'Attach Files on the player side; none extra for the bot', checks: ['evidence'] },
+    who: 'Seated players, TCG Organizer and TCG Judge', needs: 'Attach Files on the player side; none extra for the bot', checks: ['evidence'] },
   { id: 'evidence-drawer', area: 'Evidence', name: 'Evidence drawer', what: 'Upload files (with progress and time left; leaving the page warns while an upload runs) or links, hold, delete with a reason, play or download; copy an item ID or attach it to a case.',
     where: [{ kind: 'dashboard', path: 'Event > Matches tab > Evidence', link: EVENT }], who: 'Dashboard: evidence.read to view, evidence.manage to change',
     checks: ['evidence'] },
@@ -146,7 +154,7 @@ export const CAPABILITIES: readonly CapabilityEntry[] = [
     where: [{ kind: 'command', syntax: '/tcg-admin warn|timeout|untimeout|kick|ban member:<@member> reason:<text>' },
       { kind: 'command', syntax: '/tcg-admin ban member:<@member> reason:<text> duration:<1d>' },
       { kind: 'command', syntax: '/tcg-admin unban user-id:<Discord ID> reason:<text>' },
-      { kind: 'command', syntax: '/tcg-admin case number:<n>' }, { kind: 'command', syntax: '/tcg-admin note member:<@member> text:<note>' }], who: STAFF,
+      { kind: 'command', syntax: '/tcg-admin case number:<n>' }, { kind: 'command', syntax: '/tcg-admin note member:<@member> text:<note>' }], who: 'TCG Organizer, plus members with the Discord permission each action needs. TCG Judge cannot moderate.',
     needs: 'Timeout Members, Kick Members, Ban Members', checks: ['perm:members.'], wave: 'next' },
   { id: 'moderate-member', area: 'Moderation & voice', name: 'Moderate member (dashboard)', what: 'Warn, time out, kick, ban or temporary ban (with evidence) from the Players and Matches tabs, Needs-you cards, Flags, the Evidence drawer and member profiles.',
     where: [{ kind: 'dashboard', path: 'Event > Players / Matches / Flags', link: EVENT }, { kind: 'dashboard', path: 'Admin tools > Members', link: tab('members') }],
@@ -173,10 +181,10 @@ export const CAPABILITIES: readonly CapabilityEntry[] = [
   { id: 'at-logs', area: 'Admin tools', name: 'Logs, welcome and auto-role', what: 'Join/leave and message logs (export), welcome messages and auto-roles with a Skip bots switch.',
     where: [{ kind: 'dashboard', path: 'Admin tools > Logs', link: tab('logs') }], who: 'Dashboard: members.read; server.manage to change',
     needs: 'Server Members intent; Message Content intent for the message log', checks: ['admin-tools', 'intent:guildMembers', 'perm:logging.'] },
-  { id: 'at-settings', area: 'Admin tools', name: 'Admin tools settings', what: 'Bot permissions, the bot setup guide, case DMs, the case log channel and the tournament staff roles.',
+  { id: 'at-settings', area: 'Admin tools', name: 'Admin tools settings', what: 'Bot permissions, the bot setup guide, case DMs, the case log channel and the tournament roles (TCG Organizer and TCG Judge).',
     where: [{ kind: 'dashboard', path: 'Admin tools > Settings', link: tab('settings') }], who: 'Dashboard: members.read; server.manage to change', checks: ['admin-tools'] },
-  { id: 'staff-roles', area: 'Admin tools', name: 'Tournament staff roles', what: 'Members with the chosen roles may run /tcg-staff and the /tcg-admin moderation commands; each action records who did it. To show them the commands, allow the roles in Server Settings > Integrations > TCG Live.',
-    where: [{ kind: 'dashboard', path: 'Admin tools > Settings > Cases > Tournament staff roles', link: tab('settings') }], who: 'Dashboard: server.manage',
+  { id: 'staff-roles', area: 'Admin tools', name: 'Tournament roles', what: 'The bot-managed TCG Organizer and TCG Judge roles: create, rename, recolour and choose who holds them. Organizers can do every staff action; judges rule on matches, check players in and handle evidence, and neither may rule on a match they play in. /tcg-staff is visible to everyone and the bot enforces the roles. Each action records who did it. Roles from the older staff-roles setting count as TCG Judge.',
+    where: [{ kind: 'dashboard', path: 'Admin tools > Settings > Tournament roles', link: tab('settings') }], who: 'Dashboard: server.manage',
     checks: ['admin-tools'], wave: 'next' },
   { id: 'tcg-admin-status', area: 'Admin tools', name: 'Admin tools status in Discord', what: 'Shows privileged intents and restart notices.',
     where: [{ kind: 'command', syntax: '/tcg-admin status' }], who: 'Members with Manage Server, or roles allowed in Server Settings > Integrations' },

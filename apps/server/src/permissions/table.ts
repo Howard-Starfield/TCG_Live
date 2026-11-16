@@ -34,7 +34,7 @@ export function permissionFlagByLabel(label: string): bigint | null {
 }
 
 export type FeatureGroup = 'Tournament' | 'AutoMod keyword filters' | 'Voice monitoring' | 'Moderation tools' | 'Cases' |
-  'Sticky messages' | 'Tickets' | 'Roles' | 'Announcements' | 'Logging' | 'LFG';
+  'Sticky messages' | 'Tickets' | 'Roles' | 'Tournament roles' | 'Announcements' | 'Logging' | 'LFG';
 
 /**
  * Where a requirement is checked: server-wide, in each target channel (overwrites apply), or for each
@@ -134,6 +134,15 @@ export const FEATURE_PERMISSIONS: readonly FeatureRequirement[] = [
     when: 'Each button role panel channel', why: 'The role panel cannot be posted or updated.' },
   { id: 'roles.panelEmbed', group: 'Roles', scope: 'channel', permissions: ['EmbedLinks'], severity: 'warning',
     when: 'Panels with an embed', why: 'The panel\'s embed may not be shown.' },
+
+  // ---- Tournament roles: the bot-managed TCG Organizer and TCG Judge roles (no permissions of their own).
+  // Creating a role and giving one to a member both need Manage Roles, and only roles below the bot's top role.
+  { id: 'tournamentRoles.manage', group: 'Tournament roles', scope: 'guild', permissions: ['ManageRoles'], severity: 'warning',
+    when: 'Always (setup wizard, Admin tools > Settings > Tournament roles)', why: 'The bot cannot create the TCG Organizer and TCG Judge roles or give them to members.' },
+  { id: 'tournamentRoles.hierarchy', group: 'Tournament roles', scope: 'role-hierarchy', permissions: [], severity: 'warning',
+    when: 'Each saved TCG Organizer and TCG Judge role', why: 'The bot can only give roles below its own highest role.' },
+  { id: 'tournamentRoles.created', group: 'Tournament roles', scope: 'guild', permissions: [], severity: 'warning',
+    when: 'Until both roles exist', why: 'Until the TCG roles exist, only the server owner and the dashboard act as organizer in Discord.' },
 
   // ---- Announcements (scheduled ones)
   { id: 'announcements.post', group: 'Announcements', scope: 'channel', permissions: ['ViewChannel', 'SendMessages'], severity: 'blocking',

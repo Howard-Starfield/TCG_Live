@@ -15,7 +15,7 @@ import { DEFAULT_MODERATION_NOTICE, JUDGE_REQUEST_CATEGORIES, MAX_JUDGE_REQUEST_
 import { readAdminConfig, type AdminConfig } from '../admin/config.js';
 import { createDiscordAdmin, discordGateway, guildMembers, type DiscordAdmin, type DiscordAdminOptions } from '../admin/runtime/discord-wiring.js';
 import { readConfig } from '../config.js';
-import { RuleError, type EventState, type MatchId, type Player } from '../rehearsal/domain.js';
+import { RuleError, rulingConflict, type EventState, type MatchId, type Player } from '../rehearsal/domain.js';
 import { startServer } from '../server.js';
 import { setupPrivateDiscordSchema } from '../rehearsal/store.js';
 import { buttonId, type CardPayload } from './cards.js';
@@ -28,7 +28,10 @@ import { filenameFromThumbnail, noticeEmbed, retainedVisual, setVisualArtworkSto
 import { defaultArtworkStore } from '../artwork/store.js';
 import { pgEvidenceStore } from '../evidence/store.js';
 import { createEvidenceSeams } from '../evidence/seams.js';
-import { createReplyDelivery, ReplyDeliveryError, type MatchRoomMessage } from '../evidence/replies.js';
+import { attemptReplyDelivery, createReplyDelivery, ReplyDeliveryError, type MatchRoomMessage } from '../evidence/replies.js';
+import { profileTournamentRoleStore } from '../admin-tools/tournament-roles/store.js';
+import { tournamentRoleHolders } from '../admin-tools/tournament-roles/port.js';
+import { EVIDENCE_REPLY_MAX_LENGTH } from '@tcg-live/core';
 import { discordAutoModSync } from '../moderation/automod.js';
 import { pgModerationFlagStore } from '../moderation/flags.js';
 import { pgModerationSettingsStore } from '../moderation/settings.js';
@@ -41,6 +44,7 @@ import { ADMIN_COMMAND_NAME, adminCommandDefinition } from './admin-command.js';
 import { FeatureInteractionRouter, isFeatureInteractionId } from './interactions.js';
 import { loginWithIntentFallback, planIntents } from './intents.js';
 import { HttpError } from '../admin/http/respond.js';
+import { pgAdminStore } from '../admin/runtime/queries.js';
 import { adminToolsBody, defaultAdminToolsSettings, pgAdminToolsSettingsStore } from '../admin-tools/settings.js';
 import { AdminToolsRuntimeState } from '../admin-tools/status.js';
 import { pgAnnouncementStore } from '../admin-tools/announcements/announcements.js';
@@ -71,16 +75,16 @@ export class RetryBackoff {
 /**
  * Command structure (next wave):
  *  - `/tcg-test`  — players, visible to everyone: `evidence` (evidence/discord-submit.ts) and `recording-optout`.
- *  - `/tcg-staff` — tournament staff (Manage Server by default; widen in Server Settings > Integrations, and
- *    staff roles are enforced in the bot): the former `/tcg-test` admin subcommands under the same names,
- *    plus `signup-add` and `checkin-for`.
+ *  - `/tcg-staff` — tournament staff. No default member permission, so everyone sees it: the bot decides who may run
+ *    each subcommand (TCG Organizer: all; TCG Judge: rulings, check-in-for, evidence replies). The former `/tcg-test`
+ *    admin subcommands under the same names, plus `signup-add`, `checkin-for`, `judge-close` and `evidence-reply`.
  *  - `/tcg-admin` — admin tools (discord/admin-command.ts), including the moderation subcommands.
  */
 export const PLAYER_COMMAND_NAME = 'tcg-test';
 export const STAFF_COMMAND_NAME = 'tcg-staff';
 /** The staff subcommands that lived under `/tcg-test` before; still accepted there from a stale client. */
 export const STAFF_SUBCOMMANDS = ['publish', 'signup-close', 'signup-reopen', 'signup-remove', 'signup-add', 'checkin-for', 'refresh',
-  'resolve', 'correct', 'judge-resume'] as const;
+  'resolve', 'correct', 'judge-resume', 'judge-close', 'evidence-reply'] as const;
 
 export const EVIDENCE_UNAVAILABLE = "Evidence submission isn't available right now. Please ask a staff member.";
 
@@ -120,7 +124,8 @@ export function staffCommandDefinition() {
   const winner = (sub: SlashCommandSubcommandBuilder) => sub.addStringOption(option => option.setName('winner')
     .setDescription('Winning seat (or mention the player)').setRequired(true).setAutocomplete(true).setMaxLength(40));
   return new SlashCommandBuilder().setName(STAFF_COMMAND_NAME).setDescription('TCG Live tournament: staff tools')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setContexts(InteractionContextType.Guild)
+    // An explicit null: leaving it out would keep Manage Server on an install whose stored command still has it.
+    .setDefaultMemberPermissions(null).setContexts(InteractionContextType.Guild)
     .addSubcommand(sub => sub.setName('publish').setDescription('Publish the round'))
     .addSubcommand(sub => sub.setName('signup-close').setDescription('Close signup and assign seats'))
     .addSubcommand(sub => sub.setName('signup-reopen').setDescription('Reopen signup before publication'))
@@ -135,6 +140,12 @@ export function staffCommandDefinition() {
     .addSubcommand(sub => reason(winner(match(sub.setName('resolve').setDescription('Resolve a match')))))
     .addSubcommand(sub => reason(winner(match(sub.setName('correct').setDescription('Correct a finalized match')))))
     .addSubcommand(sub => reason(match(sub.setName('judge-resume').setDescription('Override a pause and resume play'))))
+    .addSubcommand(sub => match(sub.setName('judge-close').setDescription('Close a judge request with a note'))
+      .addStringOption(option => option.setName('note').setDescription('Note for the audit log').setRequired(true).setMaxLength(500)))
+    .addSubcommand(sub => match(sub.setName('evidence-reply').setDescription('Reply to a match in the evidence thread'))
+      .addStringOption(option => option.setName('text').setDescription('What to tell the players').setRequired(true)
+        .setMaxLength(EVIDENCE_REPLY_MAX_LENGTH))
+      .addBooleanOption(option => option.setName('staff-only').setDescription('Keep it in the thread; do not message the players')))
     .toJSON();
 }
 
@@ -398,7 +409,13 @@ export function adapt(interaction: Interaction): PrivateInteraction | null {
   const base = {
     id: interaction.id, applicationId: interaction.applicationId,
     guildId: interaction.guildId, channelId: interaction.channelId,
-    userId: interaction.user.id, roleIds: memberRoleIds((interaction as { member?: unknown }).member)
+    userId: interaction.user.id, roleIds: memberRoleIds((interaction as { member?: unknown }).member),
+    ownerId: interaction.guild?.ownerId ?? null, username: interaction.user.username,
+    roleNames: Object.fromEntries(memberRoleIds((interaction as { member?: unknown }).member).flatMap(id => {
+      const name = interaction.guild?.roles.cache.get(id)?.name;
+      return name ? [[id, name]] : [];
+    })),
+    displayName: (interaction.member as { displayName?: string } | null)?.displayName ?? interaction.user.displayName ?? null
   };
   const expire = (remove: () => Promise<unknown>) => {
     const timer = setTimeout(() => { void remove().catch(() => {}); }, 8_000);
@@ -468,7 +485,9 @@ export function adapt(interaction: Interaction): PrivateInteraction | null {
     subcommand: command.options.getSubcommand(),
     matchId: (command.options.getString('match') ?? undefined) as MatchId | undefined,
     winner: command.options.getString('winner') ?? undefined,
-    reason: command.options.getString('reason') ?? undefined,
+    reason: command.options.getString('reason') ?? command.options.getString('note') ?? undefined,
+    text: command.options.getString('text') ?? undefined,
+    staffOnly: command.options.getBoolean('staff-only') ?? false,
     memberId: command.options.getString('member-id') ?? command.options.getUser?.('member')?.id ?? undefined,
     player: command.options.getString('player') ?? undefined };
 }
@@ -552,6 +571,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   const featureEvents = new DiscordFeatureEvents();
   const voicePool = new VoicePoolState();
   let featureHandle: Awaited<ReturnType<typeof startDiscordFeatures>> | undefined;
+  // The TCG Organizer and TCG Judge role IDs live in the setup profile.
+  const tournamentRoles = profileTournamentRoleStore();
   // Bot permission check for the enabled features (GET /api/v1/admin-tools/permissions, status push, banner).
   const permissionMonitor = livePermissionMonitor({
     client: () => client, guildId: config.guildId, applicationId: config.applicationId,
@@ -566,7 +587,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       return status.runtime === 'running' ? { wanted: status.wantedIntents, state: status.privilegedIntents } : null;
     },
     stores: { stickies: pgStickyStore(), panels: pgButtonRolePanelStore(), bulk: pgBulkRoleJobStore(), announcements: pgAnnouncementStore() },
-    lfgSettings: async () => lfgBody(await pgLfgSettingsStore().get(config.guildId))
+    lfgSettings: async () => lfgBody(await pgLfgSettingsStore().get(config.guildId)),
+    tournamentRoles: () => tournamentRoles.get(config.guildId)
   });
   let stopPermissionWatch: (() => void) | undefined;
   let stopRecordingWatch: (() => void) | undefined;
@@ -577,6 +599,21 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   let controller: PrivateDiscordController | undefined;
   /** Set once the controller's transport exists: sends into a match's room. Evidence replies deliver through it. */
   let postToMatchRoom: MatchRoomPoster['postToMatchRoom'] | undefined;
+  // One delivery for the dashboard's reply thread and `/tcg-staff evidence-reply`.
+  const replyDelivery = createReplyDelivery({
+    ready: () => !!postToMatchRoom && client.isReady(),
+    // Only the active tournament has match rooms; the seats come from its frozen player assignment.
+    seatedPlayers: async (eventId, matchId) => {
+      const current = await getSessionState(config).catch(() => null);
+      if (!current || current.session.event_id !== eventId)
+        throw new ReplyDeliveryError('That is not the active Discord tournament, so it has no match room. Send a staff-only note instead.');
+      const match = current.state.matches.find(candidate => candidate.id === matchId);
+      if (!match) throw new ReplyDeliveryError(`Match ${matchId} is not in the active tournament.`);
+      const seated = resolvePlayers(current.session, current.state);
+      return seated ? match.players.map(player => seated[player]).filter((id): id is string => !!id) : [];
+    },
+    post: (matchId, message, nonce) => postToMatchRoom!(matchId, message, nonce)
+  });
   let health: Awaited<ReturnType<typeof startServer>> | undefined;
   let lease: AdvisoryLease | undefined;
   let roomSync: MatchRoomReconciler | undefined;
@@ -645,21 +682,21 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         if (!prepareSignupChannel || !client.isReady()) throw new RuleError('Discord is not ready.');
         return prepareSignupChannel(id);
       },
-      evidence: { store: evidence, audit: opsAudit, seams: createEvidenceSeams().seams,
-        replyDelivery: createReplyDelivery({
-          ready: () => !!postToMatchRoom && client.isReady(),
-          // Only the active tournament has match rooms; the seats come from its frozen player assignment.
-          seatedPlayers: async (eventId, matchId) => {
-            const current = await getSessionState(config).catch(() => null);
-            if (!current || current.session.event_id !== eventId)
-              throw new ReplyDeliveryError('That is not the active Discord tournament, so it has no match room. Send a staff-only note instead.');
-            const match = current.state.matches.find(candidate => candidate.id === matchId);
-            if (!match) throw new ReplyDeliveryError(`Match ${matchId} is not in the active tournament.`);
-            const seated = resolvePlayers(current.session, current.state);
-            return seated ? match.players.map(player => seated[player]).filter((id): id is string => !!id) : [];
-          },
-          post: (matchId, message, nonce) => postToMatchRoom!(matchId, message, nonce)
-        }) },
+      evidence: { store: evidence, audit: opsAudit, seams: createEvidenceSeams().seams, replyDelivery,
+        // The dashboard acts as the setup's organizer ID: it may not reply to or moderate evidence of its own match.
+        // Fails closed: it reads that event's own stored session and roster (active or retired), so only a seating
+        // it can actually check clears the operator. An unknown event has no roster, so the operator is not in it.
+        // If the store cannot be read, the action is refused rather than allowed.
+        matchConflict: async (eventId, matchId) => {
+          try {
+            const stored = await pgAdminStore().readEvent(eventId);
+            if (!stored) return false;
+            return rulingConflict(stored.state, resolvePlayers(stored.session as unknown as SessionRow, stored.state),
+              stored.session.identity_map.adminId, { type: 'evidenceReply', matchId }) !== null;
+          } catch {
+            throw new HttpError(503, 'unavailable', 'Could not check whether you are playing in this match, so the action was refused. Try again in a moment.');
+          }
+        } },
       moderation: { settings: moderationSettings, flags: moderationFlags, audit: opsAudit, voiceBots, voicePool,
         guildId: () => config.guildId, mainBotUserId: () => client.user?.id ?? config.applicationId,
         onSettingsSaved: settings => featureEvents.emit({ type: 'moderationSettingsChanged', settings }),
@@ -848,8 +885,34 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       if (registered.created.length || registered.updated.length)
         process.stdout.write(`Guild commands registered: ${[...registered.created, ...registered.updated].map(name => `/${name}`).join(', ')}.\n`);
     } catch { process.stderr.write('Guild command registration is pending; it is retried on the next start (or run the registration command).\n'); }
-    // Tournament staff roles (admin-tools settings, Cases section) may run the staff commands.
-    controller.setStaffRoles(async () => (await adminToolsSettings.get(config.guildId)).cases.staffRoleIds ?? []);
+    // Staff: the server owner, the TCG Organizer and TCG Judge roles (setup profile), and the legacy staff roles
+    // (admin-tools settings, Cases section), which count as judges. An unreadable profile throws: the controller then
+    // treats the sources as unreadable and only the server owner counts, never guessing "no roles" in either direction.
+    const staffSources = async () => ({
+      roles: await tournamentRoles.get(config.guildId),
+      legacyStaffRoleIds: await adminToolsSettings.get(config.guildId).then(settings => settings.cases.staffRoleIds ?? []).catch(() => [])
+    });
+    controller.setStaffSources(staffSources);
+    // After signup closes: staff outside the players, so a seated organizer is not left without anyone to rule.
+    controller.setStaffCoverage(async seatedIds => {
+      const { roles, legacyStaffRoleIds } = await staffSources();
+      const roleIds = [roles?.organizerRoleId, roles?.judgeRoleId, ...legacyStaffRoleIds].filter((id): id is string => !!id);
+      const guild = await client.guilds.fetch(config.guildId);
+      const holders = roleIds.length
+        ? await tournamentRoleHolders(guild, roleIds, adminToolsState.privilegedIntents().guildMembers === 'on')
+        : { ids: [], complete: true };
+      const staff = new Set<string>(holders.ids);
+      if (guild.ownerId) staff.add(guild.ownerId);
+      for (const id of [...seatedIds, client.user?.id ?? '']) staff.delete(id);
+      return { otherStaff: staff.size, complete: holders.complete };
+    });
+    // `/tcg-staff evidence-reply`: the dashboard's reply thread (same store, delivery, nonce and audit).
+    controller.setEvidenceReplies(async request => {
+      const created = await evidence.createReply({ eventId: request.eventId, matchId: request.matchId, body: request.body,
+        audience: request.audience, author: request.author, actor: request.actor });
+      if (created.status !== 'pending') { const { attempt: _token, ...plain } = created; return plain; }
+      return attemptReplyDelivery(evidence, replyDelivery, created, request.actor);
+    });
     // Recording badge on match cards and the recording policy line on the signup card.
     let recordingNotice: string | null = null;
     const applyRecordingPolicy = (settings: { recording: { mode: string }; noticeText: string | null }) => {
@@ -894,7 +957,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         const focused = interaction.options.getFocused(true);
         const nameOf = (id: string) => interaction.guild?.members.cache.get(id)?.displayName;
         void (async () => {
-          const choices = await controller!.staffLevel(interaction.user.id, memberRoleIds(interaction.member))
+          const choices = await controller!.staffRole(interaction.user.id, memberRoleIds(interaction.member), interaction.guild?.ownerId ?? null)
             ? await controller!.autocomplete(interaction.options.getSubcommand(false) ?? '', focused.name, String(focused.value),
               interaction.options.getString('match'), nameOf) : [];
           await interaction.respond(choices);
@@ -921,14 +984,14 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         void (async () => {
           await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           const roles = memberRoleIds(interaction.member);
-          let content = await controller!.evidenceRefusal(interaction.user.id, roles, input.eventId, input.matchId);
+          const ownerId = interaction.guild?.ownerId ?? null;
+          let content = await controller!.evidenceRefusal(interaction.user.id, roles, input.eventId, input.matchId, ownerId);
           if (!content) {
-            // Staff submit as the organizer would (actor kind admin) under their own Discord ID.
-            const staff = await controller!.staffLevel(interaction.user.id, roles);
-            const submitter = new EvidenceSubmitter({ guildId: config.guildId, adminId: staff ? interaction.user.id : config.adminId,
-              evidence, matchRoom: evidenceMatchRoom });
-            content = await submitter.submit({ guildId: interaction.guildId, userId: interaction.user.id, matchId: input.matchId,
-              attachment: input.file, link: input.link, note: input.note });
+            // Staff (organizer or judge) submit with actor kind admin under their own Discord ID.
+            const submitter = new EvidenceSubmitter({ guildId: config.guildId, evidence, matchRoom: evidenceMatchRoom,
+              staffRoleOf: ({ userId, roleIds, ownerId: owner }) => controller!.staffRole(userId, roleIds, owner ?? null) });
+            content = await submitter.submit({ guildId: interaction.guildId, userId: interaction.user.id, roleIds: roles, ownerId,
+              matchId: input.matchId, attachment: input.file, link: input.link, note: input.note });
           }
           await interaction.editReply({ content, allowedMentions: { parse: [] } });
         })().catch(() => {});
@@ -985,6 +1048,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       };
       const featureContext: DiscordFeatureContext = {
         client, guildId: config.guildId, adminId: config.adminId, isActive,
+        staffRoleOf: ({ userId, roleIds, ownerId }) => controller!.staffRole(userId, roleIds, ownerId ?? null),
         moderationSettings: () => moderationSettings.get(config.guildId),
         appendFlag: input => moderationFlags.append(input),
         appendAudit: input => opsAudit.append(input),

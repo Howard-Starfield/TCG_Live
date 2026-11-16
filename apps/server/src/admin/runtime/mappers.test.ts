@@ -27,8 +27,17 @@ test('audit rows: commandId kept, bigint columns cast, timer rows mapped to the 
     command: { type: 'clockCheck', matchId: 'M1' }, result: 'clockCheck', mode: 'CAM' });
   const admin = mapAuditRow(row({ actor_id: ADMIN, action: { type: 'signupClose', adminId: IDS.admin },
     principal_id: IDS.admin, outcome: { result: 'signupClose:{}' } }));
-  assert.deepEqual(admin.actor, { kind: 'admin' });
+  assert.deepEqual(admin.actor, { kind: 'admin', staff: { memberId: IDS.admin, role: null, via: 'legacy', name: null, username: null, roleName: null } },
+    'a legacy admin:fixture row with a Discord principal is a staff member of unknown role');
+  assert.deepEqual(mapAuditRow(row({ actor_id: ADMIN, principal_kind: 'web', principal_id: 'local-admin' })).actor, { kind: 'admin' },
+    'the dashboard stays a plain admin');
   assert.deepEqual(admin.command, { type: 'signupClose' }, 'adminId is not part of CommandDto');
+  const snapshot = { v: 1, userId: IDS.b, username: 'bea', displayName: 'Bea', role: 'judge', via: 'role', roleName: 'TCG Judge' };
+  assert.deepEqual(mapAuditRow(row({ actor_id: `judge:${IDS.b}`, principal_id: IDS.b, actor_snapshot: snapshot, action: { type: 'resolve', matchId: 'M1', winner: 'A', reason: 'r' } })).actor,
+    { kind: 'admin', staff: { memberId: IDS.b, role: 'judge', via: 'role', name: 'Bea', username: 'bea', roleName: 'TCG Judge' } });
+  assert.deepEqual(mapAuditRow(row({ actor_id: `organizer:${IDS.b}`, principal_id: IDS.b, actor_snapshot: null })).actor,
+    { kind: 'admin', staff: { memberId: IDS.b, role: 'organizer', via: 'role', name: null, username: null, roleName: null } },
+    'before migration 016 there is no snapshot: names fall back to null');
   const cli = mapAuditRow(row({ principal_kind: null, principal_id: null, command_id: 'checkin-A' }));
   assert.equal(cli.via, 'cli');
   assert.equal(cli.principalId, null);
@@ -223,27 +232,27 @@ test('clock: a persisted running clock of another runner is interrupted; retired
 
 test('event admin actions follow publish and signup guards', () => {
   const s = Replay.signup();
-  assert.deepEqual(eventAdminActions(s.state, IDS.admin, false), [], 'empty open roster');
+  assert.deepEqual(eventAdminActions(s.state, false), [], 'empty open roster');
   s.run(`member:${IDS.a}`, { type: 'signupJoin' });
-  assert.deepEqual(eventAdminActions(s.state, IDS.admin, false), ['signupRemove']);
+  assert.deepEqual(eventAdminActions(s.state, false), ['signupRemove']);
   for (const id of [IDS.b, IDS.c, IDS.d]) s.run(`member:${id}`, { type: 'signupJoin' });
-  assert.deepEqual(eventAdminActions(s.state, IDS.admin, false), ['signupClose', 'signupRemove']);
+  assert.deepEqual(eventAdminActions(s.state, false), ['signupClose', 'signupRemove']);
   const withAdmin = { ...s.state, signup: { status: 'open' as const, roster: [IDS.a, IDS.b, IDS.c, IDS.admin] } };
-  assert.deepEqual(eventAdminActions(withAdmin, IDS.admin, false), ['signupRemove'], 'admin in roster blocks close');
+  assert.deepEqual(eventAdminActions(withAdmin, false), ['signupClose', 'signupRemove'], 'the organizer may be on the roster');
   s.run(ADMIN, { type: 'signupClose', adminId: IDS.admin });
-  assert.deepEqual(eventAdminActions(s.state, IDS.admin, false), ['signupReopen']);
+  assert.deepEqual(eventAdminActions(s.state, false), ['signupReopen']);
   for (const seat of ['A', 'B', 'C', 'D'] as const) s.run(`player:${seat}`, { type: 'checkin' });
-  assert.deepEqual(eventAdminActions(s.state, IDS.admin, false), ['publish', 'signupReopen']);
-  assert.deepEqual(eventAdminActions(s.state, IDS.admin, true), [], 'retired or interrupted');
+  assert.deepEqual(eventAdminActions(s.state, false), ['publish', 'signupReopen']);
+  assert.deepEqual(eventAdminActions(s.state, true), [], 'retired or interrupted');
   s.run(ADMIN, { type: 'publish' });
-  assert.deepEqual(eventAdminActions(s.state, IDS.admin, false), [], 'no reopen after publication');
+  assert.deepEqual(eventAdminActions(s.state, false), [], 'no reopen after publication');
   const legacy = Replay.legacy();
-  assert.deepEqual(eventAdminActions(legacy.state, IDS.admin, false), []);
+  assert.deepEqual(eventAdminActions(legacy.state, false), []);
   legacy.published();
-  assert.deepEqual(eventAdminActions(legacy.state, IDS.admin, false), [], 'published legacy event');
+  assert.deepEqual(eventAdminActions(legacy.state, false), [], 'published legacy event');
   const ready = Replay.legacy();
   for (const seat of ['A', 'B', 'C', 'D'] as const) ready.run(`player:${seat}`, { type: 'checkin' });
-  assert.deepEqual(eventAdminActions(ready.state, IDS.admin, false), ['publish'], 'legacy events publish without signup');
+  assert.deepEqual(eventAdminActions(ready.state, false), ['publish'], 'legacy events publish without signup');
   assert.deepEqual(matchAdminActions(ready.state.matches[0]!, false), []);
 });
 
@@ -285,4 +294,24 @@ test('snapshot: members directory, seats, kind, cards and summaries', () => {
   { eventId: EVENT_ID, status: 'retired', kind: 'signup', createdAtMs: T0, retiredAtMs: T0 + 1, version: 4 });
   assert.equal(mapSummary({ event_id: EVENT_ID, status: 'active', kind: 'legacy', schema_version: 1,
     created_at_ms: T0, retired_at_ms: null, version: 0 }).kind, 'legacy');
+});
+
+test('staffConflict: the operator seated in a match loses the ruling actions on it only', () => {
+  const s = Replay.signup();
+  for (const id of [IDS.admin, IDS.b, IDS.c, IDS.d]) s.run(`member:${id}`, { type: 'signupJoin' }, { principalId: id });
+  s.run(ADMIN, { type: 'signupClose', adminId: IDS.admin });
+  for (const seat of ['A', 'B', 'C', 'D'] as const) s.run(`player:${seat}`, { type: 'checkin' });
+  s.run(ADMIN, { type: 'publish' });
+  for (const [seat, matchId] of [['A', 'M1'], ['B', 'M1'], ['C', 'M2'], ['D', 'M2']] as const)
+    s.run(`player:${seat}`, { type: 'ready', matchId });
+  const snapshot = snapshotOf(s);
+  assert.equal(snapshot.seats.A, IDS.admin, 'the organizer plays seat A');
+  assert.deepEqual(snapshot.matches[0]!.adminActions, []);
+  assert.equal(snapshot.matches[0]!.staffConflict, true);
+  assert.deepEqual(snapshot.matches[1]!.adminActions, ['resolve']);
+  assert.equal('staffConflict' in snapshot.matches[1]!, false);
+  // An operator who is not seated has no conflict anywhere.
+  const other = Replay.legacy().published().run('player:A', { type: 'ready', matchId: 'M1' }).run('player:B', { type: 'ready', matchId: 'M1' });
+  assert.equal(snapshotOf(other).matches.some(match => 'staffConflict' in match), false);
+  assert.deepEqual(matchAdminActions(other.state.matches[0]!, false, true), [], 'a conflict hides every action');
 });

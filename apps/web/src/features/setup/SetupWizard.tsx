@@ -1,4 +1,4 @@
-import type { SetupChannelDto, SetupCheckDto, SetupGuildDto, SetupSelectionDto, SetupStatusDto } from '@tcg-live/core';
+import type { SetupChannelDto, SetupCheckDto, SetupGuildDto, SetupSelectionDto, SetupStatusDto, TournamentRolesEnsureResultDto } from '@tcg-live/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAdminData } from '../../data';
 import { Button, Field, Input, Select, Switch } from '../../ui';
@@ -7,7 +7,7 @@ import { BotSetupGuide } from '../bot-permissions/BotSetupGuide';
 import { CreateChannelInline } from './CreateChannelInline';
 import { GRANT_EXPLANATION, GrantPermissionsLink, PermissionIssueList } from '../bot-permissions/PermissionIssues';
 import { LocalSettingsPanel } from './DashboardActionsSwitch';
-import { WhatsNext } from './WhatsNext';
+import { SetupRolesResult, WhatsNext } from './WhatsNext';
 
 const EMPTY: SetupSelectionDto = { guildId: '', channelId: '', matchChannels: { M1: '', M2: '' },
   adminId: '', publicMatchRooms: true };
@@ -37,6 +37,7 @@ export function SetupWizard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
+  const [roles, setRoles] = useState<TournamentRolesEnsureResultDto | null>(null);
 
   // Bumped by Refresh so the channel list is re-read too.
   const [refreshCount, setRefreshCount] = useState(0);
@@ -97,7 +98,7 @@ export function SetupWizard() {
   };
   const finish = async () => {
     setBusy(true); setError(null);
-    try { await api.finishSetup(selection); setOpening(true); setStep(3); }
+    try { const done = await api.finishSetup(selection); setRoles(done.roles ?? null); setOpening(true); setStep(3); }
     catch (cause) { setError(errorText(cause)); setBusy(false); }
   };
   /** A channel created from the wizard joins the list and is selected for its slot. */
@@ -140,7 +141,7 @@ export function SetupWizard() {
               {guilds.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}
             </Select>
           </Field>
-          <Field label="Organizer Discord ID" required description="Defaults to this server’s owner; the organizer cannot join as a player.">
+          <Field label="Organizer Discord ID" required description="Defaults to this server’s owner. Gets the TCG Organizer role and may also play.">
             <Input value={selection.adminId} disabled={frozen} onChange={event => set({ adminId: event.target.value })}
               inputMode="numeric" placeholder="Discord member ID" />
           </Field>
@@ -205,10 +206,15 @@ export function SetupWizard() {
             {check.notice === 'pending' && <p role="status" className="text-sm text-fg-muted">Signup-channel guide delivery is uncertain. Review the channel before trying again.</p>}
             {check.notice === 'cannot_post' && <p role="status" className="text-sm text-fg-muted">The bot cannot post the guide in the signup channel yet.</p>}
           </>}
+          <p className="rounded-md border border-line bg-sunken p-3 text-sm text-fg-muted">
+            <b className="font-medium text-fg">Save and Start</b> also creates the <b className="font-medium text-fg">TCG Organizer</b> and{' '}
+            <b className="font-medium text-fg">TCG Judge</b> roles (no permissions) and gives TCG Organizer to the organizer above.
+            If that fails, setup still completes and you can create them in Admin tools &gt; Settings &gt; Tournament roles.</p>
           <LocalSettingsPanel setup className="rounded-lg border border-line p-3" />
         </section>}
         {step === 3 && <section aria-label="What’s next" className="space-y-4">
           {opening && <p role="status" className="text-sm font-medium text-accent">Setup complete. Opening dashboard…</p>}
+          <SetupRolesResult roles={roles} />
           <WhatsNext inviteUrl={check?.permissions?.inviteUrl ?? null} />
         </section>}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5">

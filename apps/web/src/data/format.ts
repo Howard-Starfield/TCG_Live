@@ -1,5 +1,5 @@
 import { JUDGE_REQUEST_CATEGORIES } from '@tcg-live/core';
-import type { AuditEntryDto, EventSnapshotDto, Seat, Snowflake } from '@tcg-live/core';
+import { TOURNAMENT_ROLE_DEFAULTS, type AuditEntryDto, type EventSnapshotDto, type Seat, type Snowflake, type StaffActorDto } from '@tcg-live/core';
 
 /** Visual tone of an audit line; the kit maps tones to colors. */
 export type AuditTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger' | 'accent';
@@ -14,7 +14,7 @@ export type AuditNameSource = Pick<EventSnapshotDto, 'members' | 'seats'> | null
 
 /** A rendered audit entry. */
 export interface FormattedAuditEntry {
-  /** Short actor label: `Seat C`, `Ava Chen`, `Admin`, `Timer`. */
+  /** Short actor label: `Seat C`, `Ava Chen`, `Admin`, `@Ava (TCG Judge)`, `Timer`. */
   actorLabel: string;
   /** The actor's member display name when known (players and members), for tooltips and avatars. */
   actorName: string | null;
@@ -24,6 +24,14 @@ export interface FormattedAuditEntry {
   text: string;
   tone: AuditTone;
   icon: AuditIconKey;
+}
+
+/** `@Ava (TCG Judge)`: the Discord staff member behind an admin action. Falls back to the username, then to plain `Admin`. */
+export function staffLabel(staff: StaffActorDto | undefined, directoryName?: string | null): string {
+  const name = staff?.name ?? directoryName ?? staff?.username;
+  if (!staff || !name) return 'Admin';
+  const role = staff.roleName ?? (staff.role ? TOURNAMENT_ROLE_DEFAULTS[staff.role].name : null);
+  return role ? `@${name} (${role})` : `@${name}`;
 }
 
 /** `Seat C`. */
@@ -59,13 +67,14 @@ export function formatAuditEntry(entry: AuditEntryDto, names?: AuditNameSource):
       actorLabel = memberName(names, actor.memberId);
       break;
     case 'admin':
-      actorLabel = 'Admin';
+      actorLabel = staffLabel(actor.staff, actor.staff ? names?.members[actor.staff.memberId]?.displayName : null);
+      actorMemberId = actor.staff?.memberId ?? null;
       break;
     case 'system':
       actorLabel = actor.source === 'scheduler' ? 'Scheduler' : 'Timer';
       break;
   }
-  const actorName = actorMemberId ? (names?.members[actorMemberId]?.displayName ?? null) : null;
+  const actorName = actorMemberId ? (names?.members[actorMemberId]?.displayName ?? (actor.kind === 'admin' ? actor.staff?.name ?? null : null)) : null;
   const match = command.matchId ?? 'the match';
   const winner = command.winner ? seatLabel(command.winner) : 'a seat';
   const line = (text: string, tone: AuditTone, icon: AuditIconKey): FormattedAuditEntry =>

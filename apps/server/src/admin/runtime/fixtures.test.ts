@@ -59,7 +59,11 @@ function snapshotAt(state: EventState, rows: AdminAuditRow[], options: { cards?:
 
 test('auditTimeline replays through the real domain and maps back to itself', () => {
   const { rows } = replayTimeline();
-  assert.deepEqual(rows.map(mapAuditRow), auditTimeline);
+  // Rows that carry `admin:fixture` for a Discord principal are the pre-roles history: they map to a staff member with no role.
+  const expected = auditTimeline.map(entry => entry.actor.kind === 'admin' && entry.via === 'discord' && entry.principalId
+    ? { ...entry, actor: { kind: 'admin' as const, staff: { memberId: entry.principalId, role: null, via: 'legacy', name: null, username: null, roleName: null } } }
+    : entry);
+  assert.deepEqual(rows.map(mapAuditRow), expected);
 });
 
 test('signupOpen and checkin fixtures equal mapper output at their versions', () => {

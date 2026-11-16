@@ -82,7 +82,7 @@ function webRequest(command: Command, precondition: (state: EventState) => boole
 function slash(subcommand: string, extra: Partial<PrivateInteraction> = {}) {
   const replies: string[] = [];
   const interaction: PrivateInteraction = { id: ids[0]!, applicationId: config.applicationId, guildId: config.guildId,
-    channelId: config.channelId, userId: config.adminId, kind: 'command', subcommand,
+    channelId: config.channelId, userId: config.adminId, ownerId: config.adminId, kind: 'command', subcommand,
     acknowledge: async () => {}, reply: async message => { replies.push(message); }, ...extra };
   return { interaction, replies };
 }

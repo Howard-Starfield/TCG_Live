@@ -22,6 +22,8 @@ export interface AdminAuditRow {
   mode: string | null;
   principal_kind: string | null;
   principal_id: string | null;
+  /** Migration 016: the Discord member's names and staff role at the time; absent or null on older rows. */
+  actor_snapshot?: unknown;
 }
 
 /** A session row with its timestamps (bigint columns, cast to numbers). */
@@ -78,14 +80,29 @@ export function sanitizeCommand(raw: unknown): CommandDto {
   return command;
 }
 
-export function mapActor(actorId: string, principalKind: string | null, principalId?: string | null): ActorDto {
-  // Timer rows carry the admin actor (store.ts:276) but principal_kind 'system' (store.ts:316).
+/** The stored actor_snapshot as strings only (null for anything else). */
+function readSnapshot(raw: unknown): { username: string | null; displayName: string | null; via: string | null; roleName: string | null } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const source = raw as Record<string, unknown>;
+  const text = (value: unknown) => typeof value === 'string' && value ? value.slice(0, 100) : null;
+  return { username: text(source.username), displayName: text(source.displayName), via: text(source.via), roleName: text(source.roleName) };
+}
+
+export function mapActor(actorId: string, principalKind: string | null, principalId?: string | null, snapshot?: unknown): ActorDto {
+  // Timer rows carry the admin actor (store.ts) but principal_kind 'system'.
   if (principalKind === 'system') return { kind: 'system', source: principalId === 'system:scheduler' ? 'scheduler' : 'timer' };
   const player = /^player:(.+)$/.exec(actorId)?.[1];
   if (isSeat(player)) return { kind: 'player', seat: player };
   const member = /^member:([1-9]\d{14,21})$/.exec(actorId)?.[1];
   if (member) return { kind: 'member', memberId: member };
-  // The domain applies only player, member and admin actors (domain.ts:98-105, 152).
+  const names = readSnapshot(snapshot);
+  const staff = /^(organizer|judge):([1-9]\d{14,21})$/.exec(actorId);
+  if (staff) return { kind: 'admin', staff: { memberId: staff[2]!, role: staff[1] as 'organizer' | 'judge', via: names?.via ?? 'role',
+    name: names?.displayName ?? null, username: names?.username ?? null, roleName: names?.roleName ?? null } };
+  // Rows written before staff roles carry `admin:fixture` for a Discord staff member too: the principal is the person, the role unknown.
+  if (principalKind === 'discord' && principalId && SNOWFLAKE.test(principalId))
+    return { kind: 'admin', staff: { memberId: principalId, role: null, via: names?.via ?? 'legacy',
+      name: names?.displayName ?? null, username: names?.username ?? null, roleName: names?.roleName ?? null } };
   return { kind: 'admin' };
 }
 
@@ -100,7 +117,7 @@ export function mapAuditRow(row: AdminAuditRow): AuditEntryDto {
     sequence: num(row.sequence),
     commandId: row.command_id,
     occurredAtMs: num(row.occurred_at_ms),
-    actor: mapActor(row.actor_id, row.principal_kind, row.principal_id),
+    actor: mapActor(row.actor_id, row.principal_kind, row.principal_id, row.actor_snapshot),
     via: mapVia(row.principal_kind),
     principalId: row.principal_id ?? null,
     command: sanitizeCommand(row.action),
@@ -179,9 +196,12 @@ export function deriveJudge(match: MatchState, audit: readonly AuditEntryDto[], 
   return { reasons: order.filter(reason => reasons.has(reason)), sinceMs, raisedBy, ...(requests.length ? { requests } : {}) };
 }
 
-/** Admin actions the domain rules would accept now (domain.ts:247-316). */
-export function matchAdminActions(match: MatchState, blocked: boolean): MatchAdminAction[] {
-  if (blocked) return [];
+/**
+ * Admin actions the domain rules would accept now. None when the match is blocked, or when the operator behind the
+ * dashboard (identity_map.adminId) is seated in it: rulings on one's own match are refused (`staffConflict`).
+ */
+export function matchAdminActions(match: MatchState, blocked: boolean, staffConflict = false): MatchAdminAction[] {
+  if (blocked || staffConflict) return [];
   const actions: MatchAdminAction[] = [];
   if (match.phase !== 'setup' && match.phase !== 'final') actions.push('resolve');
   if (match.phase === 'final') actions.push('correct');
@@ -190,14 +210,14 @@ export function matchAdminActions(match: MatchState, blocked: boolean): MatchAdm
   return actions;
 }
 
-/** Event-level admin actions by their guards (domain.ts:163-201). */
-export function eventAdminActions(state: EventState, adminId: string, blocked: boolean): EventAdminAction[] {
+/** Event-level admin actions by their guards. The operator may be on the roster: they can play. */
+export function eventAdminActions(state: EventState, blocked: boolean): EventAdminAction[] {
   if (blocked) return [];
   const actions: EventAdminAction[] = [];
   const signup = state.signup;
   if (checkinsReadyToPublish(state)) actions.push('publish');
-  if (signup?.status === 'open' && (state.firstRound ? signup.roster.length >= 2 : signup.roster.length === 4) && new Set(signup.roster).size === signup.roster.length &&
-      !signup.roster.includes(adminId)) actions.push('signupClose');
+  if (signup?.status === 'open' && (state.firstRound ? signup.roster.length >= 2 : signup.roster.length === 4) && new Set(signup.roster).size === signup.roster.length)
+    actions.push('signupClose');
   if (signup?.status === 'assigned' && !state.published && state.matches.every(match => match.phase === 'setup'))
     actions.push('signupReopen');
   if (signup?.status === 'open' && signup.roster.length > 0) actions.push('signupRemove');
@@ -239,6 +259,8 @@ export interface SnapshotInput {
 
 export function mapMatch(match: MatchState, input: SnapshotInput, blocked: boolean): MatchDto {
   const retired = input.session.status === 'retired';
+  const seats = seatsFor(input.state, input.session.identity_map);
+  const staffConflict = match.players.some(seat => seats[seat] === input.session.identity_map.adminId);
   return {
     id: match.id, seats: [match.players[0], match.players[1]], mode: match.mode, phase: match.phase,
     ready: [...match.ready],
@@ -249,7 +271,8 @@ export function mapMatch(match: MatchState, input: SnapshotInput, blocked: boole
     finalWinner: match.finalWinner,
     finalSource: match.phase !== 'final' || !match.finalWinner ? null : match.confirmedBy ? 'agreed' : 'admin',
     confirmedBy: match.confirmedBy ?? null,
-    adminActions: matchAdminActions(match, blocked)
+    adminActions: matchAdminActions(match, blocked, staffConflict),
+    ...(staffConflict ? { staffConflict: true as const } : {})
   };
 }
 
@@ -282,7 +305,7 @@ export function mapSnapshot(input: SnapshotInput): EventSnapshotDto {
     checkins: [...state.checkins], published: state.published,
     matches: state.matches.map(match => mapMatch(match, input, blocked || isInterrupted(match, input.runnerId))),
     standings: deriveFixture(state).map(row => ({ seat: row.player, points: row.points, rating: row.rating })),
-    adminActions: eventAdminActions(state, identity.adminId, blocked),
+    adminActions: eventAdminActions(state, blocked),
     discord: {
       guildId: session.guild_id, channelId: session.channel_id,
       matchChannels: identity.matchChannels || identity.roundRooms ? { ...identity.matchChannels, ...identity.roundRooms } : null,
