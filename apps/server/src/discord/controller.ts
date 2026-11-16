@@ -262,6 +262,8 @@ export class PrivateDiscordController {
       this.emitMatch({ type: 'disputeOpened', eventId, matchId: command.matchId, revision: command.revision, requestedBy: actorId, occurredAtMs });
     else if (command.type === 'judgeResume')
       this.emitMatch({ type: 'judgeResumed', eventId, matchId: command.matchId, occurredAtMs });
+    else if (command.type === 'judgeClose')
+      this.emitMatch({ type: 'judgeClosed', eventId, matchId: command.matchId, occurredAtMs });
   }
 
   /** Events that depend on the committed state: a final result, or a clock that expired into a judge call. */

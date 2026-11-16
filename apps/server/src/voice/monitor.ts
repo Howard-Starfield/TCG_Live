@@ -172,6 +172,8 @@ export class VoiceMonitor implements VoiceRuntimeControlTarget {
 
   // ---- inputs ----
   judgeCalled(eventId: string, matchId: MatchId): Promise<void> { this.judgeOpen.add(roomKey(eventId, matchId)); return this.schedule(); }
+  /** The admin closed the judge request: the room stops counting as on a judge call. */
+  judgeClosed(eventId: string, matchId: MatchId): Promise<void> { this.judgeOpen.delete(roomKey(eventId, matchId)); return this.schedule(); }
   matchResolved(eventId: string, matchId: MatchId): Promise<void> {
     const key = roomKey(eventId, matchId);
     this.judgeOpen.delete(key);

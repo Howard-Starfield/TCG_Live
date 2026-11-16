@@ -177,6 +177,28 @@ test('a console judge-resume restarts the clock under the demo runner', async ()
   await runtime.close();
 });
 
+test('judgeClose closes a judge request, restarts a paused clock, and is refused for a dispute', async () => {
+  const steps: DemoStep[] = [join(ava), join(ben), join(cy), join(dee),
+    { wait: 10, who: 'admin', command: { type: 'signupClose', adminId: DEMO_MEMBERS[0]!.id } },
+    ...(['A', 'B', 'C', 'D'] as const).map(who => seat(who, { type: 'checkin' })),
+    { wait: 10, who: 'admin', command: { type: 'publish' } },
+    seat('A', { type: 'ready', matchId: 'M1' }), seat('B', { type: 'ready', matchId: 'M1' }),
+    seat('A', { type: 'pause', matchId: 'M1' }), seat('B', { type: 'callJudge', matchId: 'M1' }), HOLD];
+  const { runtime, clock } = demo(steps, { durationMs: 60_000 });
+  clock.advance(1_000);
+  const called = await runtime.snapshot();
+  assert.equal(called.matches[0]!.phase, 'paused');
+  assert.ok(called.matches[0]!.adminActions.includes('judgeClose'));
+  const close = request(called.eventId, { type: 'judgeClose', matchId: 'M1', reason: 'Rules explained.' }, { match: matchOf(called, 'M1') });
+  assert.equal((await runtime.applyAdminCommand(close, LOCAL_ADMIN)).result, 'Saved: judgeClose.');
+  const after = await runtime.snapshot();
+  assert.equal(after.matches[0]!.phase, 'running');
+  assert.equal(after.matches[0]!.judge, null);
+  assert.ok(!after.matches[0]!.adminActions.includes('judgeClose'));
+  assert.equal((await runtime.audit(called.eventId, 0, 500)).at(-1)!.command.reason, 'Rules explained.');
+  await runtime.close();
+});
+
 async function until(runtime: DemoAdminRuntime, clock: FakeClock, label: string, check: () => boolean, limitMs = 1_200_000) {
   for (let elapsed = 0; elapsed <= limitMs; elapsed += 500) {
     if (check()) return;

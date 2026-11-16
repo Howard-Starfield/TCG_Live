@@ -85,14 +85,14 @@ function Composer({ commands, snapshot }: { commands: CommandsApi; snapshot: Eve
         commands.confirmRemove({ eventId, memberId: intent.memberId, onDone: clear });
         return;
       case 'match': {
-        const ready = intent.reason !== null && (intent.action === 'judgeResume' || intent.winner !== null);
+        const ready = intent.reason !== null && (intent.action === 'judgeResume' || intent.action === 'judgeClose' || intent.winner !== null);
         // Corrections always confirm in the dialog; incomplete commands finish there.
         if (intent.action === 'correct' || !ready) {
           commands.openMatchAction({ eventId, matchId: intent.matchId, action: intent.action, winner: intent.winner, reason: intent.reason, onDone: clear });
           return;
         }
-        const command = intent.action === 'judgeResume'
-          ? { type: 'judgeResume' as const, matchId: intent.matchId, reason: intent.reason! }
+        const command = intent.action === 'judgeResume' || intent.action === 'judgeClose'
+          ? { type: intent.action, matchId: intent.matchId, reason: intent.reason! }
           : { type: intent.action, matchId: intent.matchId, winner: intent.winner!, reason: intent.reason! };
         return finish(await commands.run(snapshot, command, { inline: true }));
       }

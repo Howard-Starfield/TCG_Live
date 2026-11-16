@@ -19,6 +19,8 @@ export type MatchLifecycleEvent =
   | { type: 'disputeOpened'; eventId: string; matchId: MatchId; revision: number; requestedBy: string | null; occurredAtMs: number }
   /** The admin resumed a match after a judge call. */
   | { type: 'judgeResumed'; eventId: string; matchId: MatchId; occurredAtMs: number }
+  /** The admin closed a judge request with a note (the match is not final). */
+  | { type: 'judgeClosed'; eventId: string; matchId: MatchId; occurredAtMs: number }
   /** The match reached its final result (confirmed by players, or resolved/corrected by the admin). */
   | { type: 'matchResolved'; eventId: string; matchId: MatchId; winner: string | null; source: 'agreed' | 'admin'; occurredAtMs: number };
 

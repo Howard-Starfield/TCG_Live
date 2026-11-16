@@ -44,10 +44,21 @@ export function availableEventActions(session: Gate, snapshot: EventSnapshotDto)
 /** Match actions the session may run now, in display order. */
 export function availableMatchActions(session: Gate, snapshot: EventSnapshotDto, match: MatchDto): MatchAdminAction[] {
   if (!isWritable(snapshot)) return [];
-  return MATCH_ACTION_ORDER.filter(action => match.adminActions.includes(action) && canRun(session, action));
+  return MATCH_ACTION_ORDER.filter(action => match.adminActions.includes(action) && canRun(session, action)
+    && (action !== 'judgeClose' || judgeCloseApplies(match)));
 }
 
-const MATCH_ACTION_ORDER: MatchAdminAction[] = ['resolve', 'judgeResume', 'correct'];
+/** judgeClose needs an open judge request that is not a dispute (a dispute or an expired clock needs a result: Resolve). */
+function judgeCloseApplies(match: MatchDto): boolean {
+  return match.judge !== null && match.phase !== 'final' && match.phase !== 'expired' && match.proposal?.decision !== 'disputed';
+}
+
+/** The session may close this match's judge request with a note now ("Close issue"). */
+export function canCloseJudgeIssue(session: Gate, snapshot: EventSnapshotDto, match: MatchDto): boolean {
+  return availableMatchActions(session, snapshot, match).includes('judgeClose');
+}
+
+const MATCH_ACTION_ORDER: MatchAdminAction[] = ['judgeClose', 'resolve', 'judgeResume', 'correct'];
 
 /** The member can be removed from the open signup now. */
 export function canRemoveMember(session: Gate, snapshot: EventSnapshotDto, memberId: Snowflake | null): boolean {
@@ -85,6 +96,7 @@ export function preconditionFor(snapshot: EventSnapshotDto, command: AdminComman
       return signup ? { signup } : {};
     }
     case 'judgeResume':
+    case 'judgeClose':
     case 'resolve':
     case 'correct': {
       const match = matchPrecondition(snapshot, command.matchId);
@@ -135,6 +147,7 @@ export function actionKey(command: AdminCommandDto | { type: 'refresh' }): strin
     case 'signupAdd': return `signupAdd:${command.memberId}`;
     case 'checkinFor': return `checkinFor:${command.seat}`;
     case 'judgeResume':
+    case 'judgeClose':
     case 'resolve':
     case 'correct': return `${command.type}:${command.matchId}`;
     default: return command.type;
@@ -150,7 +163,7 @@ export function matchActionKey(action: MatchAdminAction, matchId: MatchId): stri
 // ---------------------------------------------------------------- reasons
 
 export function needsReason(type: CommandType): boolean {
-  return type === 'judgeResume' || type === 'resolve' || type === 'correct';
+  return type === 'judgeResume' || type === 'judgeClose' || type === 'resolve' || type === 'correct';
 }
 
 export type ReasonCheck = { ok: true; reason: string } | { ok: false; error: string; length: number };
@@ -172,6 +185,7 @@ export function checkReason(raw: string): ReasonCheck {
 export const MATCH_ACTION_LABEL: Record<MatchAdminAction, string> = {
   resolve: 'Resolve',
   judgeResume: 'Resume play',
+  judgeClose: 'Close issue',
   correct: 'Correct result'
 };
 
@@ -190,6 +204,7 @@ export function commandVerb(snapshot: EventSnapshotDto, command: AdminCommandDto
     case 'signupAdd': return `add ${memberName(snapshot, command.memberId)} to the signup`;
     case 'checkinFor': return `check in ${seatWithName(snapshot, command.seat)}`;
     case 'judgeResume': return `resume ${command.matchId}`;
+    case 'judgeClose': return `close the judge request on ${command.matchId}`;
     case 'resolve': return `resolve ${command.matchId}`;
     case 'correct': return `correct ${command.matchId}`;
   }
@@ -206,6 +221,7 @@ export function commandDone(snapshot: EventSnapshotDto, command: AdminCommandDto
     case 'signupAdd': return `Added ${memberName(snapshot, command.memberId)} to the signup`;
     case 'checkinFor': return `Checked in ${seatWithName(snapshot, command.seat)}`;
     case 'judgeResume': return `${command.matchId} resumed by judge override`;
+    case 'judgeClose': return `${command.matchId} judge request closed`;
     case 'resolve': return `${command.matchId} resolved: ${seatWithName(snapshot, command.winner)} wins`;
     case 'correct': return `${command.matchId} corrected: ${seatWithName(snapshot, command.winner)} wins`;
   }

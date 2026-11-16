@@ -186,6 +186,7 @@ export function matchAdminActions(match: MatchState, blocked: boolean): MatchAdm
   if (match.phase !== 'setup' && match.phase !== 'final') actions.push('resolve');
   if (match.phase === 'final') actions.push('correct');
   if (match.phase === 'paused') actions.push('judgeResume');
+  if (match.judgeAttention && match.phase !== 'final' && match.phase !== 'expired' && match.proposal?.decision !== 'disputed') actions.push('judgeClose');
   return actions;
 }
 

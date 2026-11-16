@@ -73,6 +73,39 @@ test('participant and admin mapping, both-ready start, pause generations, and ju
   assert.equal(state.matches[0]!.phase, 'running');
 });
 
+test('judgeClose clears judge attention, restarts a paused clock, and refuses disputes and finished matches', () => {
+  let state = started();
+  assert.throws(() => apply(state, ADMIN, { type: 'judgeClose', matchId: 'M1', reason: 'x' }), /unavailable/, 'no judge request');
+  state = apply(state, 'player:A', { type: 'callJudge', matchId: 'M1' });
+  assert.equal(state.matches[0]!.phase, 'running', 'calling a judge does not pause');
+  assert.throws(() => apply(state, 'player:A', { type: 'judgeClose', matchId: 'M1', reason: 'x' }), /denied/);
+  assert.throws(() => apply(state, ADMIN, { type: 'judgeClose', matchId: 'M1', reason: ' ' }), /reason/);
+  const running = apply(state, ADMIN, { type: 'judgeClose', matchId: 'M1', reason: 'Rules explained' }, now + 1_000);
+  assert.equal(running.matches[0]!.judgeAttention, false);
+  assert.equal(running.matches[0]!.phase, 'running');
+  assert.equal(running.matches[0]!.remainingMs, 9_000);
+
+  const paused = apply(state, 'player:A', { type: 'pause', matchId: 'M1' }, now + 2_000);
+  assert.equal(paused.matches[0]!.phase, 'paused');
+  const resumed = apply(paused, ADMIN, { type: 'judgeClose', matchId: 'M1', reason: 'Checked' }, now + 3_000);
+  assert.equal(resumed.matches[0]!.phase, 'running');
+  assert.equal(resumed.matches[0]!.judgeAttention, false);
+  assert.equal(resumed.matches[0]!.startedAtMs, now + 3_000);
+  assert.throws(() => apply(resumed, ADMIN, { type: 'judgeClose', matchId: 'M1', reason: 'again' }, now + 3_001), /unavailable/);
+
+  let disputed = apply(started(), 'player:A', { type: 'propose', matchId: 'M1', winner: 'A', expectedRevision: 0 });
+  disputed = apply(disputed, 'player:B', { type: 'dispute', matchId: 'M1', revision: 1 });
+  assert.equal(disputed.matches[0]!.judgeAttention, true);
+  assert.throws(() => apply(disputed, ADMIN, { type: 'judgeClose', matchId: 'M1', reason: 'x' }), /Resolve/);
+
+  const final = apply(state, ADMIN, { type: 'resolve', matchId: 'M1', winner: 'A', reason: 'ruled' });
+  assert.throws(() => apply(final, ADMIN, { type: 'judgeClose', matchId: 'M1', reason: 'x' }), /unavailable/);
+
+  const expired = apply(started(), ADMIN, { type: 'clockCheck', matchId: 'M1' }, now + 10_000);
+  assert.equal(expired.matches[0]!.judgeAttention, true);
+  assert.throws(() => apply(expired, ADMIN, { type: 'judgeClose', matchId: 'M1', reason: 'Resolving next' }, now + 10_001), /Resolve/);
+});
+
 test('exact expiry flags a judge without awarding result; foreign runner cannot materialize it', () => {
   const state = started();
   assert.throws(() => apply(state, ADMIN, { type: 'clockCheck', matchId: 'M1' }, now + 10_000, 'other-runner'), /unsupported/);

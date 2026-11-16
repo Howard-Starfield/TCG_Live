@@ -22,6 +22,11 @@ const COPY = {
     description: 'Replaces a final result. Points and ratings are recomputed from the new winner.',
     confirm: 'Correct result'
   },
+  judgeClose: {
+    title: (id: string) => `Close the judge request on ${id}`,
+    description: 'Closes the request with your note. The match keeps its state; a paused clock restarts. A dispute needs Resolve instead.',
+    confirm: 'Close issue'
+  },
   judgeResume: {
     title: (id: string) => `Resume ${id} by judge override`,
     description: 'Restarts the paused clock without waiting for both players to agree.',
@@ -173,7 +178,7 @@ export function MatchActionDialog({ open, api, snapshot, request, onClose }: Mat
 
   const copy = COPY[action];
   const danger = action === 'correct';
-  const needsWinner = action !== 'judgeResume';
+  const needsWinner = action !== 'judgeResume' && action !== 'judgeClose';
   const changed = matchChangedSince(seen, snapshot, matchId);
   const available = !!liveMatch && availableMatchActions(api.session, snapshot, liveMatch).includes(action);
   // A correction can never pick the recorded winner.
@@ -194,8 +199,8 @@ export function MatchActionDialog({ open, api, snapshot, request, onClose }: Mat
     if (changed) return;
     setTouched(true);
     if (!match || !available || pending || !check.ok || (needsWinner && !chosen) || (danger && !acknowledged)) return;
-    const command: AdminCommandDto = action === 'judgeResume'
-      ? { type: 'judgeResume', matchId, reason: check.reason }
+    const command: AdminCommandDto = action === 'judgeResume' || action === 'judgeClose'
+      ? { type: action, matchId, reason: check.reason }
       : { type: action, matchId, winner: chosen!, reason: check.reason };
     setPending(true);
     setNotice(null);

@@ -40,7 +40,7 @@ const PHASES: readonly MatchPhase[] = ['setup', 'running', 'paused', 'expired', 
 /** Fields each command type carries besides `type`, in contract order. */
 const COMMAND_FIELDS: Record<AdminCommandDto['type'], readonly string[]> = {
   publish: [], delayStart: ['delayMinutes'], signupClose: [], signupReopen: [], signupRemove: ['memberId'], signupAdd: ['memberId'], checkinFor: ['seat'],
-  judgeResume: ['matchId', 'reason'], resolve: ['matchId', 'winner', 'reason'], correct: ['matchId', 'winner', 'reason']
+  judgeResume: ['matchId', 'reason'], judgeClose: ['matchId', 'reason'], resolve: ['matchId', 'winner', 'reason'], correct: ['matchId', 'winner', 'reason']
 };
 /** The fixture's fixed pairings (domain.ts createFixture): M1 is A v B, M2 is C v D. */
 const PAIRINGS = createFixture('pairings').matches;
@@ -101,7 +101,7 @@ function parseCommand(value: unknown): AdminCommandDto {
       return { type: kind, memberId: source.memberId };
     }
     case 'checkinFor': return { type: kind, seat: seat(source.seat, 'command.seat') };
-    case 'judgeResume': return { type: kind, matchId: matchId(source.matchId, 'command.matchId'), reason: reason(source.reason) };
+    case 'judgeResume': case 'judgeClose': return { type: kind, matchId: matchId(source.matchId, 'command.matchId'), reason: reason(source.reason) };
     case 'resolve': case 'correct':
       return { type: kind, matchId: matchId(source.matchId, 'command.matchId'), winner: seat(source.winner, 'command.winner'),
         reason: reason(source.reason) };
@@ -133,7 +133,7 @@ function parsePrecondition(value: unknown, command: AdminCommandDto): CommandPre
     case 'publish': case 'delayStart': case 'checkinFor':
       if (precondition.eventVersion === undefined) throw bad(`${command.type} needs precondition.eventVersion.`);
       break;
-    case 'judgeResume': case 'resolve': case 'correct':
+    case 'judgeResume': case 'judgeClose': case 'resolve': case 'correct':
       if (precondition.match?.matchId !== command.matchId) throw bad(`${command.type} needs precondition.match for ${command.matchId}.`);
       break;
     default:
@@ -196,7 +196,7 @@ export function toDomainCommand(command: AdminCommandDto, adminId: string): Comm
       if (command.memberId === adminId) throw new RuleError('Signup admin cannot play.');
       return { type: 'signupAdd', memberId: command.memberId };
     case 'checkinFor': return { type: 'checkinFor', seat: command.seat };
-    case 'judgeResume': return { type: 'judgeResume', matchId: command.matchId, reason: command.reason };
+    case 'judgeResume': case 'judgeClose': return { type: command.type, matchId: command.matchId, reason: command.reason };
     case 'resolve': case 'correct':
       if (!command.winner.startsWith('P') && MATCH_SEATS[command.matchId] && !MATCH_SEATS[command.matchId]!.includes(command.winner)) throw new RuleError('Winner is not in the selected match.');
       return { type: command.type, matchId: command.matchId, winner: command.winner, reason: command.reason };

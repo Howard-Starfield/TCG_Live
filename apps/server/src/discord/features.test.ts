@@ -52,6 +52,7 @@ test('the controller emits judge, dispute, resume and resolve events after commi
       { type: 'callJudge', matchId: 'M1' },
       { type: 'dispute', matchId: 'M1', revision: 2 },
       { type: 'judgeResume', matchId: 'M1', reason: 'ok' },
+      { type: 'judgeClose', matchId: 'M1', reason: 'explained' },
       { type: 'resolve', matchId: 'M1', winner: 'A', reason: 'judge' },
       { type: 'ready', matchId: 'M2' }
     ];
@@ -65,6 +66,7 @@ test('the controller emits judge, dispute, resume and resolve events after commi
       { type: 'judgeCalled', eventId, matchId: 'M1', reason: 'called', requestedBy: 'local-admin', occurredAtMs: 1_000 },
       { type: 'disputeOpened', eventId, matchId: 'M1', revision: 2, requestedBy: 'local-admin', occurredAtMs: 1_000 },
       { type: 'judgeResumed', eventId, matchId: 'M1', occurredAtMs: 1_000 },
+      { type: 'judgeClosed', eventId, matchId: 'M1', occurredAtMs: 1_000 },
       { type: 'matchResolved', eventId, matchId: 'M1', winner: 'A', source: 'admin', occurredAtMs: 1_000 }
     ]);
   } finally { await Promise.all([quiet.controller.stop(), observed.controller.stop()]); }

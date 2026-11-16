@@ -2,7 +2,7 @@
 // session may act (decision 4: commandsEnabled plus the capability), the event is active, and the
 // domain currently allows the action (`adminActions`). Read-only mode therefore shows no controls.
 import type { EventAdminAction, EventSnapshotDto, MatchAdminAction, MatchDto, Snowflake } from '@tcg-live/core';
-import { Clock, Gavel, LockKeyhole, LockKeyholeOpen, MoreHorizontal, PencilLine, Play, RefreshCw, Send, UserMinus } from 'lucide-react';
+import { CircleCheck, Clock, Gavel, LockKeyhole, LockKeyholeOpen, MoreHorizontal, PencilLine, Play, RefreshCw, Send, UserMinus } from 'lucide-react';
 import { useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { adminKeys, memberName, useAdminData, useServerNow, useSession } from '../../data';
 import { Button, Dialog, Field, IconButton, Input, Menu, cx, type MenuEntry } from '../../ui';
@@ -27,6 +27,7 @@ const EVENT_BUTTON: Record<EventButton, { label: string; icon: ReactNode; varian
 const MATCH_ICON: Record<MatchAdminAction, ReactNode> = {
   resolve: <Gavel aria-hidden />,
   judgeResume: <Play aria-hidden />,
+  judgeClose: <CircleCheck aria-hidden />,
   correct: <PencilLine aria-hidden />
 };
 
@@ -146,14 +147,16 @@ export interface MatchActionsProps {
   allowResultRuling?: boolean;
   /** `buttons` for decision cards, `menu` for compact table rows. */
   variant?: 'buttons' | 'menu';
+  /** Actions a surrounding UI already offers in its own way (the match drawer's judge card has Close issue). */
+  exclude?: readonly MatchAdminAction[];
 }
 
 /** Resolve, judge-resume and correct for one match, as the domain allows them now. */
-export function MatchActions({ snapshot, match, readOnly = false, allowResultRuling = true, variant = 'buttons' }: MatchActionsProps) {
+export function MatchActions({ snapshot, match, readOnly = false, allowResultRuling = true, variant = 'buttons', exclude = [] }: MatchActionsProps) {
   const commands = useWritable(snapshot, readOnly);
   if (!commands) return null;
   const actions = availableMatchActions(commands.session, snapshot, match)
-    .filter(action => allowResultRuling || action !== 'resolve');
+    .filter(action => (allowResultRuling || action !== 'resolve') && !exclude.includes(action));
   if (actions.length === 0) return null;
   const open = (action: MatchAdminAction) => commands.openMatchAction({ eventId: snapshot.eventId, matchId: match.id, action });
   const busy = (action: MatchAdminAction) => commands.isPending(matchActionKey(action, match.id));
@@ -176,7 +179,7 @@ export function MatchActions({ snapshot, match, readOnly = false, allowResultRul
     <>
       {actions.map(action => (
         <Button key={action} size="sm" icon={MATCH_ICON[action]} loading={busy(action)} onClick={() => open(action)}
-          variant={action === 'resolve' ? 'primary' : 'secondary'}
+          variant={action === 'resolve' || action === 'judgeClose' ? 'primary' : 'secondary'}
           className={cx(action === 'correct' && 'text-danger')}
           aria-label={`${MATCH_ACTION_LABEL[action]} ${match.id}`}>
           {MATCH_ACTION_LABEL[action]}…

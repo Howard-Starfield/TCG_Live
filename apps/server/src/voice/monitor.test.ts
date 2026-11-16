@@ -157,6 +157,19 @@ test('helpers are not logged in while the main bot is enough', async () => {
   await h.monitor.stop();
 });
 
+test('closing the judge request ends the judge-call recording and leaves the room', async () => {
+  const h = harness();
+  await h.monitor.start();
+  await h.monitor.judgeCalled(eventId, 'M2');
+  const handle = h.main.active!;
+  assert.equal(handle.left, false);
+  await h.monitor.judgeClosed(eventId, 'M2');
+  assert.equal(handle.left, true);
+  assert.equal(h.recordings[0]!.stopped, 'not needed');
+  assert.deepEqual(h.last()!.rooms, []);
+  await h.monitor.stop();
+});
+
 test('a loudness spike flags with the recording offset, never mutes, and notifies the organizer at a limited rate', async () => {
   const h = harness({ settings: settingsWith({ voice: { enabled: true, notifyDiscord: true }, noticeText: 'Custom notice' }) });
   await h.monitor.start();

@@ -25,6 +25,7 @@ function valid(): Record<AdminCommandDto['type'], Record<string, unknown>> {
     signupAdd: { ...base, command: { type: 'signupAdd', memberId: MEMBER }, precondition: { signup: { status: 'open', rosterSize: 3 } } },
     checkinFor: { ...base, command: { type: 'checkinFor', seat: 'B' }, precondition: { eventVersion: 4 } },
     judgeResume: { ...base, command: { type: 'judgeResume', matchId: 'M1', reason: 'Board checked.' }, precondition: { match: paused } },
+    judgeClose: { ...base, command: { type: 'judgeClose', matchId: 'M1', reason: 'Rules explained.' }, precondition: { match: paused } },
     resolve: { ...base, command: { type: 'resolve', matchId: 'M1', winner: 'A', reason: 'Ruling.' }, precondition: { match: paused } },
     correct: { ...base, command: { type: 'correct', matchId: 'M2', winner: 'C', reason: 'Score sheet.' }, precondition: { match: final } }
   };

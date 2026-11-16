@@ -28,6 +28,7 @@ export type Command =
   | { type: 'callJudge'; matchId: MatchId; judgeRequest?: JudgeRequestInput }
   | { type: 'resumeConsent'; matchId: MatchId; pauseGeneration: number }
   | { type: 'judgeResume'; matchId: MatchId; reason: string }
+  | { type: 'judgeClose'; matchId: MatchId; reason: string }
   | { type: 'clockCheck'; matchId: MatchId }
   | { type: 'propose'; matchId: MatchId; winner: Player; expectedRevision: number }
   | { type: 'confirm'; matchId: MatchId; revision: number }
@@ -349,6 +350,17 @@ export function transition(current: EventState, actor: ActorId, command: Command
         requireReason(command.reason);
         if (match.phase !== 'paused') throw new RuleError('Judge resume is unavailable.');
         start(match, nowMs, runnerId);
+        break;
+      }
+      case 'judgeClose': {
+        requireAdmin(actor);
+        requireReason(command.reason);
+        if (!match.judgeAttention || match.phase === 'final') throw new RuleError('Judge close is unavailable.');
+        if (match.proposal?.decision === 'disputed') throw new RuleError('A disputed result needs a winner: use Resolve.');
+        // An expired clock leaves no result and no way to resume; closing would only hide the match from the judge lane.
+        if (match.phase === 'expired') throw new RuleError('An expired clock needs a result: use Resolve.');
+        if (match.phase === 'paused') start(match, nowMs, runnerId);
+        match.judgeAttention = false;
         break;
       }
       case 'clockCheck': {
