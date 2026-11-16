@@ -7,9 +7,12 @@ import { describeError, formatBytes, formatDuration, useEvidenceAccess, useEvide
 import { CASE_EVIDENCE_MAX } from './AttachToCase';
 
 export function evidenceLabel(item: EvidenceItemDto): string {
-  const what = item.kind === 'link' ? item.externalUrl ?? 'Link' : item.originalName ?? `${item.kind} file`;
+  const what = item.kind === 'link' ? item.externalUrl ?? 'Link'
+    : item.kind === 'note' ? (item.note.length > 60 ? `${item.note.slice(0, 60)}…` : item.note) || 'Text note'
+    : item.originalName ?? `${item.kind} file`;
   const facts = [formatBytes(item.byteSize), formatDuration(item.durationMs)].filter(Boolean).join(' · ');
-  return [what, facts, item.note].filter(Boolean).join(' · ');
+  // A note's text is already the label; don't repeat it.
+  return [what, facts, item.kind === 'note' ? '' : item.note].filter(Boolean).join(' · ');
 }
 
 /** Toggles `id` in `value`, refusing to go past the case limit. */

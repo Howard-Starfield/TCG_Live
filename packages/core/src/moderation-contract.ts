@@ -1,5 +1,6 @@
 // Moderation contract v1, shared by apps/server and apps/web. See docs/VIDEO_EVIDENCE_AND_MODERATION_PLAN.md.
 import type { MatchId, Snowflake } from './admin-contract.js';
+import { EVIDENCE_REPLY_AUDIT_KINDS } from './evidence-contract.js';
 import { ADMIN_TOOLS_AUDIT_KINDS } from './admin-tools-contract.js';
 import { LOCAL_SETTINGS_AUDIT_KINDS } from './local-settings-contract.js';
 import { LFG_AUDIT_KINDS } from './lfg-contract.js';
@@ -276,7 +277,7 @@ export const OPS_AUDIT_KINDS = ['evidence.submitted', 'evidence.viewed', 'eviden
   'voice.recording.start', 'voice.recording.stop', 'voice.notice_failed', 'voice.recording.stopped_storage',
   'moderation.voice_bot.updated', 'voice.recording.gap', 'voice.recording.partial', 'voice.recording.opt_out',
   'moderation.flag.reviewed',
-  ...ADMIN_TOOLS_AUDIT_KINDS, ...LOCAL_SETTINGS_AUDIT_KINDS, ...LFG_AUDIT_KINDS] as const;
+  ...EVIDENCE_REPLY_AUDIT_KINDS, ...ADMIN_TOOLS_AUDIT_KINDS, ...LOCAL_SETTINGS_AUDIT_KINDS, ...LFG_AUDIT_KINDS] as const;
 export type OpsAuditKind = typeof OPS_AUDIT_KINDS[number];
 export type OpsActorKind = 'admin' | 'player' | 'bot' | 'system';
 

@@ -2,21 +2,28 @@
 // handling, ApiError mapping); media URLs carry only a short-lived playback ticket, never the token.
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { EVIDENCE_ADMIN_MAX_BYTES, EVIDENCE_DELETE_REASON_MAX_LENGTH, EVIDENCE_FILE_TYPES, EVIDENCE_NOTE_MAX_LENGTH,
-  EVIDENCE_URL_MAX_LENGTH, isEvidenceFileExtension, type CreateEvidenceResponseDto, type EvidenceItemDto,
-  type EvidenceItemResponseDto, type EvidenceListDto, type MatchId, type PlaybackTicketDto } from '@tcg-live/core';
+  EVIDENCE_NOTE_TEXT_MAX_LENGTH, EVIDENCE_REPLY_MAX_LENGTH, EVIDENCE_URL_MAX_LENGTH, isEvidenceFileExtension,
+  type CreateEvidenceResponseDto, type EvidenceItemDto, type EvidenceItemResponseDto, type EvidenceListDto,
+  type EvidenceReplyAudience, type EvidenceReplyDto, type EvidenceReplyListDto, type EvidenceReplyResponseDto, type MatchId,
+  type PlaybackTicketDto } from '@tcg-live/core';
 import { useCallback } from 'react';
 import { ApiError, useAdminData, useSession, type ApiClient } from '../../data';
 
 export const evidenceKeys = {
   all: ['admin', 'evidence'] as const,
-  match: (eventId: string, matchId: MatchId) => ['admin', 'evidence', eventId, matchId] as const
+  match: (eventId: string, matchId: MatchId) => ['admin', 'evidence', eventId, matchId] as const,
+  replies: (eventId: string, matchId: MatchId) => ['admin', 'evidence', eventId, matchId, 'replies'] as const
 };
 
-/** What this session may do with evidence. Both need the runtime to mount the evidence routes. */
-export function useEvidenceAccess(): { read: boolean; manage: boolean } {
+/**
+ * What this session may do with evidence. All need the runtime to mount the evidence routes. `reply` is sending in
+ * the match thread: it needs match.judge (the same gate as the match actions), which a read-only console lacks.
+ */
+export function useEvidenceAccess(): { read: boolean; manage: boolean; reply: boolean } {
   const session = useSession();
   const mounted = session.session?.evidence === true;
-  return { read: mounted && session.hasCapability('evidence.read'), manage: mounted && session.hasCapability('evidence.manage') };
+  return { read: mounted && session.hasCapability('evidence.read'), manage: mounted && session.hasCapability('evidence.manage'),
+    reply: mounted && session.hasCapability('evidence.read') && session.hasCapability('match.judge') };
 }
 
 const matchPath = (eventId: string, matchId: MatchId) =>
@@ -31,6 +38,27 @@ export async function addEvidenceLink(api: ApiClient, eventId: string, matchId: 
   const body = await api.request<CreateEvidenceResponseDto>('POST', matchPath(eventId, matchId),
     { body: note ? { url, note } : { url } });
   return body.item;
+}
+
+/** Saves typed text as evidence of kind 'note': no file and no link. */
+export async function addEvidenceNote(api: ApiClient, eventId: string, matchId: MatchId, text: string): Promise<EvidenceItemDto> {
+  const body = await api.request<CreateEvidenceResponseDto>('POST', matchPath(eventId, matchId), { body: { kind: 'note', text } });
+  return body.item;
+}
+
+const repliesPath = (eventId: string, matchId: MatchId) => `${matchPath(eventId, matchId)}/replies`;
+
+export function listReplies(api: ApiClient, eventId: string, matchId: MatchId, signal?: AbortSignal): Promise<EvidenceReplyListDto> {
+  return api.request<EvidenceReplyListDto>('GET', repliesPath(eventId, matchId), signal ? { signal } : {});
+}
+
+/** Sends a reply: to the match's players in Discord, or (audience 'staff') only into the dashboard thread. A failed Discord post still resolves, with status 'failed'. */
+export async function sendReply(api: ApiClient, eventId: string, matchId: MatchId, body: string, audience: EvidenceReplyAudience): Promise<EvidenceReplyDto> {
+  return (await api.request<EvidenceReplyResponseDto>('POST', repliesPath(eventId, matchId), { body: { body, audience } })).reply;
+}
+
+export async function retryReply(api: ApiClient, eventId: string, matchId: MatchId, replyId: string): Promise<EvidenceReplyDto> {
+  return (await api.request<EvidenceReplyResponseDto>('POST', `${repliesPath(eventId, matchId)}/${encodeURIComponent(replyId)}/retry`, { body: {} })).reply;
 }
 
 /**
@@ -112,6 +140,34 @@ export function useEvidenceList(eventId: string, matchId: MatchId, enabled = tru
   });
 }
 
+/** The reply thread for one match. Disabled without evidence.read. */
+export function useEvidenceReplies(eventId: string, matchId: MatchId, enabled = true) {
+  const { api } = useAdminData();
+  const access = useEvidenceAccess();
+  return useQuery({
+    queryKey: evidenceKeys.replies(eventId, matchId),
+    queryFn: ({ signal }) => listReplies(api, eventId, matchId, signal),
+    enabled: enabled && access.read,
+    staleTime: 15_000,
+    refetchOnMount: true,
+    retry: retryTransient
+  });
+}
+
+/** Puts a new or changed reply into the cached thread and refetches in the background. */
+export function useReplyCacheUpdate(eventId: string, matchId: MatchId): (reply: EvidenceReplyDto) => void {
+  const queryClient = useQueryClient();
+  return useCallback((reply: EvidenceReplyDto) => {
+    const key = evidenceKeys.replies(eventId, matchId);
+    queryClient.setQueryData<EvidenceReplyListDto>(key, list => {
+      if (!list) return list;
+      const exists = list.replies.some(entry => entry.id === reply.id);
+      return { ...list, replies: exists ? list.replies.map(entry => (entry.id === reply.id ? reply : entry)) : [...list.replies, reply] };
+    });
+    void queryClient.invalidateQueries({ queryKey: key, exact: true });
+  }, [eventId, matchId, queryClient]);
+}
+
 /** Puts a changed item into the cached list (or adds it) and refetches in the background. */
 export function useEvidenceCacheUpdate(eventId: string, matchId: MatchId): (item: EvidenceItemDto) => void {
   const queryClient = useQueryClient();
@@ -159,6 +215,19 @@ export function validateEvidenceUrl(raw: string): string | null {
 
 export function validateNote(note: string): string | null {
   return [...note].length > EVIDENCE_NOTE_MAX_LENGTH ? `Notes can be up to ${EVIDENCE_NOTE_MAX_LENGTH} characters.` : null;
+}
+
+/** Null when the typed evidence text is acceptable. */
+export function validateNoteText(text: string): string | null {
+  const value = text.trim();
+  if (!value) return 'Type some text.';
+  return [...value].length > EVIDENCE_NOTE_TEXT_MAX_LENGTH ? `Text can be up to ${EVIDENCE_NOTE_TEXT_MAX_LENGTH} characters.` : null;
+}
+
+export function validateReplyBody(text: string): string | null {
+  const value = text.trim();
+  if (!value) return 'Type a reply.';
+  return [...value].length > EVIDENCE_REPLY_MAX_LENGTH ? `Replies can be up to ${EVIDENCE_REPLY_MAX_LENGTH} characters.` : null;
 }
 
 export function validateDeleteReason(reason: string): string | null {

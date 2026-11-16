@@ -1,14 +1,16 @@
-// Evidence HTTP routes. Link evidence, hold and delete are implemented here; binary upload, playback
-// tickets and media streaming are typed seams (EvidenceRouteSeams) that answer 501 until provided.
+// Evidence HTTP routes. Link and text-note evidence, hold, delete and the reply thread are implemented here;
+// binary upload, playback tickets and media streaming are typed seams (EvidenceRouteSeams) that answer 501
+// until provided, and Discord delivery of replies is the EvidenceReplyDelivery option.
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { CreateEvidenceResponseDto, EvidenceItemDto, EvidenceItemResponseDto, EvidenceListDto, MatchId,
-  PlaybackTicketDto } from '@tcg-live/core';
+import type { CreateEvidenceResponseDto, EvidenceItemDto, EvidenceItemResponseDto, EvidenceListDto, EvidenceReplyListDto,
+  EvidenceReplyResponseDto, MatchId, PlaybackTicketDto } from '@tcg-live/core';
 import { readJsonBody, strictObject } from '../admin/http/body.js';
 import { HttpError, sendJson } from '../admin/http/respond.js';
 import type { Session } from '../admin/http/sessions.js';
 import { LOCAL_ADMIN, type OpsActor, type OpsAuditStore } from '../ops/audit.js';
 import { mapOpsError } from '../ops/errors.js';
 import { badRequest, notImplemented, onlyParams, UUID, type OpsContext, type OpsRoute } from '../ops/http.js';
+import { attemptReplyDelivery, type EvidenceReplyDelivery } from './replies.js';
 import type { EvidenceRecord, EvidenceStore } from './store.js';
 
 const UPLOAD_PATH = /^\/api\/v1\/events\/[^/]+\/matches\/[^/]+\/evidence(?:\?.*)?$/;
@@ -68,6 +70,11 @@ export interface EvidenceRouteOptions {
   store: EvidenceStore;
   audit: OpsAuditStore;
   seams?: EvidenceRouteSeams;
+  /**
+   * Posts 'players' replies to Discord. Without it a players reply is refused (503) before anything is stored;
+   * staff-only replies never need it.
+   */
+  replyDelivery?: EvidenceReplyDelivery;
   /** Supplied by the admin handler. */
   sessionLive?: (session: Session) => boolean;
 }
@@ -91,7 +98,7 @@ async function guarded<T>(run: () => Promise<T>): Promise<T> {
 }
 
 export function evidenceRoutes(options: EvidenceRouteOptions): OpsRoute[] {
-  const { store, audit, seams = {} } = options;
+  const { store, audit, seams = {}, replyDelivery } = options;
   return [
     { pattern: /^\/api\/v1\/events\/([^/]+)\/matches\/([^/]+)\/evidence$/, methods: {
       GET: { access: 'evidence.read', run: async ({ response, params, query }) => {
@@ -115,11 +122,60 @@ export function evidenceRoutes(options: EvidenceRouteOptions): OpsRoute[] {
           return;
         }
         onlyParams(query, []);
-        const { url, note } = strictObject(await readJsonBody(request), ['url', 'note']);
-        const item = await guarded(() => store.createLink({ ...where, url: url as string, note: note as string | undefined,
-          source: 'web', submittedBy: 'local-admin', actor: LOCAL_ADMIN }));
+        const fields = strictObject(await readJsonBody(request), ['kind', 'url', 'note', 'text']);
+        if (fields.kind !== undefined && fields.kind !== 'link' && fields.kind !== 'note') throw badRequest('kind must be "link" or "note".');
+        let item: EvidenceItemDto;
+        if (fields.kind === 'note') {
+          if (fields.url !== undefined || fields.note !== undefined) throw badRequest('A text note takes only text.');
+          item = await guarded(() => store.createNote({ ...where, text: fields.text as string, source: 'web', submittedBy: 'local-admin', actor: LOCAL_ADMIN }));
+        } else {
+          if (fields.text !== undefined) throw badRequest('text is only for kind "note".');
+          item = await guarded(() => store.createLink({ ...where, url: fields.url as string, note: fields.note as string | undefined,
+            source: 'web', submittedBy: 'local-admin', actor: LOCAL_ADMIN }));
+        }
         const body: CreateEvidenceResponseDto = { item };
         sendJson(response, 201, body);
+      } }
+    } },
+    { pattern: /^\/api\/v1\/events\/([^/]+)\/matches\/([^/]+)\/evidence\/replies$/, methods: {
+      GET: { access: 'evidence.read', run: async ({ response, params, query }) => {
+        onlyParams(query, []);
+        const where = eventMatch(params);
+        const replies = await guarded(() => store.listReplies(where.eventId, where.matchId));
+        const body: EvidenceReplyListDto = { ...where, replies };
+        sendJson(response, 200, body);
+      } },
+      // match.judge, not evidence.manage: answering players is a match action, and read-only sessions (dashboard
+      // actions off) hold neither. Staff-only replies need it too, so the thread has one rule.
+      POST: { access: 'match.judge', run: async ({ request, response, params, query }) => {
+        onlyParams(query, []);
+        const where = eventMatch(params);
+        const { body, audience } = strictObject(await readJsonBody(request), ['body', 'audience']);
+        if (audience === 'players' && !replyDelivery)
+          throw new HttpError(503, 'unavailable', 'Discord delivery is not available. Send a staff-only note, or try again when the bot is online.');
+        const created = await guarded(() => store.createReply({ ...where, body: body as string, audience: audience as 'players' | 'staff',
+          author: 'local-admin', actor: LOCAL_ADMIN }));
+        const { attempt: _token, ...plain } = created;
+        const reply = created.status === 'pending'
+          ? await guarded(() => attemptReplyDelivery(store, replyDelivery!, created, LOCAL_ADMIN)) : plain;
+        const result: EvidenceReplyResponseDto = { reply };
+        sendJson(response, 201, result);
+      } }
+    } },
+    { pattern: /^\/api\/v1\/events\/([^/]+)\/matches\/([^/]+)\/evidence\/replies\/([^/]+)\/retry$/, methods: {
+      POST: { access: 'match.judge', run: async ({ request, response, params }) => {
+        const where = eventMatch(params);
+        const id = params[2];
+        if (!id || !UUID.test(id)) throw new HttpError(404, 'not_found', 'Reply not found.');
+        strictObject(await readJsonBody(request) ?? {}, []);
+        if (!replyDelivery) throw new HttpError(503, 'unavailable', 'Discord delivery is not available. Try again when the bot is online.');
+        const existing = await guarded(() => store.getReply(id));
+        if (!existing || existing.eventId !== where.eventId || existing.matchId !== where.matchId)
+          throw new HttpError(404, 'not_found', 'Reply not found.');
+        const claimed = await guarded(() => store.claimReplyRetry(id, LOCAL_ADMIN));
+        const reply = await guarded(() => attemptReplyDelivery(store, replyDelivery, claimed, LOCAL_ADMIN));
+        const result: EvidenceReplyResponseDto = { reply };
+        sendJson(response, 200, result);
       } }
     } },
     { pattern: /^\/api\/v1\/evidence\/([^/]+)$/, methods: {
@@ -150,6 +206,7 @@ export function evidenceRoutes(options: EvidenceRouteOptions): OpsRoute[] {
         if (!seams.playback) throw notImplemented('Playback');
         const record = await guarded(() => store.get(id));
         if (!record) throw new HttpError(404, 'not_found', 'Evidence not found.');
+        if (record.kind === 'note') throw badRequest('A text note has no recording to play.');
         if (record.status !== 'stored' || !record.storagePath) throw new HttpError(409, 'conflict', 'Only stored files can be played.');
         const live = options.sessionLive ?? (() => true);
         const ticket = await seams.playback({ record, session: session!, sessionLive: () => live(session!) });

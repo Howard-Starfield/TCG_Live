@@ -40,7 +40,14 @@ export function sameTables(names: readonly string[], expected: readonly string[]
   return left.every((name, index) => name === right[index]);
 }
 
-export function classifyPublicSchema(names: readonly string[]): PublicSchemaShape {
+/**
+ * Migration 015's table. It is additive and optional: a database with it and one without it (015 not run yet) have the
+ * same shape, so every guard ignores it. Only counted when tcg_evidence exists, so a stray table cannot pass for 012.
+ */
+export const EVIDENCE_REPLY_TABLES = ['tcg_evidence_replies'] as const;
+
+export function classifyPublicSchema(allNames: readonly string[]): PublicSchemaShape {
+  const names = allNames.includes('tcg_evidence') ? allNames.filter(name => !(EVIDENCE_REPLY_TABLES as readonly string[]).includes(name)) : allNames;
   if (names.length === 0) return 'empty';
   if (sameTables(names, TABLES_V1)) return 'v1';
   if (sameTables(names, TABLES_V2)) return 'v2';

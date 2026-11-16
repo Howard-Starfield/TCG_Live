@@ -35,6 +35,7 @@ function mount(options: { items?: EvidenceItemDto[]; capabilities?: Capability[]
   const harness = createHarness({ stream: false, setup: server => {
     server.always('GET /session', () => json(200, { ...sessionFixture, capabilities, ...(evidence ? { evidence: true } : {}) }));
     server.always(`GET ${PATH}`, () => json(200, { eventId: EVENT, matchId: 'M2', items } satisfies EvidenceListDto));
+    server.always(`GET ${PATH}/replies`, () => json(200, { eventId: EVENT, matchId: 'M2', replies: [] }));
     server.always('POST /evidence/00000000-0000-4000-8000-00000000000a/playback',
       () => json(200, { url: '/api/v1/media/ticket-one', expiresAtMs: FIXTURE_NOW_MS + 15 * 60_000 }));
     options.setup?.(server);

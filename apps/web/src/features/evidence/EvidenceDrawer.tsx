@@ -1,23 +1,27 @@
-// Evidence drawer for one match: the evidence list (oldest first), a player for the selected item, and
-// the admin actions (add, hold, delete with a reason, download). Volume flags for the match appear as
-// markers that seek the recording to the moment of the spike.
-import { EVIDENCE_NOTE_MAX_LENGTH, type EventSnapshotDto, type EvidenceItemDto, type MatchId,
+// Evidence for one match: the evidence list (oldest first), a player for the selected item, the admin
+// actions (add, hold, delete with a reason, download) and the reply thread. Volume flags for the match
+// appear as markers that seek the recording to the moment of the spike.
+//
+// EvidencePanel is the body, with no dialog of its own, so the match drawer can embed it
+// (MatchEvidencePanel); EvidenceDrawer is a thin Dialog around it.
+import { EVIDENCE_NOTE_MAX_LENGTH, EVIDENCE_NOTE_TEXT_MAX_LENGTH, type EventSnapshotDto, type EvidenceItemDto, type MatchId,
   type ModerationFlagDto } from '@tcg-live/core';
-import { FileVideo, Link2, Lock, LockOpen, Mic, Paperclip, Trash2, Upload } from 'lucide-react';
+import { FileText, FileVideo, Link2, Lock, LockOpen, Mic, Paperclip, Save, Trash2, Upload } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { formatTimeOfDay, memberName, useAdminData } from '../../data';
+import { formatTimeOfDay, memberName, useAdminData, useEventSnapshot } from '../../data';
 import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, SegmentedControl, Textarea, cx, useEscapeLayer,
   type Tone } from '../../ui';
 import { useMatchVolumeFlags } from '../moderation/api';
 import { seatName } from '../shell/labels';
-import { addEvidenceLink, deleteEvidence, describeError, describeUploadError, formatBytes, formatDuration, isNotAvailable, setEvidenceHold,
-  uploadEvidence, uploadRate, useEvidenceAccess, useEvidenceCacheUpdate, useEvidenceList, validateDeleteReason, validateEvidenceFile,
-  validateEvidenceUrl, validateNote } from './api';
+import { addEvidenceLink, addEvidenceNote, deleteEvidence, describeError, describeUploadError, formatBytes, formatDuration, isNotAvailable,
+  setEvidenceHold, uploadEvidence, uploadRate, useEvidenceAccess, useEvidenceCacheUpdate, useEvidenceList, validateDeleteReason,
+  validateEvidenceFile, validateEvidenceUrl, validateNote, validateNoteText } from './api';
 import { EvidenceCaseTools } from '../admin-tools/members/EvidenceCaseTools';
 import { EvidenceDownloadButton, EvidencePlayer, SyncedVoicePlayer, type PlayerMarker } from './EvidencePlayer';
+import { ReplyThread } from './ReplyThread';
 
-const KIND_TONE: Record<EvidenceItemDto['kind'], Tone> = { upload: 'accent', link: 'neutral', voice: 'warning' };
-const KIND_ICON = { upload: FileVideo, link: Link2, voice: Mic } as const;
+const KIND_TONE: Record<EvidenceItemDto['kind'], Tone> = { upload: 'accent', link: 'neutral', voice: 'warning', note: 'neutral' };
+const KIND_ICON = { upload: FileVideo, link: Link2, voice: Mic, note: FileText } as const;
 /** Two voice files of the same match whose recordings started this close together play side by side. */
 const PAIR_WINDOW_MS = 60_000;
 
@@ -118,14 +122,16 @@ function EvidenceRow({ snapshot, item, selected, onSelect }: {
         {formatTimeOfDay(item.createdAtMs)}
       </time>
     </span>
-    {item.note && <span className="line-clamp-2 whitespace-pre-wrap break-words text-xs text-fg-muted">{item.note}</span>}
+    {/* A deleted note's text is not shown again (the row stays for the trail). The full text opens when the row is selected. */}
+    {item.note && !(item.kind === 'note' && deleted)
+      && <span className={cx('whitespace-pre-wrap break-words text-xs text-fg-muted', item.kind === 'note' ? 'line-clamp-3' : 'line-clamp-2')}>{item.note}</span>}
     {(facts || item.originalName) && <span className="truncate text-2xs text-fg-subtle">
       {[item.originalName, facts].filter(Boolean).join(' · ')}
     </span>}
   </button>;
 }
 
-type AddMode = 'file' | 'link';
+type AddMode = 'file' | 'link' | 'text';
 
 function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
   eventId: string; matchId: MatchId; onAdded(item: EvidenceItemDto): void;
@@ -136,6 +142,7 @@ function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
   const [mode, setMode] = useState<AddMode>('file');
   const [url, setUrl] = useState('');
   const [note, setNote] = useState('');
+  const [text, setText] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -161,18 +168,25 @@ function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
 
   const urlError = mode === 'link' ? validateEvidenceUrl(url) : null;
   const fileError = mode === 'file' ? (file ? validateEvidenceFile(file) : 'Choose a file.') : null;
-  const noteError = validateNote(note);
-  const invalid = Boolean(urlError || fileError || noteError);
+  const textError = mode === 'text' ? validateNoteText(text) : null;
+  // The caption belongs to files and links; a text note is its own text.
+  const noteError = mode === 'text' ? null : validateNote(note);
+  const invalid = Boolean(urlError || fileError || noteError || textError);
+  // A ref, not state: two quick submits in one tick would both see busy=false and save twice.
+  const inFlight = useRef(false);
 
   const submit = async () => {
     setTouched(true);
-    if (invalid || busy) return;
+    if (invalid || busy || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true); setError(null); setNotice(null);
     const controller = new AbortController();
     abort.current = controller;
     samples.current = [];
     try {
-      if (mode === 'link') {
+      if (mode === 'text') {
+        onAdded(await addEvidenceNote(api, eventId, matchId, text.trim()));
+      } else if (mode === 'link') {
         onAdded(await addEvidenceLink(api, eventId, matchId, url.trim(), note.trim()));
       } else {
         const result = await uploadEvidence(api, eventId, matchId, file!, note.trim(), {
@@ -185,13 +199,13 @@ function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
         onAdded(result.item);
         if (result.duplicate) setNotice('This file was already uploaded for this match, so it was not stored again. The earlier copy is selected.');
       }
-      setUrl(''); setNote(''); setFile(null); setTouched(false); setProgress(null);
+      setUrl(''); setNote(''); setText(''); setFile(null); setTouched(false); setProgress(null);
       if (input.current) input.current.value = '';
     } catch (cause) {
       if (!controller.signal.aborted)
         setError(mode === 'file' ? describeUploadError(cause) : describeError(cause, 'The evidence could not be added.'));
       setProgress(null);
-    } finally { setBusy(false); abort.current = null; }
+    } finally { inFlight.current = false; setBusy(false); abort.current = null; }
   };
   const percent = progress && progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : null;
   const rate = progress ? uploadRate(samples.current, progress.total) : null;
@@ -201,9 +215,12 @@ function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
     <div className="flex items-center justify-between gap-2">
       <h3 className="text-xs font-semibold text-fg">Add evidence</h3>
       <SegmentedControl<AddMode> label="Evidence type" value={mode} onChange={next => { setMode(next); setTouched(false); setError(null); }}
-        options={[{ value: 'file', label: 'Upload file' }, { value: 'link', label: 'Paste link' }]} />
+        options={[{ value: 'file', label: 'Upload file' }, { value: 'link', label: 'Paste link' }, { value: 'text', label: 'Text' }]} />
     </div>
-    {mode === 'file' ? <Field label="File" description="MP4, MOV, WebM, Ogg, MP3 or M4A play in the browser; MKV is download only."
+    {mode === 'text' ? <Field label="Text" description={`Written evidence with no file or link, up to ${EVIDENCE_NOTE_TEXT_MAX_LENGTH} characters.`}
+      error={touched ? textError : undefined}>
+      <Textarea rows={5} value={text} disabled={busy} onChange={event => setText(event.target.value)} onBlur={() => setTouched(true)} />
+    </Field> : mode === 'file' ? <Field label="File" description="MP4, MOV, WebM, Ogg, MP3 or M4A play in the browser; MKV is download only."
       error={touched ? fileError : undefined}>
       <div className="flex items-center gap-2">
         <input ref={input} type="file" className="sr-only" aria-label="Choose evidence file"
@@ -217,9 +234,9 @@ function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
       <Input type="url" value={url} placeholder="https://" disabled={busy} onChange={event => setUrl(event.target.value)}
         onBlur={() => setTouched(true)} />
     </Field>}
-    <Field label="Note" description={`Optional, up to ${EVIDENCE_NOTE_MAX_LENGTH} characters.`} error={noteError}>
+    {mode !== 'text' && <Field label="Note" description={`Optional, up to ${EVIDENCE_NOTE_MAX_LENGTH} characters.`} error={noteError}>
       <Textarea rows={2} value={note} disabled={busy} onChange={event => setNote(event.target.value)} />
-    </Field>
+    </Field>}
     {progress && <div className="flex items-center gap-2">
       <progress aria-label="Upload progress" max={progress.total || 1} value={progress.loaded} className="h-1.5 flex-1 accent-[var(--color-accent)]" />
       <span className="font-mono text-2xs tabular-nums text-fg-muted">{percent === null ? formatBytes(progress.loaded) : `${percent}%`}</span>
@@ -232,54 +249,41 @@ function AddEvidence({ eventId, matchId, onAdded, onBusyChange }: {
     {notice && <p role="status" className="text-xs text-fg-muted">{notice}</p>}
     {error && <p role="alert" className="text-xs text-danger">{error}</p>}
     <div className="flex justify-end">
-      <Button type="submit" size="sm" variant="primary" loading={busy} icon={mode === 'file' ? <Upload aria-hidden /> : <Link2 aria-hidden />}>
-        {mode === 'file' ? 'Upload' : 'Add link'}
+      <Button type="submit" size="sm" variant="primary" loading={busy}
+        icon={mode === 'file' ? <Upload aria-hidden /> : mode === 'link' ? <Link2 aria-hidden /> : <Save aria-hidden />}>
+        {mode === 'file' ? 'Upload' : mode === 'link' ? 'Add link' : 'Save without attachment'}
       </Button>
     </div>
   </form>;
 }
 
-export interface EvidenceDrawerProps {
-  open: boolean;
-  onClose(): void;
+export interface EvidencePanelProps {
   snapshot: EventSnapshotDto;
   matchId: MatchId;
+  /** Reports an upload in flight, so a host dialog can block dismissal (closing would abort it). */
+  onBusyChange?(busy: boolean): void;
+  /** Reports the delete confirmation being open, which handles its own Escape. */
+  onConfirmingChange?(confirming: boolean): void;
 }
 
-export function EvidenceDrawer({ open, onClose, snapshot: liveSnapshot, matchId: liveMatchId }: EvidenceDrawerProps) {
+/** The evidence body for one match: list, player, actions, add form and reply thread. No dialog of its own. */
+export function EvidencePanel({ snapshot, matchId, onBusyChange, onConfirmingChange }: EvidencePanelProps) {
   const { api } = useAdminData();
-  // Pin the event and match the drawer was opened for: when the active event changes underneath (a new
-  // tournament starts), keep showing the original match's evidence with the last snapshot of its event.
-  const [pin, setPin] = useState<{ snapshot: EventSnapshotDto; matchId: MatchId } | null>(
-    open ? { snapshot: liveSnapshot, matchId: liveMatchId } : null);
-  if (open && (!pin || (pin.snapshot !== liveSnapshot && pin.snapshot.eventId === liveSnapshot.eventId))) {
-    setPin({ snapshot: liveSnapshot, matchId: pin?.matchId ?? liveMatchId });
-  } else if (!open && pin) {
-    setPin(null);
-  }
-  const snapshot = pin?.snapshot ?? liveSnapshot;
-  const matchId = pin?.matchId ?? liveMatchId;
-  const earlierEvent = snapshot.eventId !== liveSnapshot.eventId;
   const access = useEvidenceAccess();
-  const list = useEvidenceList(snapshot.eventId, matchId, open);
-  const flags = useMatchVolumeFlags(snapshot.eventId, matchId, open);
+  const list = useEvidenceList(snapshot.eventId, matchId);
+  const flags = useMatchVolumeFlags(snapshot.eventId, matchId, true);
   const update = useEvidenceCacheUpdate(snapshot.eventId, matchId);
   const items = useMemo(() => sortEvidence(list.data?.items ?? []), [list.data]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sideBySide, setSideBySide] = useState(true);
   const [deleting, setDeleting] = useState<EvidenceItemDto | null>(null);
   const [pending, setPending] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const match = snapshot.matches.find(entry => entry.id === matchId);
-  // Like the command dialogs: Escape closes the drawer wherever focus is (a control disabled during an
-  // upload drops focus to <body>, outside the Dialog's own key handler). Swallowed mid-upload; the delete
-  // confirmation, while open, handles its own Escape.
-  useEscapeLayer(open && deleting === null, () => { if (!uploading) onClose(); });
+  useEffect(() => { onConfirmingChange?.(deleting !== null); }, [deleting, onConfirmingChange]);
+  useEffect(() => () => onConfirmingChange?.(false), [onConfirmingChange]);
 
-  useEffect(() => { if (!open) { setSelectedId(null); setActionError(null); } }, [open]);
   const selected = items.find(item => item.id === selectedId)
-    ?? items.find(item => item.kind !== 'link' && item.status === 'stored') ?? items[0] ?? null;
+    ?? items.find(item => item.kind !== 'link' && item.kind !== 'note' && item.status === 'stored') ?? items[0] ?? null;
   const partner = selected ? voicePartner(items, selected) : null;
   const pair = selected && partner ? [selected, partner].sort((a, b) => (a.seat ?? '').localeCompare(b.seat ?? '')
     || (voicePlayerId(a) ?? '').localeCompare(voicePlayerId(b) ?? '')) as [EvidenceItemDto, EvidenceItemDto] : null;
@@ -293,12 +297,6 @@ export function EvidenceDrawer({ open, onClose, snapshot: liveSnapshot, matchId:
     } finally { setPending(false); }
   };
 
-  const title = `${matchId} evidence`;
-  const players = match ? `${seatName(snapshot, match.seats[0])} vs ${seatName(snapshot, match.seats[1])}` : undefined;
-  const description = earlierEvent
-    ? [players, `From an earlier event (${snapshot.eventId})`].filter(Boolean).join(' · ')
-    : players;
-
   let body;
   if (!access.read) {
     body = <EmptyState compact title="Evidence is not available" description="This session cannot view evidence." />;
@@ -310,7 +308,7 @@ export function EvidenceDrawer({ open, onClose, snapshot: liveSnapshot, matchId:
   } else {
     body = <div className="flex flex-col gap-3">
       {items.length === 0 ? <EmptyState compact icon={<FileVideo />} title="No evidence yet"
-        description="Players can attach clips or links from Discord; you can add files or links here." />
+        description="Players can attach clips or links from Discord; you can add files, links or written text here." />
         : <ul aria-label="Evidence, oldest first" className="flex flex-col gap-0.5">
           {items.map(item => <li key={item.id}>
             <EvidenceRow snapshot={snapshot} item={item} selected={item.id === selected?.id} onSelect={() => setSelectedId(item.id)} />
@@ -330,7 +328,7 @@ export function EvidenceDrawer({ open, onClose, snapshot: liveSnapshot, matchId:
           : <EvidencePlayer key={selected.id} item={selected}
             markers={selected.kind === 'voice' ? flagMarkers(volumeFlags, recordingStart(selected), selected.durationMs, snapshot) : []} />}
         {selected.status !== 'deleted' && <div className="flex flex-wrap items-center gap-2">
-          {selected.kind !== 'link' && selected.status === 'stored' && selected.playable && <EvidenceDownloadButton item={selected} />}
+          {selected.kind !== 'link' && selected.kind !== 'note' && selected.status === 'stored' && selected.playable && <EvidenceDownloadButton item={selected} />}
           {access.manage && <>
             <Button size="sm" variant="secondary" disabled={pending}
               icon={selected.hold ? <LockOpen aria-hidden /> : <Lock aria-hidden />}
@@ -345,18 +343,18 @@ export function EvidenceDrawer({ open, onClose, snapshot: liveSnapshot, matchId:
         {actionError && <p role="alert" className="text-xs text-danger">{actionError}</p>}
       </section>}
       {access.manage && <AddEvidence eventId={snapshot.eventId} matchId={matchId}
-        onAdded={item => { update(item); setSelectedId(item.id); }} onBusyChange={setUploading} />}
+        onAdded={item => { update(item); setSelectedId(item.id); }} onBusyChange={onBusyChange} />}
+      {/* Replies follow the evidence as their own section, oldest first, with the composer last: the thread is
+          about the match, not any one item, so interleaving it with selectable evidence rows would blur both. */}
+      <ReplyThread snapshot={snapshot} matchId={matchId} />
     </div>;
   }
 
   return <>
-    <Dialog open={open} onClose={onClose} title={title} description={description} layout="drawer" width="lg"
-      dismissible={!uploading}>
-      {body}
-    </Dialog>
+    {body}
     <ConfirmDialog open={deleting !== null} danger requireReason pending={pending}
       title="Delete this evidence?" confirmLabel="Delete evidence"
-      description="The stored file is removed and cannot be recovered. The deletion and your reason are kept in the audit."
+      description="The stored file or text is removed and cannot be recovered. The deletion and your reason are kept in the audit."
       reasonLabel="Reason" reasonPlaceholder="Why is this evidence being deleted?"
       onCancel={() => setDeleting(null)}
       onConfirm={reason => {
@@ -367,6 +365,59 @@ export function EvidenceDrawer({ open, onClose, snapshot: liveSnapshot, matchId:
         void run(() => deleteEvidence(api, target.id, reason)).then(() => setDeleting(null));
       }} />
   </>;
+}
+
+/**
+ * The evidence panel for a match by event ID, for hosts that have no snapshot to hand (the match drawer). It reads
+ * the event's snapshot itself; until that arrives it says so instead of showing the panel without names.
+ */
+export function MatchEvidencePanel({ eventId, matchId }: { eventId: string; matchId: MatchId }) {
+  const snapshot = useEventSnapshot(eventId);
+  if (!snapshot.data) {
+    return snapshot.error ? <p role="alert" className="text-xs text-danger">Evidence could not be loaded.</p>
+      : <p role="status" className="text-xs text-fg-muted">Loading evidence…</p>;
+  }
+  return <EvidencePanel snapshot={snapshot.data} matchId={matchId} />;
+}
+
+export interface EvidenceDrawerProps {
+  open: boolean;
+  onClose(): void;
+  snapshot: EventSnapshotDto;
+  matchId: MatchId;
+}
+
+export function EvidenceDrawer({ open, onClose, snapshot: liveSnapshot, matchId: liveMatchId }: EvidenceDrawerProps) {
+  // Pin the event and match the drawer was opened for: when the active event changes underneath (a new
+  // tournament starts), keep showing the original match's evidence with the last snapshot of its event.
+  const [pin, setPin] = useState<{ snapshot: EventSnapshotDto; matchId: MatchId } | null>(
+    open ? { snapshot: liveSnapshot, matchId: liveMatchId } : null);
+  if (open && (!pin || (pin.snapshot !== liveSnapshot && pin.snapshot.eventId === liveSnapshot.eventId))) {
+    setPin({ snapshot: liveSnapshot, matchId: pin?.matchId ?? liveMatchId });
+  } else if (!open && pin) {
+    setPin(null);
+  }
+  const snapshot = pin?.snapshot ?? liveSnapshot;
+  const matchId = pin?.matchId ?? liveMatchId;
+  const earlierEvent = snapshot.eventId !== liveSnapshot.eventId;
+  const [uploading, setUploading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const match = snapshot.matches.find(entry => entry.id === matchId);
+  // Like the command dialogs: Escape closes the drawer wherever focus is (a control disabled during an
+  // upload drops focus to <body>, outside the Dialog's own key handler). Swallowed mid-upload; the delete
+  // confirmation, while open, handles its own Escape.
+  useEscapeLayer(open && !confirming, () => { if (!uploading) onClose(); });
+
+  const title = `${matchId} evidence`;
+  const players = match ? `${seatName(snapshot, match.seats[0])} vs ${seatName(snapshot, match.seats[1])}` : undefined;
+  const description = earlierEvent
+    ? [players, `From an earlier event (${snapshot.eventId})`].filter(Boolean).join(' · ')
+    : players;
+
+  return <Dialog open={open} onClose={onClose} title={title} description={description} layout="drawer" width="lg"
+    dismissible={!uploading}>
+    <EvidencePanel snapshot={snapshot} matchId={matchId} onBusyChange={setUploading} onConfirmingChange={setConfirming} />
+  </Dialog>;
 }
 
 /** "Evidence (n)" button that opens the drawer; renders nothing without evidence.read. */
