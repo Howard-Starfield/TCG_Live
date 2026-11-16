@@ -104,7 +104,8 @@ test('join order assigns four distinct members; check-in and publish remain sepa
   assert.equal(duplicate.outcome.applied, false);
   assert.equal(duplicate.state.version, state.version);
   assert.throws(() => run(state, `member:${ids[2]}`, { type: 'signupJoin' }), /full/);
-  assert.throws(() => run(state, 'admin:fixture', { type: 'signupClose', adminId: roster[0]! }), /nonadmin/);
+  // The organizer may play: adminId on the roster no longer blocks the close.
+  assert.equal(run(state, 'admin:fixture', { type: 'signupClose', adminId: roster[0]! }).outcome.applied, true);
   state = run(state, 'admin:fixture', { type: 'signupClose', adminId: ids[7]! }).state;
   assert.deepEqual(resolvePlayers(session, state), { A: roster[0], B: roster[1], C: roster[2], D: roster[3] });
   assert.equal(state.checkins.length, 0);
@@ -136,14 +137,14 @@ test('withdraw and admin remove are open-only; reopen clears attendance and assi
   assert.equal(resolvePlayers(session, state), null);
 });
 
-test('schema v2 and frozen identity reject rollback and admin-in-roster corruption', () => {
+test('schema v2 and frozen identity reject rollback and legacy players; the organizer may be on the roster', () => {
   const state = createSignupFixture(eventId);
   assert.doesNotThrow(() => verifyState(state, eventId, 0));
   assert.throws(() => verifyState({ ...state, schemaVersion: 1 }, eventId, 0), /incompatible/);
   assert.throws(() => resolvePlayers({ ...session, identity_map: { kind: 'signup', adminId: ids[7]!,
     players: { A: ids[3]!, B: ids[4]!, C: ids[5]!, D: ids[6]! } } as never }, state), /conflicts/);
-  const poisoned = { ...state, signup: { status: 'open' as const, roster: [ids[7]!] } };
-  assert.throws(() => resolvePlayers(session, poisoned), /conflicts/);
+  const organizerPlays = { ...state, signup: { status: 'open' as const, roster: [ids[7]!] } };
+  assert.equal(resolvePlayers(session, organizerPlays), null, 'adminId on the roster no longer throws');
 });
 
 test('signup cards use distinct actions and do not mention players on unassigned matches', () => {

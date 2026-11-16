@@ -13,7 +13,7 @@ import { onRecordingBadgeChange, recordingMatchIds, resetRecordingBadges, setMat
 import { answerEvidenceUnavailable, commandDefinition, comparableCommand, EVIDENCE_UNAVAILABLE, registerPrivateCommand,
   staffCommandDefinition } from './runtime.js';
 import type { SessionRow } from './session.js';
-import { isTournamentStaff, memberRoleIds } from './staff.js';
+import { memberRoleIds, resolveStaff, STAFF_DENIED } from './staff.js';
 import { actorOutranks, parseDuration, SEATED_CONFLICT, seatedConflict } from '../admin-tools/members/discord-feature.js';
 import { demoMembersBackend } from '../admin-tools/members/backend.js';
 import { moderateMember } from '../admin-tools/members/service.js';
@@ -34,13 +34,18 @@ const config = {
 const eventId = '11111111-1111-4111-8111-111111111111';
 const RUNNER = 'runner';
 const STAFF = ids[11]!;
+/** A legacy staff role (cases.staffRoleIds): it counts as TCG Judge. */
 const STAFF_ROLE = ids[12]!;
+const ORG_ROLE = '999999999999999996';
+const JUDGE_ROLE = '999999999999999997';
+const ORG = '999999999999999998';
+const OWNER = '999999999999999999';
 
 // ---------------------------------------------------------------- domain
 
 test('signupAdd: organizer only, open signup, capacity, already joined is a no-change', () => {
   let state: EventState = createSignupFixture(eventId);
-  assert.throws(() => transition(state, `member:${ids[3]}`, { type: 'signupAdd', memberId: ids[3]! }, 1, RUNNER), /admin action denied/);
+  assert.throws(() => transition(state, `member:${ids[3]}`, { type: 'signupAdd', memberId: ids[3]! }, 1, RUNNER), /Organizer action denied/);
   for (const id of ids.slice(3, 7)) state = transition(state, 'admin:fixture', { type: 'signupAdd', memberId: id }, 1, RUNNER).state;
   assert.deepEqual(state.signup!.roster, ids.slice(3, 7));
   assert.equal(transition(state, 'admin:fixture', { type: 'signupAdd', memberId: ids[3]! }, 1, RUNNER).outcome.result, 'already_joined');
@@ -53,7 +58,7 @@ test('checkinFor: organizer checks a seat in; a second time is a no-change; play
   const once = transition(state, 'admin:fixture', { type: 'checkinFor', seat: 'B' }, 1, RUNNER);
   assert.deepEqual(once.state.checkins, ['B']);
   assert.equal(transition(once.state, 'admin:fixture', { type: 'checkinFor', seat: 'B' }, 1, RUNNER).outcome.result, 'already_checked_in');
-  assert.throws(() => transition(state, 'player:A', { type: 'checkinFor', seat: 'B' }, 1, RUNNER), /admin action denied/);
+  assert.throws(() => transition(state, 'player:A', { type: 'checkinFor', seat: 'B' }, 1, RUNNER), /Judge action denied/);
   assert.throws(() => transition(state, 'admin:fixture', { type: 'checkinFor', seat: 'P9' as never }, 1, RUNNER), /seat/);
 });
 
@@ -113,20 +118,27 @@ test('recording badge merges the voice pool state and the direct setter, and not
 
 // ---------------------------------------------------------------- commands and registration
 
-test('/tcg-test is for players; /tcg-staff is Manage Server by default with autocomplete; /tcg-admin carries moderation', () => {
+test('/tcg-test is for players; /tcg-staff has no default member permission, with autocomplete; /tcg-admin carries moderation', () => {
   const player = commandDefinition();
   assert.deepEqual(player.options?.map(option => option.name), ['evidence', 'recording-optout']);
   assert.equal(player.default_member_permissions, undefined, 'players see /tcg-test');
   const staff = staffCommandDefinition();
   assert.equal(staff.name, 'tcg-staff');
-  assert.equal(staff.default_member_permissions, String(1 << 5));
+  assert.equal(staff.default_member_permissions, null, 'an explicit null clears a stored value; everyone sees /tcg-staff; the bot decides who may run it');
   assert.deepEqual(staff.options?.map(option => option.name), ['publish', 'signup-close', 'signup-reopen', 'signup-remove', 'signup-add',
-    'checkin-for', 'refresh', 'resolve', 'correct', 'judge-resume']);
+    'checkin-for', 'refresh', 'resolve', 'correct', 'judge-resume', 'judge-close', 'evidence-reply']);
+  const subOptions = (name: string) => (staff.options!.find(option => option.name === name) as unknown as
+    { options: Array<{ name: string; type: number; required?: boolean; autocomplete?: boolean }> }).options;
+  assert.deepEqual(subOptions('judge-close').map(option => [option.name, !!option.required, !!option.autocomplete]),
+    [['match', true, true], ['note', true, false]]);
+  assert.deepEqual(subOptions('evidence-reply').map(option => [option.name, option.type, !!option.required]),
+    [['match', 3, true], ['text', 3, true], ['staff-only', 5, false]]);
   const resolve = staff.options!.find(option => option.name === 'resolve') as unknown as { options: Array<{ name: string; autocomplete?: boolean; choices?: unknown }> };
   assert.deepEqual(resolve.options.map(option => [option.name, !!option.autocomplete, !!option.choices]),
     [['match', true, false], ['winner', true, false], ['reason', false, false]], 'any match and seat, not a fixed M1/M2 list');
   const admin = adminCommandDefinition();
   assert.equal(admin.name, ADMIN_COMMAND_NAME);
+  assert.equal(admin.default_member_permissions, String(1 << 5));
   for (const name of ['warn', 'timeout', 'untimeout', 'kick', 'ban', 'unban', 'case', 'note'])
     assert.ok(admin.options?.some(option => option.name === name), name);
   assert.ok((admin.options?.length ?? 0) <= 25);
@@ -162,7 +174,7 @@ test('registration upserts all three commands on every start and skips unchanged
 
 // ---------------------------------------------------------------- staff
 
-test('tournament staff: the organizer, or a member holding a configured staff role', () => {
+test('tournament staff: the owner, the TCG roles or a legacy staff role; the organizer ID is not a source', () => {
   assert.deepEqual(memberRoleIds({ roles: [STAFF_ROLE] }), [STAFF_ROLE]);
   assert.deepEqual(memberRoleIds({ roles: { cache: new Map([[STAFF_ROLE, {}]]) } }), [STAFF_ROLE]);
   assert.deepEqual(memberRoleIds(null), []);
@@ -170,11 +182,15 @@ test('tournament staff: the organizer, or a member holding a configured staff ro
   const GUILD_ID = '100000000000000001';
   const cached = { guild: { id: GUILD_ID }, roles: { cache: new Map([[GUILD_ID, {}], [STAFF_ROLE, {}]]) } };
   assert.deepEqual(memberRoleIds(cached), [STAFF_ROLE]);
-  assert.equal(isTournamentStaff({ userId: '200000000000000009', adminId: '200000000000000001',
-    roleIds: memberRoleIds({ guild: { id: GUILD_ID }, roles: { cache: new Map([[GUILD_ID, {}]]) } }), staffRoleIds: [GUILD_ID] }), false);
-  assert.equal(isTournamentStaff({ userId: config.adminId, adminId: config.adminId, roleIds: [], staffRoleIds: [] }), true);
-  assert.equal(isTournamentStaff({ userId: STAFF, adminId: config.adminId, roleIds: [STAFF_ROLE], staffRoleIds: [STAFF_ROLE] }), true);
-  assert.equal(isTournamentStaff({ userId: STAFF, adminId: config.adminId, roleIds: [STAFF_ROLE], staffRoleIds: undefined }), false);
+  const sources = (legacyStaffRoleIds: string[] | undefined) => ({ roles: { guildId: config.guildId, organizerRoleId: ORG_ROLE, judgeRoleId: JUDGE_ROLE },
+    legacyStaffRoleIds: legacyStaffRoleIds ?? [] });
+  const everyone = memberRoleIds({ guild: { id: GUILD_ID }, roles: { cache: new Map([[GUILD_ID, {}]]) } });
+  assert.equal(resolveStaff({ userId: '200000000000000009', roleIds: everyone, ownerId: OWNER }, sources([GUILD_ID])), null);
+  assert.equal(resolveStaff({ userId: config.adminId, roleIds: [], ownerId: OWNER }, sources([])), null, 'the old organizer ID is not staff');
+  assert.deepEqual(resolveStaff({ userId: STAFF, roleIds: [STAFF_ROLE], ownerId: OWNER }, sources([STAFF_ROLE])), { role: 'judge', via: 'legacy-staff-role', roleId: STAFF_ROLE });
+  assert.equal(resolveStaff({ userId: STAFF, roleIds: [STAFF_ROLE], ownerId: OWNER }, sources(undefined)), null);
+  assert.deepEqual(resolveStaff({ userId: ORG, roleIds: [ORG_ROLE], ownerId: OWNER }, sources([])), { role: 'organizer', via: 'role', roleId: ORG_ROLE });
+  assert.deepEqual(resolveStaff({ userId: OWNER, roleIds: [], ownerId: OWNER }, sources([])), { role: 'organizer', via: 'owner' });
 });
 
 test('admin-tools settings: cases.staffRoleIds is optional, validated, and absent stays absent', () => {
@@ -196,41 +212,64 @@ function controllerFixture() {
   const controller = new PrivateDiscordController(config, RUNNER, transport, async () => ({ state, session }),
     async (context, command): Promise<Outcome> => {
       applied.push({ context, command });
-      const actor = context.principalId === config.adminId || (context.staff && !context.message) ? 'admin:fixture' : 'player:A';
+      // What the store derives: a verified staff slash command acts as its role; a card control as the seated member.
+      const actor = context.actor && !context.message ? `${context.actor.role}:${context.principalId}` : 'player:A';
       const result = transition(state, actor, command, 1_000, RUNNER);
       if (result.outcome.applied) state = result.state;
       return result.outcome;
     }, async () => {}, () => 1_000, 20);
-  controller.setStaffRoles(async () => [STAFF_ROLE]);
+  controller.setStaffSources(async () => ({ roles: { guildId: config.guildId, organizerRoleId: ORG_ROLE, judgeRoleId: JUDGE_ROLE },
+    legacyStaffRoleIds: [STAFF_ROLE] }));
   const slash = (subcommand: string, extra: Partial<PrivateInteraction> = {}) => {
     const replies: string[] = [];
     const interaction: PrivateInteraction = { id: ids[0]!, applicationId: config.applicationId, guildId: config.guildId,
-      channelId: config.channelId, userId: STAFF, roleIds: [STAFF_ROLE], kind: 'command', subcommand,
+      channelId: config.channelId, userId: ORG, roleIds: [ORG_ROLE], kind: 'command', subcommand,
       acknowledge: async () => {}, reply: async message => { replies.push(message); }, ...extra };
     return { interaction, replies };
   };
   return { controller, applied, slash, get state() { return state; } };
 }
 
-test('a staff-role member runs /tcg-staff checkin-for as the organizer; the real user is recorded; others are refused', async () => {
+test('a judge runs /tcg-staff checkin-for as a judge, the real user is recorded; the old organizer ID and outsiders are refused', async () => {
   const f = controllerFixture();
-  const byMention = f.slash('checkin-for', { player: `<@${config.players.C}>` });
+  const byMention = f.slash('checkin-for', { player: `<@${config.players.C}>`, userId: STAFF, roleIds: [STAFF_ROLE], username: 'judy', displayName: 'Judy' });
   await f.controller.handle(byMention.interaction);
   assert.deepEqual(f.applied[0]!.command, { type: 'checkinFor', seat: 'C' });
   assert.equal(f.applied[0]!.context.principalId, STAFF, 'principal_id keeps the real Discord user');
-  assert.equal(f.applied[0]!.context.staff, true);
+  assert.deepEqual(f.applied[0]!.context.actor, { role: 'judge', via: 'legacy-staff-role', roleName: null, username: 'judy', displayName: 'Judy' });
+  assert.deepEqual(f.applied[0]!.context.snapshot, { username: 'judy', displayName: 'Judy' });
   assert.match(byMention.replies[0]!, /Saved: checkinFor/);
-  const bySeat = f.slash('checkin-for', { player: 'd', userId: config.adminId, roleIds: [] });
+  const bySeat = f.slash('checkin-for', { player: 'd' });
   await f.controller.handle(bySeat.interaction);
   assert.deepEqual(f.applied[1]!.command, { type: 'checkinFor', seat: 'D' });
-  assert.equal(f.applied[1]!.context.staff, undefined, 'the organizer acts as themselves');
+  assert.equal(f.applied[1]!.context.actor?.role, 'organizer');
+  const oldOrganizerId = f.slash('publish', { userId: config.adminId, roleIds: [] });
+  await f.controller.handle(oldOrganizerId.interaction);
+  assert.equal(oldOrganizerId.replies[0], STAFF_DENIED, 'adminId alone is not staff');
   const outsider = f.slash('publish', { userId: ids[9]!, roleIds: [] });
   await f.controller.handle(outsider.interaction);
   assert.equal(f.applied.length, 2);
   assert.match(outsider.replies[0]!, /Only the organizer or tournament staff/);
-  const seatedStaff = f.slash('publish', { userId: config.players.A, roleIds: [STAFF_ROLE] });
-  await f.controller.handle(seatedStaff.interaction);
-  assert.match(seatedStaff.replies[0]!, /Staff who play/);
+  const owner = f.slash('publish', { userId: OWNER, roleIds: [], ownerId: OWNER });
+  await f.controller.handle(owner.interaction);
+  assert.deepEqual(f.applied[2]!.context.actor, { role: 'organizer', via: 'owner', roleName: null, username: null, displayName: null });
+  await f.controller.stop();
+});
+
+test('a judge is refused every organizer-only subcommand with judgeDenied; rulings and check-in-for go through', async () => {
+  const f = controllerFixture();
+  const judge = { userId: STAFF, roleIds: [JUDGE_ROLE] };
+  const denied: Array<[string, Partial<PrivateInteraction>]> = [['publish', {}], ['signup-close', {}], ['signup-reopen', {}],
+    ['signup-remove', { memberId: ids[9]! }], ['signup-add', { memberId: ids[9]! }], ['refresh', {}]];
+  for (const [subcommand, extra] of denied) {
+    const attempt = f.slash(subcommand, { ...judge, ...extra });
+    await f.controller.handle(attempt.interaction);
+    assert.match(attempt.replies[0]!, /^A TCG Judge cannot .* Ask a TCG Organizer\.$/, subcommand);
+  }
+  assert.equal(f.applied.length, 0);
+  const allowed = f.slash('checkin-for', { ...judge, player: 'A' });
+  await f.controller.handle(allowed.interaction);
+  assert.equal(f.applied[0]!.context.actor?.role, 'judge');
   await f.controller.stop();
 });
 
@@ -253,11 +292,10 @@ test('/tcg-staff resolve accepts any match and a mentioned winner; autocomplete 
   await f.controller.stop();
 });
 
-test('/tcg-staff signup-add refuses the organizer and passes the member through', async () => {
+test('/tcg-staff signup-add lets the organizer play and passes the member through', async () => {
   const f = controllerFixture();
-  const self = f.slash('signup-add', { memberId: config.adminId });
-  await f.controller.handle(self.interaction);
-  assert.match(self.replies[0]!, /admin cannot play/);
+  await f.controller.handle(f.slash('signup-add', { memberId: config.adminId }).interaction);
+  assert.deepEqual(f.applied.at(-1)!.command, { type: 'signupAdd', memberId: config.adminId });
   await f.controller.handle(f.slash('signup-add', { memberId: ids[9]! }).interaction);
   assert.deepEqual(f.applied.at(-1)!.command, { type: 'signupAdd', memberId: ids[9] });
   await f.controller.stop();
@@ -378,4 +416,30 @@ test('tempban: a newer permanent ban supersedes the expiry; a manual unban is ju
   const results = await liftExpiredTempbans({ guildId: config.guildId, now: () => now, backend, cases, audit: async () => {} });
   assert.deepEqual(results, [{ caseNumber: 1, outcome: 'superseded' }]);
   assert.deepEqual(unbans, []);
+});
+
+test('an existing install keeps Manage Server on /tcg-staff until the PATCH sends an explicit null, once', async () => {
+  const stored = new Map<string, Record<string, unknown>>();
+  const bodies: Array<{ name: string; body: Record<string, unknown> }> = [];
+  let nextId = 1;
+  const save = (body: Record<string, unknown>) => stored.set(String(body.name), { ...JSON.parse(JSON.stringify(body)), id: String(nextId++),
+    application_id: config.applicationId, version: '1', type: 1, nsfw: false,
+    // Discord keeps a stored value when the body leaves the field out, and clears it for null.
+    default_member_permissions: body.default_member_permissions === undefined ? stored.get(String(body.name))?.default_member_permissions ?? null
+      : body.default_member_permissions });
+  const rest = {
+    async get() { return [...stored.entries()].map(([name, body]) => ({ ...body, name })); },
+    async post(_route: string, { body }: { body: Record<string, unknown> }) { save(body); return {}; },
+    async patch(_route: string, { body }: { body: Record<string, unknown> }) { bodies.push({ name: String(body.name), body }); save(body); return {}; }
+  };
+  await registerPrivateCommand(config, rest as never);
+  stored.set('tcg-staff', { ...stored.get('tcg-staff')!, default_member_permissions: '32' });
+  const upgrade = await registerPrivateCommand(config, rest as never);
+  assert.deepEqual(upgrade.updated, ['tcg-staff']);
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0]!.body.default_member_permissions, null, 'sent explicitly');
+  assert.equal(stored.get('tcg-staff')!.default_member_permissions, null);
+  const again = await registerPrivateCommand(config, rest as never);
+  assert.deepEqual(again.updated, [], 'a second start sends no PATCH');
+  assert.equal(bodies.length, 1);
 });

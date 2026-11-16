@@ -31,6 +31,7 @@ export function fakeFeatureContext(overrides: Partial<DiscordFeatureContext> = {
   return {
     events, router, auditStore, logs,
     client: {} as Client, guildId: TEST_GUILD_ID, adminId: '999999999999999999', isActive: () => true,
+    staffRoleOf: async () => null,
     moderationSettings: async () => ({ guildId: TEST_GUILD_ID, version: 0, updatedAtMs: null,
       ...structuredClone(DEFAULT_MODERATION_SETTINGS) as ModerationSettingsBodyDto }),
     appendFlag: async () => { throw new Error('appendFlag is not faked'); },

@@ -5,7 +5,7 @@ import { Collection, Events, MessageFlags, MessageType, type Guild, type GuildMe
   type Interaction, type TextChannel, type VoiceChannel } from 'discord.js';
 import { channelForSlot, readPrivateDiscordConfig, publicConfig } from './config.js';
 import { assertSessionConfig, type SessionRow } from './session.js';
-import { adapt, discordRoomTransport, discordTransport, loginAndWaitReady, RetryBackoff } from './runtime.js';
+import { adapt, discordRoomTransport, discordTransport, loginAndWaitReady, RetryBackoff, STAFF_SUBCOMMANDS } from './runtime.js';
 
 const settings: NodeJS.ProcessEnv = {
   TCG_DISCORD_APPLICATION_ID: '111111111111111111',
@@ -200,7 +200,7 @@ test('slash command keeps a private acknowledgment and expires only its original
     const command = {
       isButton: () => false, isChatInputCommand: () => true, isModalSubmit: () => false, commandName: 'tcg-test',
       id: 'interaction', applicationId: 'application', guildId: 'guild', channelId: 'channel',
-      user: { id: 'admin' }, options: { getSubcommand: () => 'refresh', getString: () => null },
+      user: { id: 'admin' }, options: { getSubcommand: () => 'refresh', getString: () => null, getBoolean: () => null },
       async deferReply(options: { flags: number }) { calls.push(`defer:${options.flags}`); },
       async editReply(options: { embeds: Array<{ description: string; thumbnail: { url: string } }>;
         files: Array<{ name: string }> }) {
@@ -344,4 +344,24 @@ test('scheduled draft retries back off exponentially per draft up to the cap and
   assert.equal(backoff.ready('b'), true, 'other drafts are unaffected');
   backoff.succeeded('a');
   assert.equal(backoff.ready('a'), true);
+});
+
+test('adapt carries the new staff options, the names for the audit snapshot and the guild owner', () => {
+  const command = (subcommand: string, strings: Record<string, string>, booleans: Record<string, boolean> = {}) => ({
+    isButton: () => false, isChatInputCommand: () => true, isModalSubmit: () => false, commandName: 'tcg-staff',
+    id: 'interaction', applicationId: 'application', guildId: 'guild', channelId: 'channel',
+    user: { id: '210000000000000002', username: 'judy', displayName: 'Judy (global)' }, member: { displayName: 'Judy', roles: ['r1'] },
+    guild: { ownerId: '210000000000000009', roles: { cache: new Map([['r1', { name: 'Table Judges' }]]) } },
+    options: { getSubcommand: () => subcommand, getString: (name: string) => strings[name] ?? null,
+      getBoolean: (name: string) => booleans[name] ?? null } });
+  const close = adapt(command('judge-close', { match: 'M1', note: 'Settled' }) as unknown as Interaction)!;
+  assert.equal(close.subcommand, 'judge-close');
+  assert.equal(close.reason, 'Settled', 'the note is the close reason');
+  assert.deepEqual(close.roleNames, { r1: 'Table Judges' });
+  assert.deepEqual([close.ownerId, close.username, close.displayName, close.roleIds],
+    ['210000000000000009', 'judy', 'Judy', ['r1']]);
+  const reply = adapt(command('evidence-reply', { match: 'M2', text: 'Send the clip' }, { 'staff-only': true }) as unknown as Interaction)!;
+  assert.deepEqual([reply.matchId, reply.text, reply.staffOnly], ['M2', 'Send the clip', true]);
+  assert.equal(adapt(command('evidence-reply', { match: 'M2', text: 'x' }) as unknown as Interaction)!.staffOnly, false, 'default is players');
+  for (const name of ['judge-close', 'evidence-reply']) assert.ok((STAFF_SUBCOMMANDS as readonly string[]).includes(name), name);
 });

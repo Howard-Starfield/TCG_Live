@@ -258,7 +258,7 @@ export class DiscordAdminRuntime implements AdminRuntime {
     } catch (error) { throw this.commandError(error); }
     this.setDatabase('ready');
     return { applied: result.outcome.applied, result: result.reply, version: result.outcome.version,
-      cards: result.cards, roomWarning: result.roomWarning };
+      cards: result.cards, roomWarning: result.roomWarning, ...(result.staffWarning ? { staffWarning: result.staffWarning } : {}) };
   }
 
   async refreshPanels(input: string): Promise<PanelRefreshResultDto> {

@@ -6,7 +6,7 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { MessageFlags, type Interaction } from 'discord.js';
 import { EVIDENCE_PLAYER_MAX_BYTES, type MatchId } from '@tcg-live/core';
 import type { DiscordFeature, DiscordFeatureContext } from '../discord/features.js';
-import { isTournamentStaff, memberRoleIds } from '../discord/staff.js';
+import { memberRoleIds } from '../discord/staff.js';
 import type { OpsActor } from '../ops/audit.js';
 import { OpsConflictError, OpsInputError, OpsNotFoundError } from '../ops/errors.js';
 import { EvidenceFileError, EvidenceFiles, formatBytes, sharedEvidenceFiles } from './files.js';
@@ -37,13 +37,14 @@ export interface EvidenceCommandInput {
   userId: string;
   /** The member's role IDs (tournament staff roles may submit for any match). */
   roleIds?: readonly string[];
+  /** The guild owner's ID (the server owner counts as an organizer). */
+  ownerId?: string | null;
   matchId: string | null;
   attachment: EvidenceAttachment | null;
   link: string | null;
   note: string | null;
 }
-export type EvidenceSubmitContext = Pick<DiscordFeatureContext, 'guildId' | 'adminId' | 'evidence' | 'matchRoom'> &
-  Partial<Pick<DiscordFeatureContext, 'adminToolsSettings'>>;
+export type EvidenceSubmitContext = Pick<DiscordFeatureContext, 'guildId' | 'evidence' | 'matchRoom' | 'staffRoleOf'>;
 export interface EvidenceSubmitOptions {
   files?: EvidenceFiles;
   fetch?: typeof fetch;
@@ -106,11 +107,10 @@ export class EvidenceSubmitter {
     return `Evidence saved for ${matchId}: ${saved.join(' and ')}. The organizer can review it in the dashboard.`;
   }
 
+  /** Organizers and judges alike may submit (evidenceSubmit); the configured organizer ID is not a staff source. */
   private async isStaff(input: EvidenceCommandInput): Promise<boolean> {
-    if (input.userId === this.ctx.adminId) return true;
-    let staffRoleIds: readonly string[] = [];
-    try { staffRoleIds = (await this.ctx.adminToolsSettings?.())?.cases.staffRoleIds ?? []; } catch { /* Settings unavailable: organizer only. */ }
-    return isTournamentStaff({ userId: input.userId, adminId: this.ctx.adminId, roleIds: input.roleIds ?? [], staffRoleIds });
+    try { return !!await this.ctx.staffRoleOf({ userId: input.userId, roleIds: input.roleIds ?? [], ownerId: input.ownerId ?? null }); }
+    catch { return false; }
   }
 
   private checkAttachment(attachment: EvidenceAttachment): void {
@@ -188,6 +188,7 @@ export function evidenceCommandInput(interaction: Interaction): EvidenceCommandI
   const file = interaction.options.getAttachment('file');
   return {
     guildId: interaction.guildId, userId: interaction.user.id, roleIds: memberRoleIds(interaction.member),
+    ownerId: interaction.guild?.ownerId ?? null,
     matchId: interaction.options.getString('match'),
     attachment: file ? { url: file.url, size: file.size, name: file.name, contentType: file.contentType } : null,
     link: interaction.options.getString('link'),

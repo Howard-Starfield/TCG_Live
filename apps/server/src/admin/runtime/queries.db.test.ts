@@ -26,7 +26,7 @@ test('real database: admin reads list, snapshot (active and retired) and page th
     let interaction = 1;
     const run = (principalId: string, command: Parameters<typeof applyDiscordCommand>[1], at: number) =>
       applyDiscordCommand({ config, eventId: first.event_id, principalId, interactionId: `12${String(interaction++).padStart(16, '0')}`,
-        ...(principalId === config.adminId ? {} : { message }) }, command, 'db-admin-runner', () => at);
+        ...(principalId === config.adminId ? { actor: { role: 'organizer' as const } } : { message }) }, command, 'db-admin-runner', () => at);
     for (const [index, player] of (['A', 'B', 'C', 'D'] as const).entries())
       assert.equal((await run(config.players[player], { type: 'checkin' }, 1_000 + index)).applied, true);
     assert.equal((await run(config.adminId, { type: 'publish' }, 2_000)).applied, true);
@@ -56,7 +56,8 @@ test('real database: admin reads list, snapshot (active and retired) and page th
       assert.equal(typeof page[0]!.occurredAtMs, 'number');
       assert.match(page[0]!.commandId, /^discord:12/);
       const publish = await runtime.audit(first.event_id, 4, 500);
-      assert.deepEqual(publish.map(entry => [entry.actor, entry.command]), [[{ kind: 'admin' }, { type: 'publish' }]]);
+      assert.deepEqual(publish.map(entry => [entry.actor, entry.command]), [[{ kind: 'admin', staff: { memberId: config.adminId, role: 'organizer', via: 'role', name: null, username: null, roleName: null } },
+        { type: 'publish' }]]);
       assert.equal(runtime.status().database, 'ready');
     } finally {
       await runtime.close();

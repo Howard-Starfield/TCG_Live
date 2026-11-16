@@ -272,7 +272,7 @@ test('committed Close and explicit Refresh report room warnings without undoing 
   const replies: string[] = [];
   const command = (subcommand: string): PrivateInteraction => ({
     id: ids[4]!, applicationId: config.applicationId, guildId: config.guildId,
-    channelId: config.channelId, userId: config.adminId, kind: 'command', subcommand,
+    channelId: config.channelId, userId: config.adminId, ownerId: config.adminId, kind: 'command', subcommand,
     async acknowledge() {}, async reply(message) { replies.push(message); }
   });
   await controller.handle(command('signup-close'));
@@ -283,4 +283,22 @@ test('committed Close and explicit Refresh report room warnings without undoing 
   assert.ok(order.includes('room-refresh'));
   assert.match(replies[1]!, /^Practice cards refreshed\. Room setup pending: .*Manage Roles/);
   await controller.stop();
+});
+
+test('an organizer who plays keeps the organizer overwrite, gains the player rights, and is moved into their room', async () => {
+  const plan = roomPlan(config.guildId, botId, config.adminId, [config.adminId, members[1]!]);
+  const organizer = plan.filter(item => item.id === config.adminId);
+  assert.equal(organizer.length, 1, 'one overwrite, not two');
+  for (const flag of [PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AddReactions,
+    PermissionFlagsBits.UseApplicationCommands]) assert.equal((BigInt(organizer[0]!.allow) & flag) !== 0n, true);
+  let state = createSignupFixture(eventId);
+  for (const id of [config.adminId, members[1]!, members[2]!, members[3]!]) state = apply(state, `member:${id}`, { type: 'signupJoin' });
+  state = apply(state, 'admin:fixture', { type: 'signupClose', adminId: config.adminId });
+  for (const player of ['A', 'B', 'C', 'D'] as const) state = apply(state, `player:${player}`, { type: 'checkin' });
+  state = apply(state, 'admin:fixture', { type: 'publish' });
+  const f = fixture(state);
+  f.voice.set(config.adminId, ids[2]!);
+  await f.reconciler.trigger();
+  assert.deepEqual(f.moves, [{ member: config.adminId, room: 'M1' }], 'the seated organizer is moved like any player');
+  await f.reconciler.stop();
 });

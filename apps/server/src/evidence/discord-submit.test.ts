@@ -17,6 +17,12 @@ const playerB = '300000000000000002';
 const stranger = '400000000000000009';
 const staffMember = '400000000000000008';
 const STAFF_ROLE = '500000000000000001';
+/** The organizer by role, a judge by a legacy staff role; the old organizer ID (adminId) is not staff. */
+const organizer = '200000000000000077';
+async function staffRoleOf({ userId, roleIds }: { userId: string; roleIds: readonly string[] }) {
+  if (userId === organizer) return { role: 'organizer' as const, via: 'role' as const };
+  return roleIds.includes(STAFF_ROLE) ? { role: 'judge' as const, via: 'legacy-staff-role' as const } : null;
+}
 const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), Buffer.alloc(16)]);
 const cdn = 'https://cdn.discordapp.com/attachments/1/2/clip.mp4';
 
@@ -30,8 +36,7 @@ async function setup(body: Buffer = MP4, maxBytes = 1_000) {
     return new Response(new Uint8Array(body), { status: 200 });
   }) as typeof fetch;
   const submitter = new EvidenceSubmitter({
-    guildId, adminId, evidence: store,
-    async adminToolsSettings() { return { cases: { staffRoleIds: [STAFF_ROLE] } } as never; },
+    guildId, evidence: store, staffRoleOf,
     async matchRoom(matchId: MatchId) {
       return matchId === 'M1' ? { eventId, matchId, voiceChannelId: null, playerIds: [playerA, playerB] } : null;
     }
@@ -54,9 +59,11 @@ test('seated players and the organizer can submit files and links; the file goes
     assert.equal(item!.status, 'stored');
     assert.equal(s.audit.entries.at(-1)!.actorKind, 'player');
     assert.match(await s.submitter.submit(s.input({ userId: playerB, attachment: null, link: 'https://youtu.be/abc' })), /link/);
-    assert.match(await s.submitter.submit(s.input({ userId: adminId, attachment: null, link: 'https://medal.tv/x' })), /^Evidence saved/);
+    assert.match(await s.submitter.submit(s.input({ userId: organizer, attachment: null, link: 'https://medal.tv/x' })), /^Evidence saved/);
     assert.equal(s.audit.entries.at(-1)!.actorKind, 'admin');
     assert.equal((await s.store.list(eventId, 'M1')).length, 3);
+    assert.match(await s.submitter.submit(s.input({ userId: adminId, attachment: null, link: 'https://medal.tv/y' })), /Only the two players/,
+      'the old organizer ID is not staff');
   } finally { await s.cleanup(); }
 });
 
@@ -114,7 +121,7 @@ async function scripted(respond: (url: string, call: number) => Response | Promi
     return respond(String(url), calls.length);
   }) as typeof fetch;
   const submitter = new EvidenceSubmitter({
-    guildId, adminId, evidence: store,
+    guildId, evidence: store, staffRoleOf,
     async matchRoom(matchId: MatchId) {
       return matchId === 'M1' ? { eventId, matchId, voiceChannelId: null, playerIds: [playerA, playerB] } : null;
     }

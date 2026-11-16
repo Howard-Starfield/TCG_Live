@@ -24,7 +24,8 @@ export function roomPlan(guildId: string, botId: string, organizerId: string,
   return [
     { id: guildId, type: 0, allow: everyoneAllow.toString(), deny: everyoneDeny.toString() },
     { id: botId, type: 1, allow: botAllow.toString(), deny: '0' },
-    { id: organizerId, type: 1, allow: organizerAllow.toString(), deny: '0' },
+    // An organizer who plays here keeps the organizer overwrite and gains the players' rights on top of it.
+    { id: organizerId, type: 1, allow: (pair.includes(organizerId) ? organizerAllow | pairAllow : organizerAllow).toString(), deny: '0' },
     ...pair.filter(id => id !== botId && id !== organizerId).map(id =>
       ({ id, type: 1 as const, allow: pairAllow.toString(), deny: '0' }))
   ].sort((a, b) => a.id.localeCompare(b.id) || a.type - b.type);
@@ -174,7 +175,7 @@ export class MatchRoomReconciler {
       for (const player of match.players) active.set(players[player]!, match.id);
     for (const id of assignedIds) {
       const room = active.get(id);
-      if (!room || id === session.identity_map.adminId || id === this.botId || this.poolBots.has(id) ||
+      if (!room || id === this.botId || this.poolBots.has(id) ||
           this.moving.has(id) || this.failedMoves.has(id)) continue;
       const source = this.transport.voiceChannel(id);
       if (!source || source === this.afkId || source === channelForSlot(this.config, room)) continue;

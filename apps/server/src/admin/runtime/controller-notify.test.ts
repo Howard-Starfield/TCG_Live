@@ -49,7 +49,7 @@ function fixture(options: { failEdit?: boolean; gateEdit?: Promise<void> } = {})
 
 function refresh(replies: string[]): PrivateInteraction {
   return { id: ids[0]!, applicationId: config.applicationId, guildId: config.guildId, channelId: config.channelId,
-    userId: config.adminId, kind: 'command', subcommand: 'refresh', acknowledge: async () => {},
+    userId: config.adminId, ownerId: config.adminId, kind: 'command', subcommand: 'refresh', acknowledge: async () => {},
     reply: async text => { replies.push(text); } };
 }
 

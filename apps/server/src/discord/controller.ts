@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
 import type { Command, EventState, MatchId, Outcome, Player } from '../rehearsal/domain.js';
-import { isJudgeRequestCategory, MAX_JUDGE_REQUEST_LENGTH, type ArtworkGame, type OpenTournamentSignupResult } from '@tcg-live/core';
-import { RuleError, scheduledPublishDue, signupTournamentComplete } from '../rehearsal/domain.js';
+import { isJudgeRequestCategory, MAX_JUDGE_REQUEST_LENGTH, staffMay, type ArtworkGame, type EvidenceReplyAudience,
+  type EvidenceReplyDto, type OpenTournamentSignupResult, type StaffAction } from '@tcg-live/core';
+import { rulingConflict, RuleError, scheduledPublishDue, signupTournamentComplete, StaffConflictError } from '../rehearsal/domain.js';
+import type { OpsActor } from '../ops/audit.js';
+import { OpsConflictError, OpsInputError, OpsNotFoundError } from '../ops/errors.js';
 import { applyDiscordCommand, applyWebCommand, type WebCommandContext } from '../rehearsal/store.js';
 import type { MatchLifecycleEvent } from './features.js';
 import { evidenceWindowOpen, parseButtonId, renderCard, renderTournamentRecap, type CardOptions, type CardPayload,
   type ParsedButton } from './cards.js';
-import { isTournamentStaff, STAFF_DENIED } from './staff.js';
+import { judgeDenied, resolveStaff, STAFF_DENIED, type ResolvedStaff, type StaffCoverage, type StaffSources } from './staff.js';
 import { channelForSlot, type PrivateDiscordConfig } from './config.js';
 import { activateSignupDraft, adoptSessionClocks, bindCard, claimResumeReminder, clearDeletedSessionCards, completeStickyCard, deleteActiveTournament, deletedSessionsWithCards, getSessionState, messageId, sessionSlots, NoActiveSessionError, replaceStickyCard, suspendStickyCard,
   resolvePlayers, type CardSlot, type SessionRow } from './session.js';
@@ -32,6 +35,16 @@ export interface PrivateInteraction {
   player?: string;
   /** Role IDs of the interacting member (tournament staff check). */
   roleIds?: string[];
+  /** The guild owner's ID (the server owner always counts as organizer). */
+  ownerId?: string | null;
+  /** Real names of the member's roles (role ID to name), for the audit snapshot. */
+  roleNames?: Record<string, string>;
+  /** Names stored with the audit row. */
+  username?: string | null;
+  displayName?: string | null;
+  /** `/tcg-staff evidence-reply text:` and `staff-only:`. */
+  text?: string;
+  staffOnly?: boolean;
   /** The "Submit evidence" card button: opens the evidence form. */
   showEvidenceForm?(): Promise<void>;
   acknowledge(): Promise<void>;
@@ -71,6 +84,22 @@ export function noChangeReply(result: string): string {
 /** The controller is stopping, or the lease is lost: it takes no new admin console work. */
 export class ControllerUnavailableError extends Error {}
 
+/** What `/tcg-staff evidence-reply` hands to the evidence replies service (runtime wires the store and the Discord delivery). */
+export interface EvidenceReplyRequest {
+  eventId: string; matchId: MatchId; body: string; audience: EvidenceReplyAudience; author: string; actor: OpsActor;
+}
+export type EvidenceReplySender = (request: EvidenceReplyRequest) => Promise<EvidenceReplyDto>;
+
+/** The staff action each `/tcg-staff` subcommand needs (staffMay decides who may run it). */
+const SUBCOMMAND_ACTION: Readonly<Record<string, StaffAction>> = {
+  publish: 'publish', 'signup-close': 'signupClose', 'signup-reopen': 'signupReopen', 'signup-remove': 'signupRemove',
+  'signup-add': 'signupAdd', 'checkin-for': 'checkinFor', refresh: 'refresh', resolve: 'resolve', correct: 'correct',
+  'judge-resume': 'judgeResume', 'judge-close': 'judgeClose', 'evidence-reply': 'evidenceReply'
+};
+
+const NO_OTHER_STAFF = 'No other TCG Organizer or TCG Judge outside the players could be found, so nobody else can rule on a match the organizer plays in. Add a TCG Judge in Admin tools > Settings > Tournament roles.';
+const STAFF_UNCONFIRMED = 'Could not confirm another TCG Organizer or TCG Judge outside the players (the member list may be incomplete). Add a TCG Judge in Admin tools > Settings > Tournament roles.';
+
 /** An admin console command: the store's web context plus the mapped domain command. */
 export interface WebAdminRequest extends Omit<WebCommandContext, 'config'> { command: Command }
 
@@ -80,6 +109,8 @@ export interface AdminApplyResult {
   /** 'pending' when the card refresh after a committed change did not complete ("saved; display pending"). */
   cards: 'updated' | 'pending';
   roomWarning: string | null;
+  /** After a committed signup close: no other staff member could be confirmed outside the players. */
+  staffWarning?: string | null;
   /** The reply the Discord path sends. */
   reply: string;
   /** A failure after the commit; the retry is already scheduled. */
@@ -131,8 +162,10 @@ export class PrivateDiscordController {
   private publishDecided: string | undefined;
   /** The configured home signup channel; a draft without its own channel opens here. */
   private readonly homeChannelId: string;
-  /** Tournament staff role IDs (admin-tools settings); none until the runtime sets a source. */
-  private staffRoles: () => Promise<readonly string[]> = async () => [];
+  /** Where staff come from (tournament role IDs, legacy staff roles); none until the runtime sets a source. */
+  private staffSources: () => Promise<StaffSources> = async () => ({ roles: null, legacyStaffRoleIds: [] });
+  private staffCoverage: StaffCoverage | undefined;
+  private sendEvidenceReply: EvidenceReplySender | undefined;
   /** Recording badge and recording policy for card rendering. */
   private cardOptions: () => CardOptions = () => ({});
 
@@ -158,8 +191,14 @@ export class PrivateDiscordController {
     this.homeChannelId = config.channelId;
   }
 
-  /** Where the staff role IDs come from (the runtime reads the saved admin-tools settings). */
-  setStaffRoles(source: () => Promise<readonly string[]>): void { this.staffRoles = source; }
+  /** Where the staff role IDs come from (the runtime reads the setup profile and the saved admin-tools settings). */
+  setStaffSources(source: () => Promise<StaffSources>): void { this.staffSources = source; }
+
+  /** How many staff outside the seated players can be confirmed (checked after a committed signup close). */
+  setStaffCoverage(coverage: StaffCoverage): void { this.staffCoverage = coverage; }
+
+  /** The evidence replies service behind `/tcg-staff evidence-reply`. */
+  setEvidenceReplies(sender: EvidenceReplySender): void { this.sendEvidenceReply = sender; }
 
   /** Runtime extras for every rendered card (recording badge, recording policy). */
   setCardOptions(source: () => CardOptions): void { this.cardOptions = source; }
@@ -171,26 +210,29 @@ export class PrivateDiscordController {
       { nowMs: this.clock(), ...options });
   }
 
-  /** 'admin' for the configured organizer, 'staff' for a member with a staff role, null otherwise. */
-  async staffLevel(userId: string, roleIds: readonly string[] = []): Promise<'admin' | 'staff' | null> {
-    if (userId === this.config.adminId) return 'admin';
-    let staffRoleIds: readonly string[] = [];
-    try { staffRoleIds = await this.staffRoles(); } catch { /* Settings unavailable: only the organizer. */ }
-    return isTournamentStaff({ userId, adminId: this.config.adminId, roleIds, staffRoleIds }) ? 'staff' : null;
+  /**
+   * The member's staff role, or null: the server owner (organizer), the TCG Organizer role, the TCG Judge role, or a
+   * legacy staff role (judge). The configured organizer ID is not a staff source. Unreadable sources leave only the owner.
+   */
+  async staffRole(userId: string, roleIds: readonly string[] = [], ownerId: string | null = null): Promise<ResolvedStaff | null> {
+    let sources: StaffSources = { roles: null, legacyStaffRoleIds: [] };
+    try { sources = await this.staffSources(); } catch { /* Sources unavailable: only the owner. */ }
+    return resolveStaff({ userId, roleIds, ownerId }, sources);
   }
 
   /**
    * May this member submit evidence for the match now? Players of the match and staff, while the match
    * needs a judge or is disputed, and for 24 h after its result. Returns the refusal text, or null.
    */
-  async evidenceRefusal(userId: string, roleIds: readonly string[], eventId: string, matchId: string): Promise<string | null> {
+  async evidenceRefusal(userId: string, roleIds: readonly string[], eventId: string, matchId: string,
+    ownerId: string | null = null): Promise<string | null> {
     let current: Awaited<ReturnType<typeof getSessionState>>;
     try { current = await this.read(this.config); } catch { return 'There is no active tournament.'; }
     const match = current.state.matches.find(item => item.id === matchId);
     if (current.state.id !== eventId || !match) return 'This match is no longer in the current round.';
     const players = resolvePlayers(current.session, current.state);
     const seated = match.players.some(seat => players?.[seat] === userId);
-    if (!seated && !await this.staffLevel(userId, roleIds))
+    if (!seated && !await this.staffRole(userId, roleIds, ownerId))
       return 'Only the two players in this match or tournament staff can submit evidence for it.';
     if (!evidenceWindowOpen(match, this.clock()))
       return 'Evidence for this match closed 24 hours after its result. Ask the organizer if you still need to send something.';
@@ -216,7 +258,9 @@ export class PrivateDiscordController {
     let choices: Array<{ name: string; value: string }> = [];
     if (focused === 'match') {
       choices = state.matches.filter(match => subcommand === 'correct' ? match.phase === 'final'
-        : subcommand === 'judge-resume' ? match.phase === 'paused' : match.phase !== 'final' && match.phase !== 'setup')
+        : subcommand === 'judge-resume' ? match.phase === 'paused'
+        : subcommand === 'judge-close' ? match.judgeAttention && match.phase !== 'final' && match.phase !== 'setup'
+        : subcommand === 'evidence-reply' ? true : match.phase !== 'final' && match.phase !== 'setup')
         .map(match => ({ value: match.id, name: `${match.id} · ${match.players.map(label).join(' vs ')} · ${match.phase}` +
           (match.judgeAttention ? ' · judge needed' : '') }))
         .filter(choice => fits(choice.value, choice.name));
@@ -679,7 +723,7 @@ export class PrivateDiscordController {
         try {
           const parsed = this.canonicalButton(interaction, (await this.read(this.config)).session);
           const refusal = parsed.action !== 'evidence' || parsed.slot === 'checkin' ? 'Invalid private Discord control.'
-            : await this.evidenceRefusal(interaction.userId, interaction.roleIds ?? [], parsed.eventId, parsed.slot);
+            : await this.evidenceRefusal(interaction.userId, interaction.roleIds ?? [], parsed.eventId, parsed.slot, interaction.ownerId ?? null);
           if (refusal) throw new RuleError(refusal);
           if (!this.accepting) return;
           await interaction.showEvidenceForm();
@@ -922,8 +966,9 @@ export class PrivateDiscordController {
       try {
         await this.requestRefresh();
       } catch { cardPending = true; }
+      const staffWarning = command.type === 'signupClose' ? await this.coverageWarning(latest.state) : null;
       return { outcome, cards: cardPending ? 'pending' : 'updated', roomWarning: roomWarning || null, degraded: false,
-        reply: savedReply(command.type, cardPending, roomWarning) };
+        ...(staffWarning ? { staffWarning } : {}), reply: savedReply(command.type, cardPending, roomWarning) };
     } catch (error) {
       if (!outcome.applied) throw error;
       this.scheduleRetry();
@@ -932,12 +977,53 @@ export class PrivateDiscordController {
     }
   }
 
+  /** A warning when, after signup closed, no staff member outside the seated players can be confirmed. Never throws. */
+  private async coverageWarning(state: EventState): Promise<string | null> {
+    if (!this.staffCoverage) return null;
+    try {
+      const { otherStaff, complete } = await this.staffCoverage(state.signup?.roster ?? []);
+      return otherStaff > 0 ? null : complete ? NO_OTHER_STAFF : STAFF_UNCONFIRMED;
+    } catch { return STAFF_UNCONFIRMED; }
+  }
+
+  /** `/tcg-staff evidence-reply`: the dashboard's reply thread (same store, nonce, audit and seated-player mentions). */
+  private async evidenceReply(interaction: PrivateInteraction, session: SessionRow, state: EventState): Promise<string> {
+    if (!this.sendEvidenceReply) throw new RuleError('Evidence replies are not available right now.');
+    const matchId = (interaction.matchId ?? '').trim().toUpperCase() as MatchId;
+    if (!state.matches.some(match => match.id === matchId))
+      throw new RuleError(`Unknown match. Choose one of ${state.matches.map(match => match.id).join(', ') || 'none (no round yet)'}.`);
+    const players = resolvePlayers(session, state) as Record<string, string> | null;
+    const conflict = rulingConflict(state, players, interaction.userId, { type: 'evidenceReply', matchId });
+    if (conflict) throw new StaffConflictError(conflict, false);
+    const body = interaction.text ?? '';
+    const audience: EvidenceReplyAudience = interaction.staffOnly ? 'staff' : 'players';
+    let reply: EvidenceReplyDto;
+    try {
+      reply = await this.sendEvidenceReply({ eventId: session.event_id, matchId, body, audience, author: interaction.userId,
+        actor: { kind: 'admin', id: interaction.userId } });
+    } catch (error) {
+      if (error instanceof OpsInputError || error instanceof OpsNotFoundError || error instanceof OpsConflictError) throw new RuleError(error.message);
+      throw error;
+    }
+    if (reply.status === 'delivered') return `Reply sent to the players of ${matchId}.`;
+    if (reply.status === 'recorded') return `Staff-only note saved on ${matchId}. The players were not told.`;
+    if (reply.status === 'failed') return `Reply saved on ${matchId}, but Discord could not deliver it: ${reply.deliveryError ?? 'unknown reason'} Retry it from the dashboard.`;
+    return `Reply saved on ${matchId}; delivery is pending.`;
+  }
+
   private async handleAcknowledged(interaction: PrivateInteraction): Promise<void> {
     let committed: AdminApplyResult | undefined;
     try {
-      // Staff commands: the organizer or a member with a tournament staff role (admin-tools settings).
-      const level = interaction.kind === 'command' ? await this.staffLevel(interaction.userId, interaction.roleIds) : null;
-      if (interaction.kind === 'command' && !level) throw new RuleError(STAFF_DENIED);
+      // Staff commands: the server owner, a TCG Organizer or a TCG Judge (a judge only for what staffMay allows).
+      let staff: ResolvedStaff | null = null;
+      if (interaction.kind === 'command') {
+        staff = await this.staffRole(interaction.userId, interaction.roleIds, interaction.ownerId ?? null);
+        if (!staff) throw new RuleError(STAFF_DENIED);
+        // Fail closed: a subcommand without a mapped staff action is refused, never run without a capability check.
+        const action = SUBCOMMAND_ACTION[interaction.subcommand ?? ''];
+        if (!action) throw new RuleError('Unknown staff command.');
+        if (!staffMay(staff.role, action)) throw new RuleError(judgeDenied(action));
+      }
       if (interaction.kind === 'command' && interaction.subcommand === 'refresh') {
         await interaction.reply((await this.explicitRefresh()).reply);
         return;
@@ -959,13 +1045,18 @@ export class PrivateDiscordController {
         }
         return;
       }
-      if (level === 'staff' && Object.values(resolvePlayers(session, state) ?? {}).includes(interaction.userId))
-        throw new RuleError('Staff who play in this tournament cannot run staff commands for it. Ask the organizer or another staff member.');
+      if (interaction.kind === 'command' && interaction.subcommand === 'evidence-reply') {
+        await interaction.reply(await this.evidenceReply(interaction, session, state));
+        return;
+      }
       const { command, slot } = this.commandFor(interaction, session, state);
       const cardId = slot && interaction.kind === 'judgeRequest' ? messageId(session, slot) : interaction.messageId;
-      // A staff member acts as the organizer in the domain; principal_id keeps the real Discord user.
+      // A staff slash command acts as `${role}:${userId}` in the domain (the store enforces the conflict rule);
+      // a card control acts as the member, staff or not.
+      const names = { username: interaction.username ?? null, displayName: interaction.displayName ?? null };
       committed = await this.commit(session.event_id, command, () => this.apply({ config: this.config, eventId: session.event_id,
-        principalId: interaction.userId, interactionId: interaction.id, ...(level === 'staff' ? { staff: true } : {}),
+        principalId: interaction.userId, interactionId: interaction.id, snapshot: names,
+        ...(staff ? { actor: { role: staff.role, via: staff.via, roleName: staff.via === 'owner' ? null : (staff.roleId && interaction.roleNames?.[staff.roleId]) || null, ...names } } : {}),
         ...(slot && cardId ? { message: { slot, id: cardId, channelId: interaction.channelId! } } : {}) }, command, this.runnerId, this.clock),
         interaction.userId);
       if (committed.degraded) {
@@ -973,7 +1064,7 @@ export class PrivateDiscordController {
         try { await interaction.reply(committed.reply); } catch { /* Initial acknowledgment already succeeded. */ }
         return;
       }
-      await interaction.reply(committed.reply);
+      await interaction.reply(committed.reply + (committed.staffWarning ? ` Warning: ${committed.staffWarning}` : ''));
     } catch (error) {
       if (committed?.outcome.applied) this.scheduleRetry();
       else if (interaction.kind === 'button' && error instanceof RuleError)
@@ -993,7 +1084,7 @@ export class PrivateDiscordController {
 
   private commandFor(interaction: PrivateInteraction, session: SessionRow, state: EventState): { command: Command; slot?: CardSlot } {
     if (interaction.kind === 'command') {
-      // The organizer or tournament staff only: checked (asynchronously) in handleAcknowledged.
+      // Tournament staff only (and a judge only for rulings): checked (asynchronously) in handleAcknowledged.
       const matchId = interaction.matchId ? interaction.matchId.trim().toUpperCase() as MatchId : undefined;
       const reason = interaction.reason;
       const players = resolvePlayers(session, state) as Record<string, string> | null;
@@ -1007,7 +1098,6 @@ export class PrivateDiscordController {
       const winner = seatOf(interaction.winner);
       if (interaction.subcommand === 'signup-add') {
         if (!interaction.memberId) throw new RuleError('Choose the member to add.');
-        if (interaction.memberId === session.identity_map.adminId) throw new RuleError('Signup admin cannot play.');
         return { command: { type: 'signupAdd', memberId: interaction.memberId } };
       }
       if (interaction.subcommand === 'checkin-for') {
@@ -1024,6 +1114,8 @@ export class PrivateDiscordController {
         throw new RuleError(`Unknown match. Choose one of ${state.matches.map(match => match.id).join(', ') || 'none (no round yet)'}.`);
       if (interaction.subcommand === 'judge-resume' && reason?.trim())
         return { command: { type: 'judgeResume', matchId, reason } };
+      if (interaction.subcommand === 'judge-close' && reason?.trim())
+        return { command: { type: 'judgeClose', matchId, reason } };
       if ((interaction.subcommand === 'resolve' || interaction.subcommand === 'correct') && winner && reason?.trim()) {
         const match = state.matches.find(item => item.id === matchId);
         if (!match?.players.includes(winner))
@@ -1045,7 +1137,6 @@ export class PrivateDiscordController {
     const slot = parsed.slot;
     if (parsed.action === 'signupJoin' || parsed.action === 'signupWithdraw') {
       if (!state.signup || state.signup.status !== 'open') throw new RuleError('Signup is closed.');
-      if (interaction.userId === session.identity_map.adminId) throw new RuleError('Signup admin cannot play.');
       return { command: { type: parsed.action }, slot };
     }
     if (!player) throw new RuleError('Private fixture player action denied.');

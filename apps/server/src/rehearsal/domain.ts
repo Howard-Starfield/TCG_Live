@@ -1,4 +1,5 @@
 import { randomInt } from 'node:crypto';
+import { rulingConflictText } from '../discord/staff.js';
 import { isJudgeRequestCategory, isSeatId, MAX_JUDGE_REQUEST_LENGTH, type JudgeRequestInput, type MatchId as CoreMatchId, type Seat } from '@tcg-live/core';
 
 export const PLAYERS = ['A', 'B', 'C', 'D'] as const;
@@ -9,6 +10,11 @@ export type MatchId = CoreMatchId;
 export type ActorId = string;
 
 export class RuleError extends Error {}
+
+/** Staff seated in a match may not rule on it. The message says who can (see rulingConflictText). */
+export class StaffConflictError extends RuleError {
+  constructor(readonly matchId: string, dashboard: boolean) { super(rulingConflictText(matchId, dashboard)); }
+}
 
 export type Command =
   | { type: 'signupJoin' }
@@ -165,8 +171,32 @@ function pairFirstRound(state: EventState, draw: (upper: number) => number): voi
   }
 }
 
-function requireAdmin(actor: ActorId): void {
-  if (actor !== ADMIN) throw new RuleError('Fixture admin action denied.');
+const STAFF_ACTOR = /^(organizer|judge):[1-9]\d{14,21}$/;
+
+/** The dashboard, a timer or the scheduler (`ADMIN`), or a Discord TCG Organizer (`organizer:<id>`). */
+function requireOrganizer(actor: ActorId): void {
+  if (actor !== ADMIN && !(actor.startsWith('organizer:') && STAFF_ACTOR.test(actor))) throw new RuleError('Organizer action denied.');
+}
+
+/** Rulings: an organizer, or a TCG Judge (`judge:<id>`). */
+function requireJudge(actor: ActorId): void {
+  if (actor !== ADMIN && !STAFF_ACTOR.test(actor)) throw new RuleError('Judge action denied.');
+}
+
+/** System work only (the clock check): the timer acts as `ADMIN`; no Discord member ever does. */
+function requireSystem(actor: ActorId): void {
+  if (actor !== ADMIN) throw new RuleError('System action denied.');
+}
+
+/** Commands (and the evidence reply) that rule on one match. */
+const RULING_COMMANDS: ReadonlySet<string> = new Set(['resolve', 'correct', 'judgeResume', 'judgeClose', 'evidenceReply']);
+
+/** The match a member is seated in, when the command is a ruling on it; otherwise null. Pure. */
+export function rulingConflict(state: EventState, players: Record<string, string> | null, staffMemberId: string | null,
+  command: { type: string; matchId?: string }): string | null {
+  if (!staffMemberId || !players || !RULING_COMMANDS.has(command.type) || !command.matchId) return null;
+  const match = state.matches.find(item => item.id === command.matchId);
+  return match?.players.some(seat => players[seat] === staffMemberId) ? match.id : null;
 }
 
 function requireParticipant(match: MatchState, actor: ActorId): Player {
@@ -226,32 +256,32 @@ export function transition(current: EventState, actor: ActorId, command: Command
         signup.roster.splice(index, 1);
       }
     } else if (command.type === 'signupAdd') {
-      requireAdmin(actor);
+      requireOrganizer(actor);
       if (signup.status !== 'open') throw new RuleError('Signup is closed.');
       if (!/^[1-9]\d{14,21}$/.test(command.memberId)) throw new RuleError('Invalid signup member ID.');
       if (signup.roster.includes(command.memberId)) return noChange('already_joined');
       if (signup.roster.length >= (signup.capacity ?? 4)) throw new RuleError('Signup is full.');
       signup.roster.push(command.memberId);
     } else if (command.type === 'signupRemove') {
-      requireAdmin(actor);
+      requireOrganizer(actor);
       if (signup.status !== 'open') throw new RuleError('Signup is closed.');
       if (!/^[1-9]\d{14,21}$/.test(command.memberId)) throw new RuleError('Invalid signup member ID.');
       const index = signup.roster.indexOf(command.memberId);
       if (index === -1) return noChange('not_joined');
       signup.roster.splice(index, 1);
     } else if (command.type === 'signupClose') {
-      requireAdmin(actor);
+      requireOrganizer(actor);
       const expectedSize = state.firstRound ? signup.roster.length : PLAYERS.length;
       if (signup.status !== 'open' || expectedSize < 2 || signup.roster.length !== expectedSize ||
-          new Set(signup.roster).size !== expectedSize || signup.roster.includes(command.adminId))
+          new Set(signup.roster).size !== expectedSize)
         throw new RuleError(state.firstRound ? 'Signup requires at least two distinct players.' :
-          'The current rehearsal round can only start with exactly four distinct nonadmin players.');
+          'The current rehearsal round can only start with exactly four distinct players.');
       signup.assignment = Object.fromEntries(signup.roster.map((id, index) =>
         [state.firstRound ? `P${index + 1}` : PLAYERS[index], id])) as Record<Player, string>;
       signup.status = 'assigned';
       result = `signupClose:${JSON.stringify(signup.assignment)}`;
     } else if (command.type === 'signupReopen') {
-      requireAdmin(actor);
+      requireOrganizer(actor);
       if (signup.status !== 'assigned' || state.published ||
           state.matches.some(match => match.phase !== 'setup'))
         throw new RuleError('Signup reopen is unavailable after publication.');
@@ -262,7 +292,7 @@ export function transition(current: EventState, actor: ActorId, command: Command
   } else if (command.type === 'checkin' || command.type === 'checkinFor') {
     if (state.signup?.status !== undefined && state.signup.status !== 'assigned') throw new RuleError('Signup is still open.');
     if (command.type === 'checkinFor') {
-      requireAdmin(actor);
+      requireJudge(actor);
       if (!isSeatId(command.seat) || (!state.firstRound && !(PLAYERS as readonly string[]).includes(command.seat)))
         throw new RuleError('Unknown player seat.');
     }
@@ -275,7 +305,7 @@ export function transition(current: EventState, actor: ActorId, command: Command
     state.checkins.push(player);
     if (!state.firstRound) state.checkins.sort();
   } else if (command.type === 'delayStart') {
-    requireAdmin(actor);
+    requireOrganizer(actor);
     if (state.published || !state.signup || state.startsAtMs === undefined)
       throw new RuleError('Only an unpublished tournament with a scheduled start can be delayed.');
     const startsAtMs = Math.max(state.startsAtMs, nowMs) + command.delayMinutes * 60_000;
@@ -284,7 +314,7 @@ export function transition(current: EventState, actor: ActorId, command: Command
       throw new RuleError('Enter a valid delay in whole minutes.');
     state.startsAtMs = startsAtMs;
   } else if (command.type === 'publish') {
-    requireAdmin(actor);
+    requireOrganizer(actor);
     if (state.startsAtMs !== undefined && nowMs < state.startsAtMs)
       throw new RuleError('The round can be published once the scheduled tournament start time arrives.');
     if (state.signup && state.signup.status !== 'assigned') throw new RuleError('Signup is still open.');
@@ -346,14 +376,14 @@ export function transition(current: EventState, actor: ActorId, command: Command
         break;
       }
       case 'judgeResume': {
-        requireAdmin(actor);
+        requireJudge(actor);
         requireReason(command.reason);
         if (match.phase !== 'paused') throw new RuleError('Judge resume is unavailable.');
         start(match, nowMs, runnerId);
         break;
       }
       case 'judgeClose': {
-        requireAdmin(actor);
+        requireJudge(actor);
         requireReason(command.reason);
         if (!match.judgeAttention || match.phase === 'final') throw new RuleError('Judge close is unavailable.');
         if (match.proposal?.decision === 'disputed') throw new RuleError('A disputed result needs a winner: use Resolve.');
@@ -364,7 +394,7 @@ export function transition(current: EventState, actor: ActorId, command: Command
         break;
       }
       case 'clockCheck': {
-        requireAdmin(actor);
+        requireSystem(actor);
         if (!wasRunning) throw new RuleError('Clock check is unavailable.');
         break;
       }
@@ -404,7 +434,7 @@ export function transition(current: EventState, actor: ActorId, command: Command
         break;
       }
       case 'resolve': {
-        requireAdmin(actor);
+        requireJudge(actor);
         requireReason(command.reason);
         if (!match.players.includes(command.winner) || match.phase === 'setup' || match.phase === 'final') {
           throw new RuleError('Admin resolution is unavailable.');
@@ -419,7 +449,7 @@ export function transition(current: EventState, actor: ActorId, command: Command
         break;
       }
       case 'correct': {
-        requireAdmin(actor);
+        requireJudge(actor);
         requireReason(command.reason);
         if (match.phase !== 'final' || !match.players.includes(command.winner) || match.finalWinner === command.winner) {
           throw new RuleError('Result correction is unavailable.');

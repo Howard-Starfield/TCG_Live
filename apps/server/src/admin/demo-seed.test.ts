@@ -49,7 +49,12 @@ test('demo samples: keyword + volume flags, an evidence link and a stored voice 
     const stop = seedDemoOps({ snapshot: async () => current, subscribe: listener => { listeners.push(listener as () => void); return () => {}; } },
       { guildId: GUILD, flags: seeded, evidence: new MemoryEvidenceStore(audit), evidenceRoot: root });
     current = other;
-    for (let round = 0; round < 3; round += 1) { listeners.forEach(listener => listener()); await new Promise(resolve => setTimeout(resolve, 20)); }
+    // Poll instead of a fixed 3 x 20 ms: seeding writes a voice file, which can take longer under a loaded test run.
+    const deadline = Date.now() + 2_000;
+    for (let round = 0; round < 3 || (new Set(seeded.flags.map(flag => flag.eventId)).size < 2 && Date.now() < deadline); round += 1) {
+      listeners.forEach(listener => listener());
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
     stop();
     assert.deepEqual([...new Set(seeded.flags.map(flag => flag.eventId))].sort(), [EVENT, other.eventId].sort());
     assert.equal(seeded.flags.length, 4);
