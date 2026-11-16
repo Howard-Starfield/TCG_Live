@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classifyPublicSchema, directorySetupDecision, EVIDENCE_TABLES, evidenceSetupDecision, privateDiscordSetupDecision,
-  rehearsalSetupDecision, sameTables, TABLES_V1, TABLES_V2, TABLES_V2_DIRECTORY, TABLES_V2_DIRECTORY_EVIDENCE } from './schema-tables.js';
+import { adminToolsSetupDecision, classifyPublicSchema, directorySetupDecision, EVIDENCE_TABLES, evidenceSetupDecision, MATCH_ROOM_TABLES,
+  privateDiscordSetupDecision,
+  rehearsalSetupDecision, sameTables, TABLES_V1, TABLES_V2, TABLES_V2_DIRECTORY, TABLES_V2_DIRECTORY_EVIDENCE,
+  TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS_LFG } from './schema-tables.js';
 
 const withEvidence = [...TABLES_V2_DIRECTORY_EVIDENCE];
 const shuffled = [...withEvidence].reverse();
@@ -108,4 +110,21 @@ test('migration 015 evidence replies table is optional: every guard sees the sam
   assert.equal(classifyPublicSchema([...TABLES_V2_DIRECTORY, 'tcg_evidence', 'tcg_evidence_replies']), 'unexpected');
   assert.equal(classifyPublicSchema([...TABLES_V2_DIRECTORY, 'tcg_evidence_replies']), 'unexpected');
   assert.equal(classifyPublicSchema([...withReplies, 'users']), 'unexpected');
+});
+
+test('migration 017 tables are optional: every guard sees the same shape with or without them', () => {
+  assert.deepEqual([...MATCH_ROOM_TABLES].sort(), ['tcg_match_room_categories', 'tcg_match_room_settings',
+    'tcg_match_room_transcripts', 'tcg_match_rooms']);
+  assert.equal(classifyPublicSchema([...withEvidence, ...MATCH_ROOM_TABLES]), 'v2_directory_evidence');
+  assert.equal(classifyPublicSchema([...TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS_LFG, ...MATCH_ROOM_TABLES]), 'v2_directory_evidence_admin_tools_lfg');
+  assert.equal(classifyPublicSchema([...TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS_LFG, ...MATCH_ROOM_TABLES.slice(0, 2)]), 'v2_directory_evidence_admin_tools_lfg');
+  assert.equal(rehearsalSetupDecision([...withEvidence, ...MATCH_ROOM_TABLES], '2'), 'already_ready');
+  assert.equal(privateDiscordSetupDecision([...withEvidence, ...MATCH_ROOM_TABLES], '2'), 'already_ready');
+  assert.equal(directorySetupDecision([...withEvidence, ...MATCH_ROOM_TABLES]), 'already_ready');
+  assert.equal(evidenceSetupDecision([...withEvidence, ...MATCH_ROOM_TABLES]), 'already_ready');
+  assert.equal(adminToolsSetupDecision([...TABLES_V2_DIRECTORY_EVIDENCE_ADMIN_TOOLS_LFG, ...MATCH_ROOM_TABLES]), 'already_ready');
+  assert.equal(adminToolsSetupDecision([...withEvidence, ...MATCH_ROOM_TABLES]), 'create');
+  // They are only ignored next to the evidence tables: a stray one cannot make another shape pass, and extras stay refused.
+  assert.equal(classifyPublicSchema([...TABLES_V2_DIRECTORY, ...MATCH_ROOM_TABLES]), 'unexpected');
+  assert.equal(classifyPublicSchema([...withEvidence, ...MATCH_ROOM_TABLES, 'users']), 'unexpected');
 });

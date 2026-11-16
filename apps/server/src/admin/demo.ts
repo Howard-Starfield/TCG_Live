@@ -6,7 +6,7 @@ import { readConfig } from '../config.js';
 import { startServer } from '../server.js';
 import { readAdminConfig } from './config.js';
 import { createAdminHandler, type AdminHandler, type AdminHandlerOptions } from './mount.js';
-import { DemoAdminRuntime, type DemoAdminRuntimeOptions } from './runtime/demo-runtime.js';
+import { DemoAdminRuntime, type DemoAdminRuntimeOptions, type DemoRoomProvider } from './runtime/demo-runtime.js';
 import { MemoryEvidenceStore } from '../evidence/store.js';
 import { createEvidenceSeams } from '../evidence/seams.js';
 import { demoReplyDelivery } from '../evidence/replies.js';
@@ -23,12 +23,50 @@ import { demoPermissionMonitor } from '../permissions/demo.js';
 import { PermissionMonitor } from '../permissions/monitor.js';
 import { seedDemoOps } from './demo-seed.js';
 import { enableDemoCaseSeed } from '../admin-tools/members/demo-cases.js';
+import { demoMatchRoomService, voiceRoomPolicyDropper, type MatchRoomSystem } from '../admin-tools/match-rooms/service.js';
+import { matchRoomsRouteModule } from '../admin-tools/match-rooms/routes.js';
+import { adminToolsRouteModules } from '../admin-tools/route-registry.js';
+import type { MatchRoomService } from '../admin-tools/match-rooms/service-port.js';
+import type { AdminToolsRouteModule } from '../admin-tools/module.js';
+import { demoRoomChatPort, MemoryTranscriptStore } from '../admin-tools/match-rooms/transcripts.js';
+import { DEMO_CHANNEL_IDS } from '../admin-tools/demo-guild.js';
+import { DEMO_ADMIN_ID } from './runtime/demo-runtime.js';
 
 /** Synthetic Discord server for the demo's in-memory moderation settings. */
 export const DEMO_GUILD_ID = '100000000000000001';
 
 /** Where demo evidence files live: a per-process OS temp directory, never data/evidence. */
 export function demoEvidenceRoot(): string { return join(tmpdir(), 'tcg-live-demo-evidence', String(process.pid)); }
+
+/** The demo tournament's game, for room and category names. */
+export const DEMO_GAME_LABEL = 'One Piece';
+
+/**
+ * The demo's match room pool: a memory pool on the DemoGuild, starting from its voice rooms "🎮 M1" and "🎮 M2". Renames show
+ * "queued" for a moment before they apply, and are limited to 2 per 10 minutes like Discord's.
+ */
+export async function demoMatchRooms(ops: Pick<AdminHandlerOptions, 'moderation' | 'adminTools'>, runtime: () => DemoAdminRuntime | undefined): Promise<MatchRoomSystem | null> {
+  const tools = ops.adminTools;
+  if (!tools?.demo) return null;
+  const context = () => runtime()?.roomContext() ?? null;
+  const system = await demoMatchRoomService({ demo: tools.demo, applicationId: '910000000000000000', adminId: DEMO_ADMIN_ID, botId: '200000000000000099',
+    audit: tools.audit, chat: demoRoomChatPort(), transcripts: new MemoryTranscriptStore(),
+    seed: [{ channelId: DEMO_CHANNEL_IDS.matchM1, table: 1 }, { channelId: DEMO_CHANNEL_IDS.matchM2, table: 2 }],
+    ...(ops.moderation ? { forgetVoiceRoom: voiceRoomPolicyDropper(ops.moderation.settings, DEMO_GUILD_ID) } : {}),
+    activeEvent: async () => {
+      const found = context();
+      return found ? { eventId: found.eventId, eventName: null, gameLabel: DEMO_GAME_LABEL, round: 1, roundRooms: found.roundRooms, finished: found.finished } : null;
+    } });
+  return system;
+}
+
+/**
+ * The route modules a demo handler mounts. The Rooms module gets an explicit service (null: 503), so a demo never falls back to
+ * the process-global service the live runtime attaches: an in-dashboard practice demo must not reach the real server's rooms.
+ */
+export function demoRouteModules(rooms: MatchRoomService | null): readonly AdminToolsRouteModule[] {
+  return adminToolsRouteModules.map(module => module.name === 'match-rooms' ? matchRoomsRouteModule({ service: rooms }) : module);
+}
 
 /** In-memory evidence, moderation and admin-tools routes for the demo: nothing touches PostgreSQL or data/. */
 export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'moderation' | 'adminTools'> {
@@ -43,7 +81,7 @@ export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'modera
       voiceBots: new MemoryVoiceBotRegistry(), guildId: () => DEMO_GUILD_ID },
     // Admin tools act on a synthetic server (members, bans, roles, channels); route modules use Memory* stores.
     adminTools: { settings, audit, storage: 'memory', guildId: () => DEMO_GUILD_ID,
-      status: new AdminToolsRuntimeState(discordFeatures(), 'demo'), demo,
+      status: new AdminToolsRuntimeState(discordFeatures(), 'demo'), demo, modules: demoRouteModules(null),
       // A synthetic bot with a couple of missing permissions, so the permission card and banner have something to show.
       permissions: demoPermissionMonitor(demo, settings) }
   };
@@ -72,8 +110,15 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
   // Only PORT matters here; the demo never connects to PostgreSQL.
   const requestedPort = options.ephemeral ? 0 : readConfig({ PORT: env.PORT }).port;
   const adminConfig = readAdminConfig('demo', env);
+  const ops = demoOpsOptions();
+  // The demo pool is the one source of room IDs: the runtime asks it for a published round's rooms.
+  let runtimeRef: DemoAdminRuntime | undefined;
+  const roomSystem = await demoMatchRooms(ops, () => runtimeRef);
+  const rooms: DemoRoomProvider | undefined = roomSystem ? { provision: ({ eventId, matches }) => roomSystem.pool.provision({
+    eventId, eventName: null, gameLabel: DEMO_GAME_LABEL, round: 1, matches: matches.map(id => ({ id, pair: [] })), savedRooms: {} }) } : undefined;
   // TCG_ADMIN_DEMO_MODE picks autoplay (default) or interactive; an explicit runtime option wins.
-  const runtime = new DemoAdminRuntime({ mode: adminConfig.demoMode, ...options.runtime });
+  const runtime = new DemoAdminRuntime({ mode: adminConfig.demoMode, ...(rooms ? { rooms } : {}), ...options.runtime });
+  runtimeRef = runtime;
   let handler: AdminHandler | undefined;
   const adapter: AdminHandler = {
     handle: (request, response) => handler?.handle(request, response) ?? false,
@@ -84,7 +129,9 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
   try {
     server = await startServer({ port: requestedPort, database: null }, { admin: adapter });
-    const ops = demoOpsOptions();
+    await roomSystem?.start();
+    // The Rooms tab talks to this demo's own pool, by explicit module: never through the global service.
+    ops.adminTools!.modules = demoRouteModules(roomSystem?.service ?? null);
     // Sample cases, flags and evidence so every screen has something to show (the real demo only, not tests).
     const seed = !options.ephemeral;
     if (seed && ops.adminTools?.demo) enableDemoCaseSeed(ops.adminTools.demo);
@@ -102,6 +149,7 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
     });
     runtime.start();
   } catch (error) {
+    await roomSystem?.stop();
     await server?.stop();
     await runtime.close();
     throw error;
@@ -119,6 +167,7 @@ export async function runAdminDemo(options: AdminDemoOptions = {}): Promise<Admi
     stop() {
       stopping ??= (async () => {
         await adapter.close().catch(() => {});
+            await roomSystem?.stop();
         await runtime.close();
         await running.stop();
       })();

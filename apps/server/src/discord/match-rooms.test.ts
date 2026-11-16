@@ -83,6 +83,15 @@ function fixture(initial = assigned()) {
     set onCurrent(value: (() => Promise<void> | void) | undefined) { onCurrent = value; } };
 }
 
+test('the pool\'s rooms and categories do not change what counts as the same saved identity', () => {
+  const { matchChannels: _legacy, ...pooled } = config;
+  const identity = { kind: 'signup' as const, adminId: config.adminId, publicMatchRooms: true,
+    roundRooms: { M1: ids[8]!, M2: ids[9]! }, matchMessages: { M3: ids[10]! } };
+  assert.equal(sameIdentityMap(identity, pooled as typeof config), true, 'bound rooms of the pool are not identity');
+  assert.equal(sameIdentityMap(identity, { ...pooled, roundRooms: {} } as typeof config), true);
+  assert.equal(sameIdentityMap({ ...identity, publicMatchRooms: false }, pooled as typeof config), false);
+});
+
 test('public config is explicit, paired, and frozen; voice intent is conditional', () => {
   assert.equal(config.publicMatchRooms, true);
   assert.throws(() => readPrivateDiscordConfig({ ...env, TCG_DISCORD_M2_CHANNEL_ID: '' }, false, 'signup'), /require both/);
@@ -107,7 +116,50 @@ test('public target validation rejects duplicate, wrong-guild, AFK and general v
   assert.throws(() => assertPublicMatchRoomTargets(config, { ...rooms, M2: { ...rooms.M2, id: rooms.M1.id } }, null), /two distinct/);
   assert.throws(() => assertPublicMatchRoomTargets(config, { ...rooms, M2: { ...rooms.M2, guildId: ids[0]! } }, null), /configured guild/);
   assert.throws(() => assertPublicMatchRoomTargets(config, rooms, rooms.M1.id), /outside AFK/);
-  assert.throws(() => assertPublicMatchRoomTargets(config, { ...rooms, M1: { ...rooms.M1, name: 'General' } }, null), /TCG Match/);
+  // Names no longer matter: any voice channel outside AFK in the guild is a valid room.
+  assert.doesNotThrow(() => assertPublicMatchRoomTargets(config, { ...rooms, M1: { ...rooms.M1, name: 'General' } }, null));
+  assert.throws(() => assertPublicMatchRoomTargets(config, { ...rooms, M1: { ...rooms.M1, type: ChannelType.GuildText } }, null), /voice channels/);
+});
+
+test('public match rooms no longer require configured M1/M2 rooms', () => {
+  const { matchChannels: _legacy, ...pooled } = config;
+  assert.doesNotThrow(() => assertPublicMatchRoomTargets(pooled as typeof config, undefined, null));
+  assert.doesNotThrow(() => new MatchRoomReconciler(pooled as typeof config, botId, null,
+    { current: async () => [], assertPermissions: async () => {}, replace: async () => {}, voiceChannel: () => null,
+      move: async () => {}, warnOrganizer: async () => {} }, async () => ({ session, state: assigned() }), () => true));
+  assert.throws(() => new MatchRoomReconciler({ ...config, publicMatchRooms: false }, botId, null,
+    { current: async () => [], assertPermissions: async () => {}, replace: async () => {}, voiceChannel: () => null,
+      move: async () => {}, warnOrganizer: async () => {} }, async () => ({ session, state: assigned() }), () => true), /not configured/);
+});
+
+test('a pooled reconciler touches no legacy M1/M2 room, and places players in the rooms the pool bound', async () => {
+  const { matchChannels: _legacy, ...pooled } = config;
+  const bound = { ...pooled, roundRooms: { M1: ids[8]!, M2: ids[9]! } } as typeof config;
+  const policy = new Map<Room, RoomOverwrite[]>();
+  const writes: Room[] = [];
+  const moves: Array<{ member: string; room: Room }> = [];
+  const voice = new Map<string, string>();
+  const transport: RoomTransport = {
+    async current(room) { return policy.get(room) ?? []; }, async assertPermissions() {},
+    async replace(room, overwrites) { writes.push(room); policy.set(room, overwrites); },
+    voiceChannel: id => voice.get(id) ?? null, async move(member, room) { moves.push({ member, room }); },
+    async warnOrganizer() {}
+  };
+  // A signup that has not published yet has no matches and, without configured rooms, nothing to set up.
+  const idle = new MatchRoomReconciler(bound, botId, null, transport, async () => ({ session, state: createSignupFixture(eventId) }), () => true);
+  await idle.trigger(true);
+  assert.deepEqual(writes, []);
+  // A published first round follows the bound rooms (config.roundRooms), whatever their names.
+  let state = assigned();
+  for (const player of ['A', 'B', 'C', 'D'] as const) state = apply(state, `player:${player}`, { type: 'checkin' });
+  state = { ...apply(state, 'admin:fixture', { type: 'publish' }), firstRound: { byePoints: 0 } };
+  voice.set(members[0]!, ids[2]!);
+  const active = new MatchRoomReconciler(bound, botId, null, transport, async () => ({ session, state }), () => true, () => 1,
+    async () => {});
+  await active.trigger(true);
+  assert.deepEqual(writes.sort(), ['M1', 'M2']);
+  assert.ok(moves.some(move => move.member === members[0] && move.room === 'M1'));
+  await idle.stop(); await active.stop();
 });
 
 test('policy gives everyone public entry, only pair/admin/bot posting, and bot management', () => {
@@ -118,7 +170,9 @@ test('policy gives everyone public entry, only pair/admin/bot posting, and bot m
   assert.equal((BigInt(everyone.allow) & PermissionFlagsBits.Connect) !== 0n, true);
   for (const flag of [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions,
     PermissionFlagsBits.UseApplicationCommands]) assert.equal((BigInt(everyone.deny) & flag) !== 0n, true);
-  for (const flag of [PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageChannels,
+  // Only administrators can put Manage Roles in a channel overwrite; the bot changes overwrites with its server-level one.
+  assert.equal((BigInt(row(botId).allow) & PermissionFlagsBits.ManageRoles), 0n);
+  for (const flag of [PermissionFlagsBits.ManageChannels,
     PermissionFlagsBits.MoveMembers, PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect,
     PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks,
     PermissionFlagsBits.AttachFiles])

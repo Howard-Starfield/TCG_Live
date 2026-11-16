@@ -14,16 +14,27 @@ const roomIds = ['M1', 'M2'] as const;
 const flags = PermissionFlagsBits;
 const everyoneAllow = flags.ViewChannel | flags.Connect | flags.ReadMessageHistory;
 const everyoneDeny = flags.SendMessages | flags.AddReactions | flags.UseApplicationCommands;
+// No ManageRoles: only administrators can put it in a channel overwrite. The bot changes overwrites through its server-level
+// Manage Roles.
 const botAllow = everyoneAllow | flags.SendMessages | flags.EmbedLinks | flags.AttachFiles |
-  flags.ManageRoles | flags.ManageChannels | flags.MoveMembers;
+  flags.ManageChannels | flags.MoveMembers;
 const organizerAllow = everyoneAllow | flags.SendMessages | flags.EmbedLinks;
 const pairAllow = flags.SendMessages | flags.AddReactions | flags.UseApplicationCommands;
 
+/**
+ * Rooms set up before the pool carry a per-channel Manage Permissions (Manage Roles) overwrite for the bot, and without it the bot
+ * could no longer edit that room's overwrites. A room keeps it when it already has it; it is never added.
+ */
+export function botHasManageRoles(current: readonly RoomOverwrite[], botId: string): boolean {
+  const own = current.find(row => row.id === botId && row.type === 1);
+  return !!own && (BigInt(own.allow) & flags.ManageRoles) !== 0n;
+}
+
 export function roomPlan(guildId: string, botId: string, organizerId: string,
-  pair: string[]): RoomOverwrite[] {
+  pair: string[], keepManageRoles = false): RoomOverwrite[] {
   return [
     { id: guildId, type: 0, allow: everyoneAllow.toString(), deny: everyoneDeny.toString() },
-    { id: botId, type: 1, allow: botAllow.toString(), deny: '0' },
+    { id: botId, type: 1, allow: (keepManageRoles ? botAllow | flags.ManageRoles : botAllow).toString(), deny: '0' },
     // An organizer who plays here keeps the organizer overwrite and gains the players' rights on top of it.
     { id: organizerId, type: 1, allow: (pair.includes(organizerId) ? organizerAllow | pairAllow : organizerAllow).toString(), deny: '0' },
     ...pair.filter(id => id !== botId && id !== organizerId).map(id =>
@@ -37,9 +48,20 @@ export function sameOverwrites(left: readonly RoomOverwrite[], right: readonly R
   return normalize(left) === normalize(right);
 }
 
+const ROOM_BACKUP_DIRECTORY = fileURLToPath(new URL('../../../../data/discord-room-overwrites/', import.meta.url));
+
+/** The overwrites saved before the bot first changed this room, or null when there is no (readable) backup. */
+export async function readRoomOverwritesBackup(guildId: string, roomId: string, directory = ROOM_BACKUP_DIRECTORY): Promise<RoomOverwrite[] | null> {
+  try {
+    const saved = JSON.parse(await readFile(join(directory, `${guildId}-${roomId}.json`), 'utf8')) as { guildId?: string; roomId?: string; overwrites?: unknown };
+    if (saved.guildId !== guildId || saved.roomId !== roomId || !Array.isArray(saved.overwrites)) return null;
+    return saved.overwrites as RoomOverwrite[];
+  } catch { return null; }
+}
+
 export async function backupRoomOverwrites(guildId: string, roomId: string,
   original: readonly RoomOverwrite[],
-  directory = fileURLToPath(new URL('../../../../data/discord-room-overwrites/', import.meta.url))): Promise<void> {
+  directory = ROOM_BACKUP_DIRECTORY): Promise<void> {
   const path = join(directory, `${guildId}-${roomId}.json`);
   try {
     await mkdir(directory, { recursive: true });
@@ -83,7 +105,7 @@ export class MatchRoomReconciler {
     private readonly now: () => number = Date.now,
     private readonly backup = backupRoomOverwrites,
     private readonly poolBots: Pick<VoicePoolIdentities, 'has'> = voicePoolIdentities) {
-    if (!config.publicMatchRooms || !config.matchChannels) throw new RuleError('Public match rooms are not configured.');
+    if (!config.publicMatchRooms) throw new RuleError('Public match rooms are not configured.');
   }
 
   trigger(explicit = false, changedMemberId?: string): Promise<void> {
@@ -119,10 +141,12 @@ export class MatchRoomReconciler {
       if (error instanceof NoActiveSessionError) return null;
       throw error;
     });
+    // The configured rooms of the old setup (the env fixture) still follow the legacy M1/M2 path; the pool's rooms never do.
+    const legacyRooms: readonly Room[] = this.config.matchChannels ? roomIds : [];
     if (!snapshot) {
-      const desired = roomPlan(this.config.guildId, this.botId, this.config.adminId, []);
-      for (const room of roomIds) {
+      for (const room of legacyRooms) {
         const current = await this.transport.current(room);
+        const desired = roomPlan(this.config.guildId, this.botId, this.config.adminId, [], botHasManageRoles(current, this.botId));
         if (sameOverwrites(current, desired)) continue;
         this.requireActive();
         await this.transport.assertPermissions(room, 'policy');
@@ -142,11 +166,11 @@ export class MatchRoomReconciler {
       this.failedMoves.delete(id);
       this.loggedMoves.delete(id);
     }
-    for (const room of state.firstRound ? state.matches.map(match => match.id) : roomIds) {
+    for (const room of state.firstRound ? state.matches.map(match => match.id) : legacyRooms) {
       this.requireActive();
       const pair = state.matches.find(match => match.id === room)!.players.map(player => players?.[player]).filter((id): id is string => !!id);
-      const desired = roomPlan(this.config.guildId, this.botId, session.identity_map.adminId, pair);
       const current = await this.transport.current(room);
+      const desired = roomPlan(this.config.guildId, this.botId, session.identity_map.adminId, pair, botHasManageRoles(current, this.botId));
       const key = JSON.stringify({ desired, current });
       if (sameOverwrites(current, desired)) { this.failedPlans.delete(room); continue; }
       if (!explicit && this.failedPlans.get(room) === key) throw new RuleError(`Public match room ${room} policy is pending; use Refresh after permissions are fixed.`);

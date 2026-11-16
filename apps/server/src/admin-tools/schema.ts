@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import type pg from 'pg';
 import { requireEvidenceSchema } from '../evidence/schema.js';
 import { RuleError } from '../rehearsal/domain.js';
-import { ADMIN_TOOLS_TABLES, adminToolsSetupDecision, classifyPublicSchema, LFG_TABLES, PUBLIC_RELATIONS_SQL } from '../rehearsal/schema-tables.js';
+import { ADMIN_TOOLS_TABLES, adminToolsSetupDecision, classifyPublicSchema, LFG_TABLES, MATCH_ROOM_TABLES, PUBLIC_RELATIONS_SQL } from '../rehearsal/schema-tables.js';
 import { transaction, withClient } from '../rehearsal/store.js';
 
 /** A RuleError, so the shared isDatabaseUnavailable() maps it to a 503 with this setup hint. */
@@ -16,6 +16,9 @@ export const LFG_MIGRATION = new URL('../../../../database/migrations/014_lfg.sq
 
 /** Migration 016 (the actor snapshot column on the rehearsal audit), applied right after 014 by setupAdminToolsSchema. */
 export const STAFF_ACTOR_SNAPSHOT_MIGRATION = new URL('../../../../database/migrations/016_staff_actor_snapshot.sql', import.meta.url);
+
+/** Migration 017 (match rooms and their transcripts), applied right after 016 by setupAdminToolsSchema. */
+export const MATCH_ROOMS_MIGRATION = new URL('../../../../database/migrations/017_match_rooms.sql', import.meta.url);
 
 /** Tables only (sequences are implied by their bigserial owners). */
 const REQUIRED = ADMIN_TOOLS_TABLES.filter(name => !name.endsWith('_seq'));
@@ -36,8 +39,16 @@ export async function requireLfgSchema(client: pg.Client): Promise<void> {
   if ((result.rows[0]?.missing ?? 1) !== 0) throw new AdminToolsSchemaUnavailableError(ADMIN_TOOLS_SETUP_HINT);
 }
 
+/** Match room queries check this first (013 tables plus 017). Callers that can live without it catch this error. */
+export async function requireMatchRoomsSchema(client: pg.Client): Promise<void> {
+  await requireAdminToolsSchema(client);
+  const result = await client.query<{ missing: number }>(
+    `SELECT count(*)::int AS missing FROM unnest($1::text[]) AS name WHERE to_regclass('public.' || name) IS NULL`, [[...MATCH_ROOM_TABLES]]);
+  if ((result.rows[0]?.missing ?? 1) !== 0) throw new AdminToolsSchemaUnavailableError(ADMIN_TOOLS_SETUP_HINT);
+}
+
 /**
- * Explicit additive migrations 013, 014 (LFG) and 016 (actor snapshot), run after setupEvidenceSchema(). Uses its own advisory lock and the
+ * Explicit additive migrations 013, 014 (LFG), 016 (actor snapshot) and 017 (match rooms), run after setupEvidenceSchema(). Uses its own advisory lock and the
  * exact-table-list guard: it runs only on the known evidence shape (or reapplies on its own shape).
  */
 export async function setupAdminToolsSchema(): Promise<'created' | 'already_ready'> {
@@ -51,6 +62,7 @@ export async function setupAdminToolsSchema(): Promise<'created' | 'already_read
     const hadLfg = classifyPublicSchema(objects.rows.map(row => row.relname)) === 'v2_directory_evidence_admin_tools_lfg';
     await client.query(await readFile(LFG_MIGRATION, 'utf8'));
     await client.query(await readFile(STAFF_ACTOR_SNAPSHOT_MIGRATION, 'utf8'));
+    await client.query(await readFile(MATCH_ROOMS_MIGRATION, 'utf8'));
     return decision === 'already_ready' && hadLfg ? 'already_ready' : 'created';
   }));
 }
