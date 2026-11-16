@@ -57,6 +57,17 @@ describe('capabilities data', () => {
     expect(sub('tcg-admin').has('tempban')).toBe(false);
   });
 
+  it('describes match rooms and room chat transcripts, linking the Rooms tab', () => {
+    const rooms = CAPABILITIES.find(entry => entry.id === 'match-rooms')!;
+    expect(rooms.what).toMatch(/2 per 10 minutes/);
+    expect(rooms.where).toContainEqual(expect.objectContaining({ kind: 'dashboard', link: { page: 'admin-tools', tab: 'rooms' } }));
+    expect(rooms.checks).toContain('perm:tournament.roundRooms');
+    const chat = CAPABILITIES.find(entry => entry.id === 'room-chat')!;
+    expect(chat.needs).toMatch(/Manage Messages/);
+    expect(chat.what).toMatch(/Message Content intent/);
+    expect(CAPABILITIES.find(entry => entry.id === 'setup-wizard')!.what).not.toMatch(/voice room/);
+  });
+
   it('states who may use each staff action, and that /tcg-staff is visible to everyone', () => {
     const entry = (id: string) => CAPABILITIES.find(item => item.id === id)!;
     expect(entry('tcg-staff-command').what).toContain('visible to everyone');

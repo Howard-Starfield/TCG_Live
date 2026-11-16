@@ -886,6 +886,30 @@ describe('Home task board and match drawer', () => {
     expect(within(drawer).queryByRole('button', { name: 'Close issue' })).toBeNull();
   });
 
+  it('shows a Room chat section for staff with Admin tools access, and none without it', async () => {
+    const user = userEvent.setup();
+    const summary = { id: 't1', eventId: liveDispute.eventId, matchId: 'M2', channelId: '200000000000000002', channelName: '🎮 M2', startedAtMs: 1,
+      archivedAtMs: FIXTURE_NOW_MS - 60_000, reason: 'reassigned', messageCount: 3, contentAvailable: false, skippedOld: 0, hold: false };
+    const { server } = renderConsole({ snapshot: liveDispute, setup: srv => {
+      discord(srv);
+      srv.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', adminTools: true }));
+      srv.always('GET /admin-tools/match-rooms/transcripts', () => json(200, [summary]));
+    } });
+    await user.click(await (await board()).findByRole('button', { name: 'Match M2' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    const section = within(await within(drawer).findByRole('region', { name: 'Room chat' }));
+    expect(await section.findByText('No message text')).toBeInTheDocument();
+    expect(server.callsTo('GET /admin-tools/match-rooms/transcripts')[0]?.url).toMatch(/eventId=.*&matchId=M2/);
+  });
+
+  it('has no Room chat section without Admin tools access', async () => {
+    const user = userEvent.setup();
+    mountHome();
+    await user.click(await (await board()).findByRole('button', { name: 'Match M2' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    expect(within(drawer).queryByRole('region', { name: 'Room chat' })).toBeNull();
+  });
+
   it('lays the drawer out as a rail of sections when expanded, and a summary strip when narrow', async () => {
     const user = userEvent.setup();
     mountHome();

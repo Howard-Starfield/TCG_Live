@@ -174,6 +174,14 @@ export const CAPABILITIES: readonly CapabilityEntry[] = [
   { id: 'at-tickets', area: 'Admin tools', name: 'Tickets', what: 'A Create ticket panel, private ticket channels, transcripts (export) with close and reopen.',
     where: [{ kind: 'dashboard', path: 'Admin tools > Tickets', link: tab('tickets') }, { kind: 'button', label: 'Create ticket', on: 'the support channel panel' }],
     who: 'Members open; staff roles answer; dashboard: members.read', needs: 'Manage Channels, Message Content intent for full transcripts', checks: ['admin-tools', 'perm:tickets.'] },
+  { id: 'match-rooms', area: 'Admin tools', name: 'Match rooms', what: 'The bot keeps a pool of numbered voice rooms (table 3 serves match M3) and reuses them across rounds and events. Choose the category and a name template such as 🎮 {match}, rename a room, add an existing voice channel, and see how many of the server’s 500 channels are free. Renames queue because Discord allows 2 per 10 minutes. After the tournament, Clean up deletes the rooms the bot created and restores the ones it adopted, only after you confirm.',
+    where: [{ kind: 'dashboard', path: 'Admin tools > Rooms', link: tab('rooms') }, { kind: 'automatic', detail: 'creates and reuses the rooms when a round publishes' }],
+    who: 'Dashboard: server.manage to change; members.read to look', needs: 'Manage Channels, View Channel, Connect (rooms and their category)',
+    checks: ['admin-tools', 'perm:tournament.roundRooms', 'perm:tournament.roomCategory'], wave: 'next' },
+  { id: 'room-chat', area: 'Admin tools', name: 'Room chat transcripts', what: 'Before a room gets a new match, and before it is deleted at clean-up, the bot saves that room’s text chat as a transcript and clears it. Read it under Room chat in the match drawer, hold it, or export it from the event. Message text needs the Message Content intent; without it the transcript keeps the author, time and attachments. Kept for the evidence retention period unless held.',
+    where: [{ kind: 'dashboard', path: 'Home > match drawer > Room chat', link: { page: 'home' } }, { kind: 'dashboard', path: 'Event > Audit tab > Room chat transcripts', link: EVENT }],
+    who: 'Dashboard: members.read', needs: 'View Channel, Read Message History, Manage Messages (rooms); Message Content intent for the text',
+    checks: ['admin-tools', 'perm:tournament.roomChat'], wave: 'next' },
   { id: 'at-roles', area: 'Admin tools', name: 'Roles', what: 'Button-role panels and bulk role changes for tournament players.',
     where: [{ kind: 'dashboard', path: 'Admin tools > Roles', link: tab('roles') }], who: 'Dashboard: server.manage', needs: 'Manage Roles', checks: ['admin-tools', 'perm:roles.'] },
   { id: 'at-announcements', area: 'Admin tools', name: 'Announcements', what: 'Compose, preview and schedule announcements with role pings (and opt-in @everyone).',
@@ -216,7 +224,7 @@ export const CAPABILITIES: readonly CapabilityEntry[] = [
     where: [{ kind: 'dashboard', path: 'Admin tools > Bots > Match rooms', link: tab('bots') }], who: 'Dashboard: moderation.manage', checks: ['moderation'], wave: 'next' },
 
   // ---------------------------------------------------------------- Setup & permissions
-  { id: 'setup-wizard', area: 'Setup & permissions', name: 'Setup wizard', what: 'Pick the server, channels and admin (or create a missing text channel or voice room), choose the dashboard options, check readiness and finish the first start.',
+  { id: 'setup-wizard', area: 'Setup & permissions', name: 'Setup wizard', what: 'Pick the server, the signup channel and admin (or create a missing text channel), choose where match rooms go (a category, or create one), choose the dashboard options, check readiness and finish the first start.',
     where: [{ kind: 'dashboard', path: 'First start' }], who: ADMIN },
   { id: 'permission-checker', area: 'Setup & permissions', name: 'Permission checker and grant link', what: 'Lists what the bot is missing and why, with an invite link that grants it.',
     where: [{ kind: 'dashboard', path: 'Admin tools > Settings > Bot permissions', link: tab('settings') }], who: ADMIN, checks: ['admin-tools', 'perm:'] },

@@ -7,6 +7,7 @@ import { useAdminData } from '../../../data';
 import { Badge, Button, ConfirmDialog, Field, Input, StatusDot, Switch, cx } from '../../../ui';
 import { describeError } from '../../evidence/api';
 import { removeVoiceBot } from '../../moderation/api';
+import { useRoomNames } from '../match-rooms/api';
 import { replaceVoiceBotToken, retryVoiceBot, updateVoiceBot, verifyVoiceBot } from './api';
 import { VerifyReport } from './VerifyReport';
 
@@ -41,11 +42,12 @@ export function BotCard({ bot, channelIds, disabled, onPool, cardRef, highlightC
   const [nickname, setNickname] = useState(bot.nickname ?? '');
   const [removing, setRemoving] = useState(false);
 
+  const roomNames = useRoomNames();
   const run = async (work: () => Promise<void>, fallback: string) => {
     setBusy(true); setError(null); setMessage(null);
     try { await work(); } catch (cause) { setError(describeError(cause, fallback)); } finally { setBusy(false); }
   };
-  const room = bot.assignedMatchId ? `${bot.assignedMatchId}${bot.assignedChannelId ? ` · #${bot.assignedChannelId}` : ''}` : 'Free';
+  const room = bot.assignedMatchId ? `${bot.assignedMatchId}${bot.assignedChannelId ? ` · ${roomNames.get(bot.assignedChannelId) ?? `#${bot.assignedChannelId}`}` : ''}` : 'Free';
   const enabled = bot.enabled !== false;
   const status = !enabled ? 'Disabled' : bot.status ? STATUS_TEXT[bot.status] ?? bot.status : bot.connected ? 'Connected' : 'Not connected';
   const nicknameError = nickname.trim().length > L.voiceBotNicknameLength ? `Up to ${L.voiceBotNicknameLength} characters.` : null;

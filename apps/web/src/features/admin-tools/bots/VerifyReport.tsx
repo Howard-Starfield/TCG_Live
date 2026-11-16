@@ -1,8 +1,10 @@
 // Token-free result of POST /moderation/voice-bots/:id/verify.
 import type { VoiceBotVerifyReportDto } from '@tcg-live/core';
 import { Badge } from '../../../ui';
+import { useRoomNames } from '../match-rooms/api';
 
 export function VerifyReport({ report }: { report: VoiceBotVerifyReportDto }) {
+  const roomNames = useRoomNames();
   const ok = report.tokenValid && report.inServer && report.problems.length === 0;
   return <div role="status" aria-label="Verify report" className="flex flex-col gap-1.5 rounded-md bg-sunken p-2 text-xs">
     <p className="font-medium text-fg">{ok ? 'Ready: the helper can join every checked room.' : 'Needs attention'}</p>
@@ -14,7 +16,7 @@ export function VerifyReport({ report }: { report: VoiceBotVerifyReportDto }) {
     {report.channels.length > 0 && <ul aria-label="Room checks" className="flex flex-wrap gap-1">
       {report.channels.map(channel => <li key={channel.channelId}>
         <Badge tone={channel.state === 'ok' ? 'success' : channel.state === 'problem' ? 'danger' : 'neutral'}>
-          #{channel.channelId}: {channel.state === 'ok' ? 'View + Connect' : channel.state === 'problem' ? 'missing View Channel or Connect' : 'unknown'}
+          {roomNames.get(channel.channelId) ?? `#${channel.channelId}`}: {channel.state === 'ok' ? 'View + Connect' : channel.state === 'problem' ? 'missing View Channel or Connect' : 'unknown'}
         </Badge>
       </li>)}
     </ul>}

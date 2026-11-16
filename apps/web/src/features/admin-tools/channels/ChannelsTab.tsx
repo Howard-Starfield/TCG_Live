@@ -54,7 +54,7 @@ function CreateChannelDialog({ open, onClose, onCreated }: { open: boolean; onCl
     close();
   };
   return <EditorDialog open={open} title="New channel" width="md" busy={create.pending} dirty={dirty} onClose={close}
-    description="Needs the bot’s Manage Channels permission. Tournament match rooms must start with “TCG Match”."
+    description="Needs the bot’s Manage Channels permission. The bot creates and names tournament match rooms itself; see the Rooms tab."
     footer={<>
       <Button type="button" variant="ghost" size="sm" onClick={close} disabled={create.pending}>Cancel</Button>
       <Button type="submit" form={formId} variant="primary" size="sm" loading={create.pending}>Create channel</Button>
@@ -62,7 +62,7 @@ function CreateChannelDialog({ open, onClose, onCreated }: { open: boolean; onCl
     <form id={formId} noValidate aria-label="New channel" className="flex flex-col gap-3" onSubmit={event => { event.preventDefault(); void submit(); }}>
       <Field label="Name" required error={touched && !trimmedName ? 'A name is required.' : undefined}
         description="Discord lowercases text channel names and replaces spaces with hyphens.">
-        <Input value={name} maxLength={L.channelNameLength} placeholder={type === 'text' ? 'side-events' : 'TCG Match 3'}
+        <Input value={name} maxLength={L.channelNameLength} placeholder={type === 'text' ? 'side-events' : 'Practice room'}
           onChange={event => { setName(event.target.value); create.clear(); }} />
       </Field>
       <SegmentedControl label="Channel type" value={type} onChange={value => setType(value as 'text' | 'voice')}

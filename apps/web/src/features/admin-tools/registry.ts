@@ -13,9 +13,10 @@ import { LogsTab } from './logs/LogsTab';
 import { RolesTab } from './roles/RolesTab';
 import { AnnouncementsTab } from './announcements/AnnouncementsTab';
 import { LfgTab } from './lfg/LfgTab';
-import { Gamepad2 } from 'lucide-react';
+import { DoorOpen, Gamepad2 } from 'lucide-react';
 import { AudioLines } from 'lucide-react';
 import { BotsTab } from './bots/BotsTab';
+import { MatchRoomsTab } from './match-rooms/MatchRoomsTab';
 
 export interface AdminToolsTab {
   /** Stable, URL-safe ID (also the tab panel ID). */
@@ -51,6 +52,8 @@ export const adminToolsTabs: readonly AdminToolsTab[] = [
   { id: 'lfg', label: 'LFG', icon: Gamepad2, capability: 'members.read', Component: LfgTab },
   // Voice bots (helper bots, room policies)
   { id: 'bots', label: 'Bots', icon: AudioLines, capability: 'moderation.manage', Component: BotsTab },
+  // Match rooms (the bot's pool of voice tables)
+  { id: 'rooms', label: 'Rooms', icon: DoorOpen, capability: 'members.read', Component: MatchRoomsTab },
   // (D) logs
   { id: 'logs', label: 'Logs', icon: Wrench, capability: 'members.read',
     Component: LogsTab },

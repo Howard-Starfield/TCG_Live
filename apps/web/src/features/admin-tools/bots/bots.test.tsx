@@ -1,7 +1,7 @@
 import { CAPABILITIES, DEFAULT_MODERATION_SETTINGS, type ModerationSettingsBodyDto, type ModerationSettingsDto, type VoiceBotPoolDto,
   type VoiceBotVerifyReportDto } from '@tcg-live/core';
 import { FIXTURE_NOW_MS } from '@tcg-live/core/fixtures';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MotionGlobalConfig } from 'motion/react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
@@ -112,6 +112,25 @@ describe('Bots tab', () => {
       '200000000000000001': { coverage: 'auto', recording: 'inherit', priority: 'normal', pinnedBotId: HELPER },
       '200000000000000002': { coverage: 'never', recording: 'inherit', priority: 'normal', pinnedBotId: null } });
     expect(await screen.findByText('Room settings saved.')).toBeInTheDocument();
+  });
+
+  it('names the rooms the bot made, in the room grid, the bot card and the verify report', async () => {
+    const room = (table: number, name: string | null) => ({ channelId: `20000000000000000${table}`, table, categoryId: null, origin: 'created' as const, name,
+      missing: false, customName: null, templateName: name ?? '', pendingName: null, rename: { state: 'synced' as const, nextAttemptAtMs: null, error: null },
+      assignedMatch: null, connected: null, recording: null, removeBlockedReason: null });
+    mount(<BotsTab />, server => {
+      server.always('GET /session', () => json(200, { ...sessionFixture, capabilities: [...CAPABILITIES], evidence: true, moderation: true, adminTools: true }));
+      server.always('GET /moderation/voice-bots', () => json(200, { ...POOL, bots: [...POOL.bots, helperDto] }));
+      server.always('GET /admin-tools/match-rooms', () => json(200, { rooms: [room(1, '🎮 M1'), room(2, null)] }));
+      server.always(`POST /moderation/voice-bots/${HELPER}/verify`, () => json(200, REPORT));
+    });
+    const grid = within(await screen.findByRole('region', { name: 'Match rooms' }));
+    expect(await grid.findByText('M1 · 🎮 M1')).toBeInTheDocument();
+    // A room without a name falls back to its channel ID.
+    expect(grid.getByText('#200000000000000002')).toBeInTheDocument();
+    expect(screen.getAllByText(/M1 · 🎮 M1/).length).toBeGreaterThanOrEqual(2);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Verify' }).at(-1)!);
+    expect(await screen.findByText(/🎮 M1: missing View Channel or Connect/)).toBeInTheDocument();
   });
 
   it('capacity: rooms minus enabled bots while the runtime is off', () => {

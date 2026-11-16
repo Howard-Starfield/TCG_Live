@@ -16,11 +16,18 @@ const ready: SetupCheckDto = { valid: true, frozen: false, botName: 'BoBoAssist'
     { slot: 'M1', channelId: ids[2]!, channelName: 'TCG Match 1', missing: [] },
     { slot: 'M2', channelId: ids[3]!, channelName: 'TCG Match 2', missing: [] }
   ] };
+// A selection made after the room pool: no M1 and M2, and a category choice instead.
+const roomsSelection: SetupSelectionDto = { guildId: ids[0]!, channelId: ids[1]!, matchChannels: null,
+  matchRooms: { categoryId: ids[2]!, createCategory: false }, adminId: ids[4]!, publicMatchRooms: true };
+const roomsReady: SetupCheckDto = { ...ready, capabilities: [
+  { slot: 'signup', channelId: ids[1]!, channelName: 'signup', missing: [] },
+  { slot: 'rooms', channelId: ids[2]!, channelName: 'Matches', missing: [] }] };
 const guilds = [{ id: ids[0]!, name: 'TCG Test', ownerId: ids[4]! }];
 const channels = [
   { id: ids[1]!, name: 'signup', category: 'Tournament', type: 'text' },
   { id: ids[2]!, name: 'TCG Match 1', category: 'Tournament', type: 'voice' },
-  { id: ids[3]!, name: 'TCG Match 2', category: 'Tournament', type: 'voice' }
+  { id: ids[3]!, name: 'TCG Match 2', category: 'Tournament', type: 'voice' },
+  { id: '777777777777777777', name: 'Matches', category: null, type: 'category' }
 ];
 
 function mountSetup(status: object, check = ready) {
@@ -34,24 +41,89 @@ function mountSetup(status: object, check = ready) {
   } });
 }
 
-it('guided setup chooses server and channels, checks readiness, then starts once', async () => {
+it('guided setup chooses server, signup channel and a room category, checks readiness, then starts once', async () => {
   const user = userEvent.setup();
   const { server } = mountSetup({ prerequisite: null, activeEventId: null, selection: null,
-    frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
+    frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false }, roomsReady);
   expect(await screen.findByRole('heading', { name: 'Connect your tournament' })).toBeInTheDocument();
   await user.selectOptions(await screen.findByRole('combobox', { name: /Discord server/ }), ids[0]!);
   expect(screen.getByRole('textbox', { name: /Organizer Discord ID/ })).toHaveValue(ids[4]);
   await user.click(screen.getByRole('button', { name: 'Next: channels' }));
   await user.selectOptions(await screen.findByRole('combobox', { name: /Signup text channel/ }), ids[1]!);
-  await user.selectOptions(screen.getByRole('combobox', { name: /M1 match voice room/ }), ids[2]!);
-  await user.selectOptions(screen.getByRole('combobox', { name: /M2 match voice room/ }), ids[3]!);
+  // No M1 or M2 pickers; a category picker (categories only) and the create switch instead.
+  expect(screen.queryByRole('combobox', { name: /match voice room/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /New voice room/ })).not.toBeInTheDocument();
+  const category = screen.getByRole('combobox', { name: /Put match rooms in/ });
+  expect(within(category).getAllByRole('option').map(option => option.textContent)).toEqual(['No category', 'Matches']);
+  await user.selectOptions(category, '777777777777777777');
+  expect(screen.queryByText(/Your current rooms join the pool/)).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Check readiness' }));
   expect(await screen.findByText(/Manage Permissions: green Allow/)).toBeInTheDocument();
-  expect(screen.getAllByText('Ready')).toHaveLength(3);
-  expect(server.callsTo('POST /setup/check')[0]?.body).toEqual(selection);
+  expect(screen.getAllByText('Ready')).toHaveLength(2);
+  expect(screen.getByText('Match rooms', { selector: 'p' })).toBeInTheDocument();
+  const expected = { ...roomsSelection, matchRooms: { categoryId: '777777777777777777', createCategory: false } };
+  expect(server.callsTo('POST /setup/check')[0]?.body).toEqual(expected);
   await user.click(screen.getByRole('button', { name: 'Save and Start' }));
   expect(await screen.findByText('Setup complete. Opening dashboard…')).toBeInTheDocument();
-  expect(server.callsTo('POST /setup/finish')[0]?.body).toEqual(selection);
+  expect(server.callsTo('POST /setup/finish')[0]?.body).toEqual(expected);
+});
+
+it('"Create a TCG Live — Matches category" replaces the picked category', async () => {
+  const user = userEvent.setup();
+  const { server } = mountSetup({ prerequisite: null, activeEventId: null, selection: null,
+    frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false }, roomsReady);
+  await user.selectOptions(await screen.findByRole('combobox', { name: /Discord server/ }), ids[0]!);
+  await user.click(screen.getByRole('button', { name: 'Next: channels' }));
+  await user.selectOptions(await screen.findByRole('combobox', { name: /Signup text channel/ }), ids[1]!);
+  await screen.findByRole('option', { name: 'Matches' });
+  await user.selectOptions(screen.getByRole('combobox', { name: /Put match rooms in/ }), '777777777777777777');
+  const create = screen.getByRole('switch', { name: 'Create a “TCG Live — Matches” category' });
+  await user.click(create);
+  expect(create).toHaveAttribute('aria-checked', 'true');
+  expect(screen.getByRole('combobox', { name: /Put match rooms in/ })).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: 'Check readiness' }));
+  await screen.findByText(/Manage Permissions: green Allow/);
+  expect(server.callsTo('POST /setup/check')[0]?.body).toEqual({ ...roomsSelection, matchRooms: { categoryId: null, createCategory: true } });
+});
+
+it('bot-managed rooms are always public: a new setup has no Public match rooms switch, a legacy one keeps it', async () => {
+  const user = userEvent.setup();
+  mountSetup({ prerequisite: null, activeEventId: null, selection: roomsSelection, frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
+  await user.click(await screen.findByRole('button', { name: 'Next: channels' }));
+  await screen.findByRole('combobox', { name: /Put match rooms in/ });
+  expect(screen.queryByRole('switch', { name: 'Public match rooms' })).not.toBeInTheDocument();
+  expect(screen.getByText(/always public/)).toBeInTheDocument();
+});
+
+it('a legacy selection keeps the Public match rooms switch', async () => {
+  const user = userEvent.setup();
+  mountSetup({ prerequisite: null, activeEventId: null, selection, frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
+  await user.click(await screen.findByRole('button', { name: 'Next: channels' }));
+  expect(await screen.findByRole('switch', { name: 'Public match rooms' })).toBeEnabled();
+});
+
+it('a legacy selection shows the pool note, no pickers, and is sent back unchanged', async () => {
+  const user = userEvent.setup();
+  const { server } = mountSetup({ prerequisite: null, activeEventId: null, selection,
+    frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
+  await user.click(await screen.findByRole('button', { name: 'Next: channels' }));
+  expect(await screen.findByText('Your current rooms join the pool and get the room naming at the next event.')).toBeInTheDocument();
+  expect(screen.queryByRole('combobox', { name: /match voice room/ })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Check readiness' }));
+  expect(await screen.findByText(/Manage Permissions: green Allow/)).toBeInTheDocument();
+  // The server still reports the old rows for a legacy check.
+  expect(screen.getAllByText('Ready')).toHaveLength(3);
+  expect(server.callsTo('POST /setup/check')[0]?.body).toEqual(selection);
+});
+
+it('a check without a room row still shows a Match rooms row for the chosen category', async () => {
+  const user = userEvent.setup();
+  mountSetup({ prerequisite: null, activeEventId: null, selection: roomsSelection, frozen: false, botName: 'BoBoAssist', check: null,
+    openingDashboard: false }, { ...roomsReady, capabilities: [] });
+  await user.click(await screen.findByRole('button', { name: 'Next: channels' }));
+  await user.click(screen.getByRole('button', { name: 'Check readiness' }));
+  const readiness = await screen.findByRole('region', { name: 'Readiness' });
+  expect(within(readiness).getByText('Match rooms', { selector: 'p' })).toBeInTheDocument();
 });
 
 it('frozen active setup locks saved destinations and preserves private mode', async () => {
@@ -145,29 +217,27 @@ it('sessions without local settings show no switches and never call the settings
   expect(server.callsTo('GET /settings/local')).toHaveLength(0);
 });
 
-it('creates missing channels from the wizard and selects them in their slots', async () => {
+it('creates a missing signup channel from the wizard and selects it', async () => {
   const user = userEvent.setup();
   const { server } = mountSetup({ prerequisite: null, activeEventId: null, selection: null,
     frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
-  server.once('POST /setup/channels', () => json(201, { id: '666666666666666666', name: 'TCG Match 3', category: null, type: 'voice' }));
+  server.once('POST /setup/channels', () => json(201, { id: '666666666666666666', name: 'tcg-signups', category: null, type: 'text' }));
   server.once('POST /setup/channels', () => json(403, { error: { code: 'forbidden', message: 'The bot needs the Manage Channels permission in this server to create channels.' } }));
   await user.selectOptions(await screen.findByRole('combobox', { name: /Discord server/ }), ids[0]!);
   await user.click(screen.getByRole('button', { name: 'Next: channels' }));
   await screen.findByRole('option', { name: 'signup' });
-  const m1 = screen.getAllByRole('button', { name: /New voice room/ })[0]!;
-  await user.click(m1);
-  const group = await screen.findByRole('dialog', { name: 'New voice room' });
-  const name = within(group).getByRole('textbox', { name: /New voice room name/ });
-  expect(name).toHaveValue('TCG Match 1');
-  await user.clear(name);
-  await user.type(name, 'TCG Match 3');
-  await user.click(within(group).getByRole('button', { name: 'Create' }));
-  await waitFor(() => expect(screen.getByRole('combobox', { name: /M1 match voice room/ })).toHaveValue('666666666666666666'));
-  expect(server.callsTo('POST /setup/channels')[0]?.body).toEqual({ guildId: ids[0], name: 'TCG Match 3', type: 'voice' });
   await user.click(screen.getByRole('button', { name: /New text channel/ }));
   const text = await screen.findByRole('dialog', { name: 'New text channel' });
+  const name = within(text).getByRole('textbox', { name: /New text channel name/ });
+  await user.clear(name);
+  await user.type(name, 'tcg-signups');
   await user.click(within(text).getByRole('button', { name: 'Create' }));
-  expect(await within(text).findByRole('alert')).toHaveTextContent(/Manage Channels/);
+  await waitFor(() => expect(screen.getByRole('combobox', { name: /Signup text channel/ })).toHaveValue('666666666666666666'));
+  expect(server.callsTo('POST /setup/channels')[0]?.body).toEqual({ guildId: ids[0], name: 'tcg-signups', type: 'text' });
+  await user.click(screen.getByRole('button', { name: /New text channel/ }));
+  const again = await screen.findByRole('dialog', { name: 'New text channel' });
+  await user.click(within(again).getByRole('button', { name: 'Create' }));
+  expect(await within(again).findByRole('alert')).toHaveTextContent(/Manage Channels/);
 });
 
 it('pressing Enter twice while Discord is creating a channel sends one request', async () => {
@@ -220,4 +290,24 @@ it('step 3 reports the roles result, with the fallback when creation failed', as
   expect(roles).toHaveTextContent('TCG Judge: could not be created.');
   expect(roles).toHaveTextContent('The bot needs Manage Roles.');
   expect(roles).toHaveTextContent('only the server owner and this dashboard act as organizer');
+});
+
+it('step 3 shows a room settings problem without failing setup', async () => {
+  const user = userEvent.setup();
+  renderConsole({ setup: server => {
+    server.always('GET /session', () => json(200, { ...sessionFixture, setup: true }));
+    server.always('GET /setup', () => json(200, { prerequisite: null, activeEventId: null, selection: roomsSelection,
+      frozen: false, botName: 'BoBoAssist', check: roomsReady, openingDashboard: false }));
+    server.always('GET /setup/guilds', () => json(200, guilds));
+    server.always('GET /setup/channels', () => json(200, channels));
+    server.always('POST /setup/check', () => json(200, roomsReady));
+    server.always('POST /setup/finish', () => json(200, { openingDashboard: true, eventId: 'event',
+      rooms: { problem: 'The bot needs Manage Channels to create the category.' } }));
+  } });
+  await user.click(await screen.findByRole('button', { name: 'Next: channels' }));
+  await user.click(screen.getByRole('button', { name: 'Check readiness' }));
+  await user.click(await screen.findByRole('button', { name: 'Save and Start' }));
+  const rooms = await screen.findByRole('alert', { name: 'Match rooms' });
+  expect(rooms).toHaveTextContent('The bot needs Manage Channels to create the category.');
+  expect(screen.getByText('Setup complete. Opening dashboard…')).toBeInTheDocument();
 });
