@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { MotionGlobalConfig } from 'motion/react';
 import { describe, expect, it } from 'vitest';
 import { createHarness, sessionFixture } from '../../../app/testing';
+import { ToastProvider } from '../../../ui';
 import { AdminDataProvider } from '../../../data';
 import { json, type FakeServer } from '../../../data/test/fakes';
 import { emptyEmbed } from '../announcements/embed';
@@ -40,7 +41,7 @@ function routes(server: FakeServer, panels: ButtonRolePanelView[] = [], jobs: Bu
 }
 function mount(setup: (server: FakeServer) => void) {
   const harness = createHarness({ stream: false, setup });
-  render(<AdminDataProvider data={harness.data}><RolesTab /></AdminDataProvider>);
+  render(<ToastProvider><AdminDataProvider data={harness.data}><RolesTab /></AdminDataProvider></ToastProvider>);
   return harness;
 }
 
@@ -79,7 +80,7 @@ describe('Roles tab', () => {
       server.once('POST /admin-tools/button-roles/00000000-0000-4000-8000-0000000000aa/publish', () => json(200, panel()));
     });
     await user.click(await screen.findByRole('button', { name: 'New panel' }));
-    const editor = screen.getByRole('region', { name: 'Panel editor' });
+    const editor = await screen.findByRole('dialog', { name: 'New panel' });
     await waitFor(() => expect(within(editor).getAllByRole('option', { name: '#general' }).length).toBeGreaterThan(0));
     const [channel, mode] = within(editor).getAllByRole('combobox');
     await user.selectOptions(channel!, '200000000000000302');

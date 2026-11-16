@@ -5,6 +5,7 @@ import { MotionGlobalConfig } from 'motion/react';
 import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { createHarness, sessionFixture } from '../../../app/testing';
+import { ToastProvider } from '../../../ui';
 import { AdminDataProvider } from '../../../data';
 import { json, type FakeServer } from '../../../data/test/fakes';
 import { StickiesTab, stickyRequest } from '../stickies/StickiesTab';
@@ -33,7 +34,7 @@ function routes(server: FakeServer, capabilities: readonly Capability[] = CAPABI
 }
 function mountWith(ui: ReactNode, setup: (server: FakeServer) => void) {
   const harness = createHarness({ stream: false, setup });
-  render(<AdminDataProvider data={harness.data}>{ui}</AdminDataProvider>);
+  render(<ToastProvider><AdminDataProvider data={harness.data}>{ui}</AdminDataProvider></ToastProvider>);
   return harness;
 }
 
@@ -62,7 +63,7 @@ describe('sticky form', () => {
     expect(within(list).getByText(/Manage Messages/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /New sticky/ }));
-    const form = screen.getByRole('form', { name: 'New sticky' });
+    const form = await screen.findByRole('dialog', { name: 'New sticky' });
     const channel = within(form).getByRole('combobox');
     await waitFor(() => expect(within(channel).getByRole('option', { name: /tournament-signup/ })).toBeDisabled());
     await user.click(within(form).getByRole('button', { name: 'Save sticky' }));
@@ -78,6 +79,36 @@ describe('sticky form', () => {
     expect(dialog).toHaveTextContent(/#/);
     await user.click(within(dialog).getByRole('button', { name: 'Delete sticky' }));
     await waitFor(() => expect(harness.server.callsTo('DELETE /admin-tools/stickies/11111111-1111-4111-8111-111111111111')).toHaveLength(1));
+  });
+
+  it('creates through the dialog with a live preview, then highlights the new sticky', async () => {
+    const user = userEvent.setup();
+    const created = sticky({ id: '22222222-2222-4222-8222-222222222222', content: 'Be kind', status: null });
+    const stickies = [sticky()];
+    mountWith(<StickiesTab />, server => {
+      routes(server);
+      server.always('GET /admin-tools/stickies', () => json(200, { stickies: [...stickies] }));
+      server.once('POST /admin-tools/stickies', () => { stickies.push(created); return json(201, created); });
+    });
+    await screen.findByRole('list', { name: 'Sticky messages' });
+    await user.click(screen.getByRole('button', { name: /New sticky/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'New sticky' });
+    const preview = within(dialog).getByRole('figure', { name: 'Discord preview' });
+    await user.selectOptions(within(dialog).getByRole('combobox'), GENERAL);
+    await user.type(within(dialog).getByRole('textbox'), 'Be kind');
+    expect(within(preview).getByText('Be kind')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('switch', { name: 'Add an embed' }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Embed title' }), 'House rules');
+    expect(within(preview).getByText('House rules')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Save sticky' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New sticky' })).toBeNull());
+    expect(await screen.findByText('Sticky created')).toBeInTheDocument();
+    const list = screen.getByRole('list', { name: 'Sticky messages' });
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(2));
+    const item = within(list).getAllByRole('listitem')[1]!;
+    expect(item).toHaveTextContent('Be kind');
+    expect(item).toHaveClass('ring-2');
+    expect(within(list).getAllByRole('listitem')[0]).not.toHaveClass('ring-2');
   });
 });
 
@@ -142,16 +173,19 @@ describe('channel controls', () => {
       server.once('POST /admin-tools/channels/create', () => json(201, { id: NEW, name: 'side-events', type: 'text', parentId: null, position: 2, reserved: false }));
       server.always(`GET /admin-tools/channels/state/${NEW}`, () => json(200, { channelId: NEW, locked: false, slowmodeSeconds: 0 }));
     });
-    const section = await screen.findByRole('region', { name: 'Create a channel' });
-    const button = within(section).getByRole('button', { name: /Create channel/ });
-    expect(button).toBeDisabled();
-    await user.type(within(section).getByRole('textbox', { name: 'Name' }), 'Side Events');
-    await user.click(button);
-    const dialog = await screen.findByRole('alertdialog');
-    expect(dialog).toHaveTextContent('Create the text channel “Side Events”?');
-    await user.type(within(dialog).getByRole('textbox'), 'New format');
+    await user.click(await screen.findByRole('button', { name: 'New channel' }));
+    const dialog = await screen.findByRole('dialog', { name: 'New channel' });
+    await user.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'Side Events');
+    // The reason is required, in the same step: nothing is sent without it.
     await user.click(within(dialog).getByRole('button', { name: 'Create channel' }));
-    expect(await within(section).findByText('Created #side-events.')).toBeInTheDocument();
+    expect(await within(dialog).findByText('A reason is required.')).toBeInTheDocument();
+    expect(harness.server.callsTo('POST /admin-tools/channels/create')).toHaveLength(0);
+    await user.type(within(dialog).getByRole('textbox', { name: /^Reason/ }), 'New format');
+    await user.click(within(dialog).getByRole('button', { name: 'Create channel' }));
+    // One step: there is no second confirm dialog.
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(await screen.findByText('Created #side-events')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New channel' })).toBeNull());
     expect(harness.server.callsTo('POST /admin-tools/channels/create')[0]!.body)
       .toEqual({ name: 'Side Events', type: 'text', parentId: null, reason: 'New format' });
     expect(await screen.findByRole('region', { name: 'Channel controls' })).toBeInTheDocument();
@@ -160,6 +194,6 @@ describe('channel controls', () => {
   it('hides channel creation without server.manage', async () => {
     mountWith(<ChannelsTab />, server => routes(server, ['dashboard.read', 'members.read', 'members.moderate']));
     await screen.findByRole('option', { name: '#general' });
-    expect(screen.queryByRole('region', { name: 'Create a channel' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'New channel' })).toBeNull();
   });
 });

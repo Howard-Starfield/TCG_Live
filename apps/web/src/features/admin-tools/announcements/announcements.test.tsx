@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MotionGlobalConfig } from 'motion/react';
 import { describe, expect, it } from 'vitest';
 import { createHarness, sessionFixture } from '../../../app/testing';
+import { ToastProvider } from '../../../ui';
 import { AdminDataProvider } from '../../../data';
 import { json, type FakeServer } from '../../../data/test/fakes';
 import type { AnnouncementView, SaveAnnouncementBody } from './api';
@@ -34,7 +35,7 @@ function routes(server: FakeServer, list: AnnouncementView[] = []) {
 }
 function mount(setup: (server: FakeServer) => void) {
   const harness = createHarness({ stream: false, setup });
-  render(<AdminDataProvider data={harness.data}><AnnouncementsTab /></AdminDataProvider>);
+  render(<ToastProvider><AdminDataProvider data={harness.data}><AnnouncementsTab /></AdminDataProvider></ToastProvider>);
   return harness;
 }
 
@@ -79,7 +80,8 @@ describe('Announcements tab', () => {
       routes(server);
       server.once('POST /admin-tools/announcements', call => json(201, view({ body: (call.body as SaveAnnouncementBody).body })));
     });
-    const composer = await screen.findByRole('region', { name: 'Compose announcement' });
+    await user.click(await screen.findByRole('button', { name: 'New announcement' }));
+    const composer = await screen.findByRole('dialog', { name: 'New announcement' });
     await waitFor(() => expect(within(composer).getByRole('option', { name: '#announcements' })).toBeInTheDocument());
     await user.selectOptions(within(composer).getAllByRole('combobox')[0]!, '200000000000000307');
     await user.type(within(composer).getByLabelText('Title'), 'Season 3 kickoff');
@@ -96,12 +98,16 @@ describe('Announcements tab', () => {
     expect(sent.mentionEveryone).toBe(false);
     expect(sent.scheduledAtMs).toBeNull();
     expect(sent.body.embed!.title).toBe('Season 3 kickoff');
+    // Editor and confirm close in turn, so focus lands back on the opener rather than <body>.
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New announcement' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New announcement' })).toHaveFocus());
   });
 
   it('blocks sending while the embed is over the limits', async () => {
     const user = userEvent.setup();
     mount(server => routes(server));
-    const composer = await screen.findByRole('region', { name: 'Compose announcement' });
+    await user.click(await screen.findByRole('button', { name: 'New announcement' }));
+    const composer = await screen.findByRole('dialog', { name: 'New announcement' });
     await user.click(within(composer).getByLabelText('Title'));
     await user.paste('t'.repeat(257));
     expect(within(composer).getAllByText(/257\/256/).length).toBeGreaterThan(0);
@@ -114,7 +120,8 @@ describe('Announcements tab', () => {
       routes(server);
       server.once('POST /admin-tools/announcements', () => json(201, view({ status: 'scheduled' })));
     });
-    const composer = await screen.findByRole('region', { name: 'Compose announcement' });
+    await user.click(await screen.findByRole('button', { name: 'New announcement' }));
+    const composer = await screen.findByRole('dialog', { name: 'New announcement' });
     await waitFor(() => expect(within(composer).getByRole('option', { name: '#announcements' })).toBeInTheDocument());
     await user.selectOptions(within(composer).getAllByRole('combobox')[0]!, '200000000000000307');
     await user.type(within(composer).getByLabelText('Title'), 'Later');

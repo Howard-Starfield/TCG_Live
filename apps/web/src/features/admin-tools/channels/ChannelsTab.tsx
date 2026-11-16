@@ -1,15 +1,16 @@
-// Channels tab: create a text or voice channel, or pick a channel, then lock/unlock, set or clear slowmode, or purge recent messages. Every
-// action asks for confirmation with a reason (written to the audit log).
+// Channels tab: create a text or voice channel in one dialog (name, type, category and reason), or pick a channel, then lock/unlock, set or
+// clear slowmode, or purge recent messages. Those actions ask for confirmation with a reason (written to the audit log).
 import { ADMIN_TOOLS_LIMITS as L, type ChannelCreateRequestDto, type ChannelPurgeRequestDto, type ChannelPurgeResultDto, type ChannelStateDto,
   type GuildChannelDto } from '@tcg-live/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Lock, LockOpen, Plus, Timer, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useAdminData } from '../../../data';
-import { Badge, Button, ConfirmDialog, Field, Input, SegmentedControl } from '../../../ui';
+import { Badge, Button, ConfirmDialog, Field, Input, SegmentedControl, Textarea, useToast } from '../../../ui';
 import { describeError, retryTransient } from '../../evidence/api';
 import { adminToolsKeys, useAdminToolsCapability, useGuildMeta } from '../api';
 import { ChannelSelect } from '../shared/ChannelSelect';
+import { EditorDialog } from '../shared/EditorDialog';
 import { useAction } from './useAction';
 
 const SNOWFLAKE = /^[1-9]\d{14,21}$/;
@@ -22,19 +23,67 @@ export function purgeMessage(result: ChannelPurgeResultDto): string {
 type Pending =
   | { kind: 'lock'; locked: boolean }
   | { kind: 'slowmode'; seconds: number }
-  | { kind: 'purge'; request: PurgeDraft }
-  | { kind: 'create'; request: Omit<ChannelCreateRequestDto, 'reason'> };
+  | { kind: 'purge'; request: PurgeDraft };
 type PurgeDraft = ChannelPurgeRequestDto extends infer R ? R extends unknown ? Omit<R, 'reason'> : never : never;
+
+function CreateChannelDialog({ open, onClose, onCreated }: { open: boolean; onClose(): void; onCreated(channel: GuildChannelDto): void }) {
+  const { api } = useAdminData();
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const formId = useId();
+  const [name, setName] = useState('');
+  const [type, setType] = useState<'text' | 'voice'>('text');
+  const [parentId, setParentId] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
+  const [touched, setTouched] = useState(false);
+  const create = useAction();
+  const trimmedName = name.trim();
+  const trimmedReason = reason.trim();
+  const dirty = trimmedName !== '' || trimmedReason !== '';
+  const reset = () => { setName(''); setType('text'); setParentId(null); setReason(''); setTouched(false); create.clear(); };
+  const close = () => { onClose(); reset(); };
+  const submit = async () => {
+    setTouched(true);
+    if (!trimmedName || !trimmedReason || create.pending) return;
+    const body: ChannelCreateRequestDto = { name: trimmedName, type, parentId, reason: trimmedReason };
+    const result = await create.run(() => api.request<GuildChannelDto>('POST', '/admin-tools/channels/create', { body }), 'The channel was not created.');
+    if (!result) return;
+    void queryClient.invalidateQueries({ queryKey: adminToolsKeys.guild() });
+    toast.show({ title: `Created ${result.type === 'text' ? '#' : ''}${result.name}`, tone: 'success' });
+    onCreated(result);
+    close();
+  };
+  return <EditorDialog open={open} title="New channel" width="md" busy={create.pending} dirty={dirty} onClose={close}
+    description="Needs the bot’s Manage Channels permission. Tournament match rooms must start with “TCG Match”."
+    footer={<>
+      <Button type="button" variant="ghost" size="sm" onClick={close} disabled={create.pending}>Cancel</Button>
+      <Button type="submit" form={formId} variant="primary" size="sm" loading={create.pending}>Create channel</Button>
+    </>}>
+    <form id={formId} noValidate aria-label="New channel" className="flex flex-col gap-3" onSubmit={event => { event.preventDefault(); void submit(); }}>
+      <Field label="Name" required error={touched && !trimmedName ? 'A name is required.' : undefined}
+        description="Discord lowercases text channel names and replaces spaces with hyphens.">
+        <Input value={name} maxLength={L.channelNameLength} placeholder={type === 'text' ? 'side-events' : 'TCG Match 3'}
+          onChange={event => { setName(event.target.value); create.clear(); }} />
+      </Field>
+      <SegmentedControl label="Channel type" value={type} onChange={value => setType(value as 'text' | 'voice')}
+        options={[{ value: 'text', label: 'Text' }, { value: 'voice', label: 'Voice' }]} />
+      <Field label="Category" description="The channel starts with its category’s permissions (or the server defaults).">
+        <ChannelSelect value={parentId} types={['category']} placeholder="No category" onChange={setParentId} />
+      </Field>
+      <Field label="Reason (for the audit log)" required error={touched && !trimmedReason ? 'A reason is required.' : undefined}>
+        <Textarea value={reason} rows={3} disabled={create.pending} onChange={event => setReason(event.target.value)} onBlur={() => setTouched(true)} />
+      </Field>
+      {create.error && <p role="alert" className="text-xs text-danger">{create.error}</p>}
+    </form>
+  </EditorDialog>;
+}
 
 export function ChannelsTab() {
   const { api } = useAdminData();
   const queryClient = useQueryClient();
   const canAct = useAdminToolsCapability('members.moderate');
   const canCreate = useAdminToolsCapability('server.manage');
-  const [newName, setNewName] = useState('');
-  const [newType, setNewType] = useState<'text' | 'voice'>('text');
-  const [newParent, setNewParent] = useState<string | null>(null);
-  const create = useAction();
+  const [creating, setCreating] = useState(false);
   const meta = useGuildMeta();
   const [channelId, setChannelId] = useState<string | null>(null);
   const [slowmode, setSlowmode] = useState('10');
@@ -62,24 +111,8 @@ export function ChannelsTab() {
     if (mode === 'user' && !SNOWFLAKE.test(userId.trim())) return ask(null, 'Enter the member’s Discord ID.');
     ask({ kind: 'purge', request: mode === 'count' ? { channelId: channelId!, mode, count: amount } : { channelId: channelId!, mode, userId: userId.trim(), count: amount } });
   };
-  const askCreate = () => {
-    const name = newName.trim();
-    if (!name) return;
-    create.clear();
-    setPending({ kind: 'create', request: { name, type: newType, parentId: newParent } });
-  };
   const confirm = (reason: string) => {
     const current = pending;
-    if (current?.kind === 'create') {
-      void create.run(() => api.request<GuildChannelDto>('POST', '/admin-tools/channels/create', { body: { ...current.request, reason } }),
-        'The channel was not created.', result => {
-          void queryClient.invalidateQueries({ queryKey: adminToolsKeys.guild() });
-          setNewName('');
-          if (result.type === 'text') { setChannelId(result.id); action.clear(); }
-          return `Created ${result.type === 'text' ? '#' : ''}${result.name}.`;
-        }).then(() => setPending(null));
-      return;
-    }
     if (!current || !channelId) return;
     void action.run(async () => {
       if (current.kind === 'lock') return api.request<ChannelStateDto>('POST', '/admin-tools/channels/lock', { body: { channelId, locked: current.locked, reason } });
@@ -93,37 +126,21 @@ export function ChannelsTab() {
     }).then(() => setPending(null));
   };
 
-  const newParentName = pending?.kind === 'create' && pending.request.parentId
-    ? meta.data?.channels.find(item => item.id === pending.request.parentId)?.name : undefined;
-  const title = !pending ? '' : pending.kind === 'create'
-    ? `Create the ${pending.request.type} channel “${pending.request.name}”${newParentName ? ` in ${newParentName}` : ''}?`
-    : pending.kind === 'lock' ? (pending.locked ? `Lock ${where}?` : `Unlock ${where}?`)
+  const title = !pending ? '' : pending.kind === 'lock' ? (pending.locked ? `Lock ${where}?` : `Unlock ${where}?`)
     : pending.kind === 'slowmode' ? (pending.seconds ? `Set slowmode in ${where} to ${pending.seconds} seconds?` : `Turn slowmode off in ${where}?`)
     : pending.request.mode === 'count' ? `Delete the last ${pending.request.count} messages in ${where}?`
     : `Delete up to ${pending.request.count} recent messages from member ${pending.request.userId} in ${where}?`;
-  const description = !pending ? '' : pending.kind === 'create'
-    ? 'The channel is created in Discord with its category’s permissions (or the server defaults). Discord lowercases text channel names and replaces spaces with hyphens.'
-    : pending.kind === 'lock' ? (pending.locked
+  const description = !pending ? '' : pending.kind === 'lock' ? (pending.locked
     ? 'Members lose Send Messages here. Unlocking restores exactly the permission that was there before.'
     : 'Puts back the Send Messages permission that was there before the lock.')
     : pending.kind === 'purge' ? "This cannot be undone. The bot's own messages are always kept, and messages older than 14 days are skipped (Discord limit)."
     : 'Members wait this long between messages.';
 
   return <div className="flex flex-col gap-4">
-    {canCreate && <section aria-label="Create a channel" className="flex flex-col gap-2 rounded-lg border border-line p-4">
-      <h3 className="text-[13px] font-semibold text-fg">Create a channel</h3>
-      <div className="flex flex-wrap items-end gap-2">
-        <Field label="Name"><Input value={newName} maxLength={L.channelNameLength} placeholder={newType === 'text' ? 'side-events' : 'TCG Match 3'}
-          onChange={event => setNewName(event.target.value)} /></Field>
-        <SegmentedControl label="Channel type" value={newType} onChange={value => setNewType(value as 'text' | 'voice')}
-          options={[{ value: 'text', label: 'Text' }, { value: 'voice', label: 'Voice' }]} />
-        <Field label="Category"><ChannelSelect value={newParent} types={['category']} placeholder="No category" onChange={setNewParent} /></Field>
-        <Button size="sm" variant="primary" className="mb-0.5 shrink-0" icon={<Plus aria-hidden />} disabled={!newName.trim()} onClick={askCreate}>Create channel</Button>
-      </div>
-      <p className="text-[11px] text-fg-subtle">Needs the bot’s Manage Channels permission. Tournament match rooms must start with “TCG Match”.</p>
-      {create.error && <p role="alert" className="text-xs text-danger">{create.error}</p>}
-      {create.note && <p role="status" className="text-xs text-fg">{create.note}</p>}
-    </section>}
+    {canCreate && <header className="flex items-center gap-2">
+      <p className="flex-1 text-xs text-fg-muted">Create a text or voice channel, or pick one below to lock it, set slowmode or purge messages.</p>
+      <Button size="sm" variant="primary" icon={<Plus aria-hidden />} onClick={() => setCreating(true)}>New channel</Button>
+    </header>}
     <Field label="Channel" description="Tournament channels are marked; locking them can block players.">
       <ChannelSelect value={channelId} placeholder="Choose a channel" onChange={next => { setChannelId(next); ask(null); }} />
     </Field>
@@ -169,7 +186,9 @@ export function ChannelsTab() {
       {action.note && <p role="status" className="text-xs text-fg">{action.note}</p>}
     </section>}
     <ConfirmDialog open={pending !== null} title={title} description={description} danger={pending?.kind === 'purge' || (pending?.kind === 'lock' && pending.locked)}
-      confirmLabel={pending?.kind === 'purge' ? 'Delete messages' : pending?.kind === 'create' ? 'Create channel' : 'Confirm'} requireReason reasonLabel="Reason (for the audit log)" pending={action.pending || create.pending}
+      confirmLabel={pending?.kind === 'purge' ? 'Delete messages' : 'Confirm'} requireReason reasonLabel="Reason (for the audit log)" pending={action.pending}
       onCancel={() => setPending(null)} onConfirm={confirm} />
+    {canCreate && <CreateChannelDialog open={creating} onClose={() => setCreating(false)}
+      onCreated={result => { if (result.type === 'text') { setChannelId(result.id); action.clear(); } }} />}
   </div>;
 }

@@ -1,13 +1,15 @@
-// Announcements tab: compose an embed with a live Discord-like preview, choose mentions explicitly
-// (none by default), send now, schedule or save a draft; edit/delete sent ones from the history.
+// Announcements tab: the history list, with a composer dialog (embed, live Discord-like preview, explicit
+// mentions, none by default) to send now, schedule or save a draft; edit/delete sent ones from the history.
 import { ADMIN_TOOLS_LIMITS as L, type AnnouncementStatus, type MessageBodyDto } from '@tcg-live/core';
-import { CalendarClock, Megaphone, Pencil, Send, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { CalendarClock, Megaphone, Pencil, Plus, Send, Trash2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useServerClock } from '../../../data';
-import { Badge, Button, ConfirmDialog, EmptyState, Field, Switch, Textarea, Input, type Tone } from '../../../ui';
+import { Badge, Button, ConfirmDialog, EmptyState, Field, Switch, Textarea, Input, cx, useToast, type Tone } from '../../../ui';
 import { describeError } from '../../evidence/api';
 import { useAdminToolsCapability, useGuildMeta } from '../api';
 import { ChannelSelect } from '../shared/ChannelSelect';
+import { EditorDialog } from '../shared/EditorDialog';
+import { HIGHLIGHT_CLASS, useHighlightNew } from '../shared/useHighlightNew';
 import { useAnnouncementMutations, useAnnouncements, type AnnouncementView, type SaveAnnouncementBody } from './api';
 import { DiscordPreview } from './DiscordPreview';
 import { EmbedEditor } from './EmbedEditor';
@@ -47,10 +49,12 @@ export function pingSummary(mentionEveryone: boolean, roleNames: readonly string
 
 type SubmitMode = 'send' | 'schedule' | 'draft';
 
-export function AnnouncementComposer({ draft, onChange, onDone, canEdit }: {
-  draft: AnnouncementDraft; onChange(next: AnnouncementDraft): void; onDone(): void; canEdit: boolean;
+export function AnnouncementComposer({ draft, open, onChange, onDone, canEdit }: {
+  draft: AnnouncementDraft; open: boolean; onChange(next: AnnouncementDraft): void; onDone(savedId?: string): void; canEdit: boolean;
 }) {
   const meta = useGuildMeta();
+  const toast = useToast();
+  const [dirty, setDirty] = useState(false);
   // The server checks the schedule against its own clock, so compare with server time.
   const clock = useServerClock();
   const { save } = useAnnouncementMutations();
@@ -74,13 +78,39 @@ export function AnnouncementComposer({ draft, onChange, onDone, canEdit }: {
       mentionEveryone: draft.mentionEveryone,
       scheduledAtMs: (mode === 'schedule' || (mode === 'draft' && draft.when === 'schedule')) && Number.isFinite(scheduledAtMs) ? scheduledAtMs : null,
       ...(mode === 'draft' ? { draft: true } : {}) };
-    try { await save.mutateAsync({ id: draft.id, body }); setConfirming(null); onDone(); }
+    try {
+      const saved = await save.mutateAsync({ id: draft.id, body });
+      setConfirming(null);
+      toast.show({ tone: 'success', title: sent ? 'Announcement updated' : mode === 'draft' ? 'Draft saved' : mode === 'schedule' ? 'Announcement scheduled' : 'Announcement sent' });
+      // Close the editor one commit after the confirm (see EditorDialog), so focus returns to the opening button.
+      setFinished(saved.id);
+    }
     catch (cause) { setError(describeError(cause, 'The announcement could not be saved.')); }
   };
-  const set = (patch: Partial<AnnouncementDraft>) => onChange({ ...draft, ...patch });
-  return <section aria-label="Compose announcement" className="grid gap-4 rounded-lg border border-line p-4 xl:grid-cols-2">
+  const [finished, setFinished] = useState<string | null>(null);
+  useEffect(() => {
+    if (finished === null || confirming !== null) return;
+    setFinished(null);
+    onDone(finished);
+  }, [finished, confirming, onDone]);
+  const set = (patch: Partial<AnnouncementDraft>) => { setDirty(true); onChange({ ...draft, ...patch }); };
+  const footer = <>
+    <Button variant="ghost" size="sm" disabled={save.isPending} onClick={() => onDone()}>{canEdit ? 'Cancel' : 'Close'}</Button>
+    {canEdit && !sent && <Button size="sm" disabled={save.isPending || !draft.channelId} onClick={() => { void submit('draft'); }}>Save draft</Button>}
+    {canEdit && (sent ? <Button variant="primary" size="sm" icon={<Pencil />} loading={save.isPending} disabled={problems.length > 0}
+      onClick={() => { setError(null); setConfirming('send'); }}>Update message</Button>
+      : draft.when === 'schedule'
+        ? <Button variant="primary" size="sm" icon={<CalendarClock />} loading={save.isPending} disabled={problems.length > 0}
+          onClick={() => { setError(null); setConfirming('schedule'); }}>Schedule</Button>
+        : <Button variant="primary" size="sm" icon={<Send />} loading={save.isPending} disabled={problems.length > 0}
+          onClick={() => { setError(null); setConfirming('send'); }}>Send now</Button>)}
+  </>;
+  return <>
+    <EditorDialog open={open} title={draft.id ? sent ? 'Edit sent announcement' : 'Edit announcement' : 'New announcement'}
+      busy={save.isPending} dirty={dirty} onClose={() => onDone()} footer={footer}
+      preview={<DiscordPreview content={draft.body.content} embed={draft.body.embed} mentionRoleIds={draft.mentionRoleIds}
+        mentionEveryone={draft.mentionEveryone} roles={roles} />}>
     <div className="flex flex-col gap-3">
-      <h3 className="text-[13px] font-semibold text-fg">{draft.id ? sent ? 'Edit sent announcement' : 'Edit announcement' : 'New announcement'}</h3>
       <Field label="Channel" description={sent ? 'A sent announcement stays in its channel.' : undefined}>
         <ChannelSelect value={draft.channelId} disabled={!canEdit || sent} placeholder="Choose a channel" onChange={channelId => set({ channelId })} />
       </Field>
@@ -117,23 +147,8 @@ export function AnnouncementComposer({ draft, onChange, onDone, canEdit }: {
       </Field>}
       {problems.length > 0 && <ul aria-label="Problems" className="list-disc pl-4 text-xs text-danger">{problems.map(problem => <li key={problem}>{problem}</li>)}</ul>}
       {error && <p role="alert" className="text-xs text-danger">{error}</p>}
-      {canEdit && <div className="flex flex-wrap gap-2">
-        {sent ? <Button variant="primary" icon={<Pencil />} loading={save.isPending} disabled={problems.length > 0}
-          onClick={() => { setError(null); setConfirming('send'); }}>Update message</Button>
-          : draft.when === 'schedule'
-            ? <Button variant="primary" icon={<CalendarClock />} loading={save.isPending} disabled={problems.length > 0}
-              onClick={() => { setError(null); setConfirming('schedule'); }}>Schedule</Button>
-            : <Button variant="primary" icon={<Send />} loading={save.isPending} disabled={problems.length > 0}
-              onClick={() => { setError(null); setConfirming('send'); }}>Send now</Button>}
-        {!sent && <Button disabled={save.isPending || !draft.channelId} onClick={() => { void submit('draft'); }}>Save draft</Button>}
-        {draft.id && <Button variant="ghost" onClick={onDone}>Cancel</Button>}
-      </div>}
     </div>
-    <div className="flex flex-col gap-2">
-      <h3 className="text-[13px] font-semibold text-fg">Preview</h3>
-      <DiscordPreview content={draft.body.content} embed={draft.body.embed} mentionRoleIds={draft.mentionRoleIds}
-        mentionEveryone={draft.mentionEveryone} roles={roles} />
-    </div>
+    </EditorDialog>
     <ConfirmDialog open={confirming !== null} danger={draft.mentionEveryone} pending={save.isPending} onCancel={() => setConfirming(null)}
       onConfirm={() => { if (confirming) void submit(confirming); }}
       confirmLabel={sent ? 'Update message' : confirming === 'schedule' ? 'Schedule' : 'Send now'}
@@ -144,7 +159,7 @@ export function AnnouncementComposer({ draft, onChange, onDone, canEdit }: {
         : `${pingSummary(draft.mentionEveryone, roleNames)}${confirming === 'schedule' ? ' The bot must be running at that time.' : ' This posts immediately.'}`}>
       {error && <p role="alert" className="text-xs text-danger">{error}</p>}
     </ConfirmDialog>
-  </section>;
+  </>;
 }
 
 export function AnnouncementsTab() {
@@ -152,6 +167,11 @@ export function AnnouncementsTab() {
   const list = useAnnouncements();
   const { send, remove } = useAnnouncementMutations();
   const [draft, setDraft] = useState<AnnouncementDraft>(newDraft);
+  const [composerOpen, setComposerOpen] = useState(false);
+  // Remounts the composer per opening so its unsaved-changes state starts clean.
+  const [composerKey, setComposerKey] = useState(0);
+  const highlight = useHighlightNew();
+  const openComposer = (next: AnnouncementDraft) => { setComposerKey(key => key + 1); setDraft(next); setComposerOpen(true); };
   const [deleting, setDeleting] = useState<AnnouncementView | null>(null);
   const [sending, setSending] = useState<AnnouncementView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -161,21 +181,24 @@ export function AnnouncementsTab() {
   const roleName = (id: string) => meta.data?.roles.find(role => role.id === id)?.name ?? id;
   const titleOf = (item: AnnouncementView) => item.body.embed?.title ?? item.body.content?.slice(0, 60) ?? 'Announcement';
   return <div className="flex flex-col gap-4">
-    <AnnouncementComposer key={draft.id ?? 'new'} draft={draft} onChange={setDraft} onDone={() => setDraft(newDraft())} canEdit={canEdit} />
     <section aria-label="Announcement history" className="flex flex-col gap-2">
-      <h3 className="text-[13px] font-semibold text-fg">History</h3>
+      <header className="flex items-center gap-2">
+        <h3 className="flex-1 text-[13px] font-semibold text-fg">History</h3>
+        {canEdit && <Button size="sm" variant="primary" icon={<Plus />} onClick={() => openComposer(newDraft())}>New announcement</Button>}
+      </header>
       {error && <p role="alert" className="text-xs text-danger">{error}</p>}
       {list.error ? <p role="alert" className="text-xs text-danger">{describeError(list.error, 'Announcements could not be loaded.')}</p>
         : list.isPending ? <p role="status" className="text-xs text-fg-muted">Loading announcements…</p>
         : items.length === 0 ? <EmptyState icon={<Megaphone />} title="No announcements yet" description="Sent, scheduled and draft announcements appear here." />
         : <ul className="flex flex-col divide-y divide-line rounded-lg border border-line">
-          {items.map(item => <li key={item.id} className="flex flex-wrap items-center gap-2 p-3 text-xs">
+          {items.map(item => <li key={item.id} ref={highlight.ref(item.id)}
+            className={cx('flex flex-wrap items-center gap-2 p-3 text-xs transition-shadow', highlight.isHighlighted(item.id) && HIGHLIGHT_CLASS)}>
             <Badge tone={STATUS[item.status].tone}>{item.missed ? 'Missed' : STATUS[item.status].label}</Badge>
             <span className="min-w-0 flex-1 truncate text-fg">{item.body.embed?.title ?? item.body.content ?? 'Announcement'}</span>
             <span className="text-fg-subtle">{item.status === 'sent' ? `Sent ${when(item.sentAtMs)}` : item.scheduledAtMs ? `For ${when(item.scheduledAtMs)}` : ''}</span>
             {item.error && <span className="w-full text-danger">{item.error}</span>}
             {canEdit && <span className="flex gap-1">
-              <Button size="sm" variant="ghost" icon={<Pencil />} onClick={() => setDraft(fromView(item))}>Edit</Button>
+              <Button size="sm" variant="ghost" icon={<Pencil />} onClick={() => openComposer(fromView(item))}>Edit</Button>
               {item.status !== 'sent' && <Button size="sm" variant="ghost" icon={<Send />} loading={send.isPending && send.variables === item.id}
                 disabled={send.isPending} onClick={() => { setError(null); send.reset(); setSending(item); }}>Send now</Button>}
               <Button size="sm" variant="ghost" icon={<Trash2 />} onClick={() => setDeleting(item)}>Delete</Button>
@@ -183,6 +206,8 @@ export function AnnouncementsTab() {
           </li>)}
         </ul>}
     </section>
+    <AnnouncementComposer key={composerKey} draft={draft} open={composerOpen} onChange={setDraft} canEdit={canEdit}
+      onDone={savedId => { setComposerOpen(false); if (savedId) highlight.highlight(savedId); }} />
     <ConfirmDialog open={sending !== null} danger={!!sending?.mentionEveryone} pending={send.isPending} confirmLabel="Send now"
       title={sending ? `Send "${titleOf(sending)}" to ${channelLabel(sending.channelId)} now?` : ''}
       description={sending ? `${pingSummary(sending.mentionEveryone, sending.mentionRoleIds.map(roleName))} This posts immediately.` : ''}
@@ -198,7 +223,7 @@ export function AnnouncementsTab() {
       onConfirm={() => {
         if (!deleting) return;
         const id = deleting.id;
-        remove.mutate(id, { onSuccess: () => { setDeleting(null); if (draft.id === id) setDraft(newDraft()); },
+        remove.mutate(id, { onSuccess: () => { setDeleting(null); if (draft.id === id) { setComposerOpen(false); setDraft(newDraft()); } },
           onError: cause => { setDeleting(null); setError(describeError(cause, 'The announcement could not be deleted.')); } });
       }} />
   </div>;

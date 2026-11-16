@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { MotionGlobalConfig } from 'motion/react';
 import { describe, expect, it } from 'vitest';
 import { createHarness, sessionFixture } from '../../../app/testing';
+import { ToastProvider } from '../../../ui';
 import { AdminDataProvider } from '../../../data';
 import { json, type FakeServer } from '../../../data/test/fakes';
 import { TicketsTab, ticketSettingsProblem } from './TicketsTab';
@@ -45,7 +46,7 @@ function routes(server: FakeServer, capabilities: readonly Capability[] = CAPABI
 }
 function mount(setup: (server: FakeServer) => void) {
   const harness = createHarness({ stream: false, setup });
-  render(<AdminDataProvider data={harness.data}><TicketsTab /></AdminDataProvider>);
+  render(<ToastProvider><AdminDataProvider data={harness.data}><TicketsTab /></AdminDataProvider></ToastProvider>);
   return harness;
 }
 

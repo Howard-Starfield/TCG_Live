@@ -5,13 +5,15 @@ import { ADMIN_TOOLS_LIMITS as L, BUTTON_STYLES, type BulkRoleJobDto, type BulkR
 import { Plus, RefreshCw, Send, Tags, Trash2, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { useEvents } from '../../../data';
-import { Badge, Button, ConfirmDialog, EmptyState, Field, IconButton, Input, Select, Switch, Textarea, type Tone } from '../../../ui';
+import { Badge, Button, ConfirmDialog, EmptyState, Field, IconButton, Input, Select, Switch, Textarea, cx, useToast, type Tone } from '../../../ui';
 import { describeError } from '../../evidence/api';
 import { useAdminToolsCapability, useGuildMeta } from '../api';
 import { DiscordPreview } from '../announcements/DiscordPreview';
 import { EmbedEditor } from '../announcements/EmbedEditor';
 import { bodyProblems, emptyEmbed, normalizeBody } from '../announcements/embed';
 import { ChannelSelect, RoleSelect } from '../shared/ChannelSelect';
+import { EditorDialog } from '../shared/EditorDialog';
+import { HIGHLIGHT_CLASS, useHighlightNew } from '../shared/useHighlightNew';
 import { parseMemberIds, rolePanelWarnings, useBulkJob, useBulkJobs, useBulkMutations, usePanelMutations, usePanels,
   type ButtonRolePanelView, type PanelMessageState } from './api';
 
@@ -30,11 +32,13 @@ const STATE: Record<PanelMessageState, { label: string; tone: Tone }> = {
   unpublished: { label: 'Not posted', tone: 'neutral' }, posted: { label: 'Posted', tone: 'success' }, missing: { label: 'Message deleted', tone: 'danger' }
 };
 
-export function PanelEditor({ draft, onChange, onDone }: { draft: PanelDraft; onChange(next: PanelDraft): void; onDone(): void }) {
+export function PanelEditor({ draft, open, onChange, onDone }: { draft: PanelDraft; open: boolean; onChange(next: PanelDraft): void; onDone(savedId?: string): void }) {
   const meta = useGuildMeta();
+  const toast = useToast();
+  const [dirty, setDirty] = useState(false);
   const { save, publish } = usePanelMutations();
   const [error, setError] = useState<string | null>(null);
-  const set = (patch: Partial<PanelDraft>) => onChange({ ...draft, ...patch });
+  const set = (patch: Partial<PanelDraft>) => { setDirty(true); onChange({ ...draft, ...patch }); };
   const setButton = (index: number, patch: Partial<PanelDraft['buttons'][number]>) =>
     set({ buttons: draft.buttons.map((button, at) => at === index ? { ...button, ...patch } : button) });
   const roles = meta.data?.roles ?? [];
@@ -54,16 +58,25 @@ export function PanelEditor({ draft, onChange, onDone }: { draft: PanelDraft; on
       stage = 'post';
       // From here on the panel exists: a retry must update it, not create a second one.
       if (!draft.id) onChange({ ...draft, id: saved.id, posted: saved.messageState === 'posted' });
+      setDirty(false);
       if (post && saved.messageState !== 'posted') await publish.mutateAsync(saved.id);
-      onDone();
+      toast.show({ title: draft.id ? 'Panel updated' : 'Panel created', description: post ? undefined : 'It is not posted yet.', tone: 'success' });
+      onDone(saved.id);
     } catch (cause) {
       setError(stage === 'post' ? `Saved, but not posted: ${describeError(cause, 'the panel could not be posted.')}`
         : describeError(cause, 'The panel could not be saved.'));
     }
   };
-  return <section aria-label="Panel editor" className="grid gap-4 rounded-lg border border-line p-4 xl:grid-cols-2">
+  const busy = save.isPending || publish.isPending;
+  return <EditorDialog open={open} title={draft.id ? 'Edit panel' : 'New panel'} busy={busy} dirty={dirty} onClose={() => onDone(draft.id ?? undefined)}
+    preview={<DiscordPreview content={draft.body.content} embed={draft.body.embed} buttons={draft.buttons} label="Panel preview" />}
+    footer={<>
+      <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDone()}>Cancel</Button>
+      {!draft.posted && <Button size="sm" disabled={problems.length > 0 || save.isPending} onClick={() => { void submit(false); }}>Save without posting</Button>}
+      <Button variant="primary" size="sm" icon={<Send />} loading={busy} disabled={problems.length > 0}
+        onClick={() => { void submit(true); }}>{draft.posted ? 'Save and update message' : 'Save and post'}</Button>
+    </>}>
     <div className="flex flex-col gap-3">
-      <h3 className="text-[13px] font-semibold text-fg">{draft.id ? 'Edit panel' : 'New panel'}</h3>
       <Field label="Channel" description={draft.posted ? 'Changing the channel moves the posted message.' : undefined}>
         <ChannelSelect value={draft.channelId} placeholder="Choose a channel" onChange={channelId => set({ channelId })} />
       </Field>
@@ -107,18 +120,8 @@ export function PanelEditor({ draft, onChange, onDone }: { draft: PanelDraft; on
       </ul>}
       {problems.length > 0 && <ul aria-label="Problems" className="list-disc pl-4 text-xs text-danger">{problems.map(problem => <li key={problem}>{problem}</li>)}</ul>}
       {error && <p role="alert" className="text-xs text-danger">{error}</p>}
-      <div className="flex flex-wrap gap-2">
-        <Button variant="primary" icon={<Send />} loading={save.isPending || publish.isPending} disabled={problems.length > 0}
-          onClick={() => { void submit(true); }}>{draft.posted ? 'Save and update message' : 'Save and post'}</Button>
-        {!draft.posted && <Button disabled={problems.length > 0 || save.isPending} onClick={() => { void submit(false); }}>Save without posting</Button>}
-        <Button variant="ghost" onClick={onDone}>Cancel</Button>
-      </div>
     </div>
-    <div className="flex flex-col gap-2">
-      <h3 className="text-[13px] font-semibold text-fg">Preview</h3>
-      <DiscordPreview content={draft.body.content} embed={draft.body.embed} buttons={draft.buttons} label="Panel preview" />
-    </div>
-  </section>;
+  </EditorDialog>;
 }
 
 function PanelsSection({ canEdit }: { canEdit: boolean }) {
@@ -126,9 +129,11 @@ function PanelsSection({ canEdit }: { canEdit: boolean }) {
   const meta = useGuildMeta();
   const { publish, remove } = usePanelMutations();
   const [draft, setDraft] = useState<PanelDraft | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const highlight = useHighlightNew();
   // Remounts the editor per opening, not per id (a new panel gets its id on first save and keeps its editor).
   const [editorKey, setEditorKey] = useState(0);
-  const openEditor = (next: PanelDraft) => { setEditorKey(key => key + 1); setDraft(next); };
+  const openEditor = (next: PanelDraft) => { setEditorKey(key => key + 1); setDraft(next); setEditorOpen(true); };
   const [deleting, setDeleting] = useState<ButtonRolePanelView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const channelName = (id: string) => meta.data?.channels.find(channel => channel.id === id)?.name ?? id;
@@ -137,16 +142,17 @@ function PanelsSection({ canEdit }: { canEdit: boolean }) {
     <header className="flex items-center gap-2">
       <div className="flex-1"><h3 className="text-[13px] font-semibold text-fg">Button-role panels</h3>
         <p className="text-xs text-fg-muted">Members click a button to get or drop a role. The bot needs Manage Roles, and its role must sit above these roles.</p></div>
-      {canEdit && !draft && <Button size="sm" variant="primary" icon={<Plus />} disabled={list.length >= L.buttonRolePanels}
+      {canEdit && <Button size="sm" variant="primary" icon={<Plus />} disabled={list.length >= L.buttonRolePanels}
         onClick={() => openEditor(newPanelDraft())}>New panel</Button>}
     </header>
-    {draft && <PanelEditor key={editorKey} draft={draft} onChange={setDraft} onDone={() => setDraft(null)} />}
+    {draft && <PanelEditor key={editorKey} draft={draft} open={editorOpen} onChange={setDraft}
+      onDone={savedId => { setEditorOpen(false); if (savedId) highlight.highlight(savedId); }} />}
     {error && <p role="alert" className="text-xs text-danger">{error}</p>}
     {panels.error ? <p role="alert" className="text-xs text-danger">{describeError(panels.error, 'Panels could not be loaded.')}</p>
       : panels.isPending ? <p role="status" className="text-xs text-fg-muted">Loading panels…</p>
       : list.length === 0 ? <EmptyState icon={<Tags />} title="No panels yet" description="Create a panel with up to 25 role buttons." />
-      : <ul className="flex flex-col gap-2">{list.map(panel => <li key={panel.id} aria-label={`Panel ${panel.body.embed?.title ?? panel.id}`}
-        className="flex flex-col gap-2 rounded-lg border border-line p-3 text-xs">
+      : <ul className="flex flex-col gap-2">{list.map(panel => <li key={panel.id} aria-label={`Panel ${panel.body.embed?.title ?? panel.id}`} ref={highlight.ref(panel.id)}
+        className={cx('flex flex-col gap-2 rounded-lg border border-line p-3 text-xs transition-shadow', highlight.isHighlighted(panel.id) && HIGHLIGHT_CLASS)}>
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={STATE[panel.messageState].tone}>{STATE[panel.messageState].label}</Badge>
           <span className="min-w-0 flex-1 truncate font-medium text-fg">{panel.body.embed?.title ?? panel.body.content ?? 'Panel'}</span>

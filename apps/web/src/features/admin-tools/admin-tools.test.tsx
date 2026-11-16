@@ -6,6 +6,7 @@ import { MotionGlobalConfig } from 'motion/react';
 import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { createHarness, renderConsole, sessionFixture } from '../../app/testing';
+import { ToastProvider } from '../../ui';
 import { AdminDataProvider } from '../../data';
 import { json, type FakeServer } from '../../data/test/fakes';
 import { AdminToolsPage } from './AdminToolsPage';
@@ -35,7 +36,7 @@ function routes(server: FakeServer, capabilities: readonly Capability[] = CAPABI
 
 function mountWith(ui: ReactNode, setup: (server: FakeServer) => void) {
   const harness = createHarness({ stream: false, setup });
-  render(<AdminDataProvider data={harness.data}>{ui}</AdminDataProvider>);
+  render(<ToastProvider><AdminDataProvider data={harness.data}>{ui}</AdminDataProvider></ToastProvider>);
   return harness;
 }
 

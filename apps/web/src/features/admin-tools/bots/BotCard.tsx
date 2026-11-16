@@ -4,7 +4,7 @@ import { MODERATION_LIMITS as L, type VoiceBotErrorCode, type VoiceBotPoolDto, t
 import { Copy, KeyRound, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { useAdminData } from '../../../data';
-import { Badge, Button, ConfirmDialog, Field, Input, StatusDot, Switch } from '../../../ui';
+import { Badge, Button, ConfirmDialog, Field, Input, StatusDot, Switch, cx } from '../../../ui';
 import { describeError } from '../../evidence/api';
 import { removeVoiceBot } from '../../moderation/api';
 import { replaceVoiceBotToken, retryVoiceBot, updateVoiceBot, verifyVoiceBot } from './api';
@@ -26,8 +26,9 @@ export const ERROR_TEXT: Record<VoiceBotErrorCode, string> = {
 
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-export function BotCard({ bot, channelIds, disabled, onPool }: {
+export function BotCard({ bot, channelIds, disabled, onPool, cardRef, highlightClass }: {
   bot: VoiceBotStatusDto; channelIds: string[]; disabled: boolean; onPool(pool: VoiceBotPoolDto): void;
+  cardRef?: (el: HTMLElement | null) => void; highlightClass?: string;
 }) {
   const { api } = useAdminData();
   const helper = bot.kind === 'helper';
@@ -49,7 +50,7 @@ export function BotCard({ bot, channelIds, disabled, onPool }: {
   const status = !enabled ? 'Disabled' : bot.status ? STATUS_TEXT[bot.status] ?? bot.status : bot.connected ? 'Connected' : 'Not connected';
   const nicknameError = nickname.trim().length > L.voiceBotNicknameLength ? `Up to ${L.voiceBotNicknameLength} characters.` : null;
 
-  return <li className="flex flex-col gap-2 rounded-lg bg-raised p-3 shadow-[inset_0_0_0_1px_var(--color-line)]" data-bot={bot.id} aria-label={`Bot ${bot.label}`}>
+  return <li ref={cardRef} className={cx('flex flex-col gap-2 rounded-lg bg-raised p-3 shadow-[inset_0_0_0_1px_var(--color-line)]', highlightClass)} data-bot={bot.id} aria-label={`Bot ${bot.label}`}>
     <div className="flex items-center gap-2">
       <StatusDot tone={!enabled ? 'neutral' : bot.status ? STATUS_TONE[bot.status] ?? 'neutral' : bot.connected ? 'success' : 'neutral'} size="sm" />
       <span className="min-w-0 flex-1">

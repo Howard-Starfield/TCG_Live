@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { MotionGlobalConfig } from 'motion/react';
 import { describe, expect, it } from 'vitest';
 import { createHarness, sessionFixture } from '../../../app/testing';
+import { ToastProvider } from '../../../ui';
 import { AdminDataProvider } from '../../../data';
 import { json, type FakeServer } from '../../../data/test/fakes';
 import { lfgSettingsProblems } from './api';
@@ -39,7 +40,7 @@ function routes(server: FakeServer, settings = saved(), posts: LfgPostDto[] = [p
 }
 function mount(setup: (server: FakeServer) => void) {
   const harness = createHarness({ stream: false, setup });
-  render(<AdminDataProvider data={harness.data}><LfgTab /></AdminDataProvider>);
+  render(<ToastProvider><AdminDataProvider data={harness.data}><LfgTab /></AdminDataProvider></ToastProvider>);
   return harness;
 }
 
