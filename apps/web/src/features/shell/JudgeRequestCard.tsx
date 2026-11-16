@@ -4,7 +4,7 @@ import { JUDGE_REQUEST_CATEGORIES, type EventSnapshotDto, type MatchDto } from '
 import { useRef, useState, type Ref } from 'react';
 import { formatElapsed, formatTimeOfDay, useServerNow } from '../../data';
 import { Badge, Button, Field, Textarea } from '../../ui';
-import { useCommands } from '../commands';
+import { StaffConflictNotice, useCommands } from '../commands';
 import { canCloseJudgeIssue, canRun, isWritable } from '../commands/model';
 import { seatName } from './labels';
 
@@ -64,6 +64,7 @@ export function JudgeRequestCard({ snapshot, match, notesRef }: { snapshot: Even
     </ul>}
     {!writable
       ? <p className="text-xs text-fg-muted">This event is closed. The request is history; nothing can be changed here.</p>
+      : match.staffConflict ? <StaffConflictNotice />
       : needsResult
       ? <p className="rounded-md bg-warning-soft px-2.5 py-2 text-xs text-fg">
         {judge.reasons.includes('expired') && !judge.reasons.includes('dispute') ? 'The clock expired' : 'This is a dispute'}: choose a winner with Resolve{canRun(commands?.session ?? null, 'resolve') && match.adminActions.includes('resolve') ? ' (in Actions)' : ''}.

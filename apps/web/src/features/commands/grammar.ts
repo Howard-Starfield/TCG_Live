@@ -257,7 +257,6 @@ export function parseCommand(text: string, context: ComposerContext): ParseResul
       if ('error' in mention) return fail(mention.error);
       if ('seat' in mention) return fail('Signup has no seats yet; mention the member or give their member ID.');
       if (snapshot.signup?.roster.includes(mention.memberId)) return fail(`${memberName(snapshot, mention.memberId)} is already signed up.`);
-      if (mention.memberId === snapshot.adminId) return fail('The organizer cannot play in their own tournament.');
       return { kind: 'ok', spec, intent: { kind: 'signupAdd', memberId: mention.memberId } };
     }
     case 'checkinFor': {

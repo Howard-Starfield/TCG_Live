@@ -13,6 +13,7 @@ import { SectionFrame } from './shared/SectionFrame';
 import { BotPermissionsCard } from '../bot-permissions/BotPermissionsCard';
 import { BotSetupGuide } from '../bot-permissions/BotSetupGuide';
 import { usePermissionReport } from '../bot-permissions/api';
+import { TournamentRolesCard } from './tournament-roles/TournamentRolesCard';
 
 const NEEDED_BY = { guildMembers: 'join/leave log, welcome messages and auto-role', messageContent: 'the message edit/delete log' } as const;
 const FEATURE_STATE = { running: 'running', 'intent-missing': 'missing an intent', failed: 'failed to start', stopped: 'stopped' } as const;
@@ -80,7 +81,7 @@ function StaffRolesField({ value, onChange, disabled }: { value: string[]; onCha
       {value.map(id => <li key={id}><Badge tone="accent">@{name(id)}
         {!disabled && <IconButton aria-label={`Remove @${name(id)}`} size="sm" variant="ghost" icon={<X />}
           onClick={() => onChange(value.filter(item => item !== id))} />}</Badge></li>)}
-      {!value.length && <li className="text-xs text-fg-subtle">No staff roles: only the organizer runs staff commands.</li>}
+      {!value.length && <li className="text-xs text-fg-subtle">No legacy staff roles.</li>}
     </ul>
     {!disabled && value.length < MAX_STAFF_ROLES && <div className="flex gap-2">
       <Select aria-label="Add a staff role" value={pick} disabled={meta.isPending} onChange={event => setPick(event.target.value)}>
@@ -98,6 +99,7 @@ export function SettingsTab() {
   const canEdit = useAdminToolsCapability('server.manage');
   const permissions = usePermissionReport();
   return <div className="flex flex-col gap-4">
+    <TournamentRolesCard />
     <BotPermissionsCard />
     {status.data ? <IntentStatusCard status={status.data} />
       : status.error ? <p role="alert" className="text-xs text-danger">{describeError(status.error, 'Status could not be loaded.')}{' '}
@@ -114,7 +116,7 @@ export function SettingsTab() {
           <ChannelSelect value={cases.value.logChannelId} disabled={!canEdit}
             onChange={logChannelId => cases.setValue({ ...cases.value!, logChannelId })} />
         </Field>
-        <Field label="Tournament staff roles" description="Members with one of these roles may run /tcg-staff (publish, resolve, check-in…) and the /tcg-admin moderation commands in Discord. Discord hides those commands from members without Manage Server: to show them to staff, open Server Settings > Integrations > TCG Live and allow these roles.">
+        <Field label="Tournament staff roles" description="Legacy setting: members with one of these roles count as TCG Judge (rulings, check-in and evidence). Give TCG Organizer to anyone who needs more.">
           <StaffRolesField value={cases.value.staffRoleIds ?? []} disabled={!canEdit}
             onChange={staffRoleIds => cases.setValue({ ...cases.value!, staffRoleIds })} />
         </Field>

@@ -801,6 +801,30 @@ describe('Home task board and match drawer', () => {
     expect(screen.queryByRole('dialog', { name: /^Match/ })).not.toBeInTheDocument();
   });
 
+  it('explains a staff conflict in the drawer and judge card instead of offering rulings', async () => {
+    const user = userEvent.setup();
+    const conflicted = { ...called(), matches: called().matches.map(match => match.id === 'M1'
+      ? { ...match, adminActions: [], staffConflict: true as const } : match) };
+    renderConsole({ snapshot: conflicted, setup: server => { discord(server); } });
+    await user.click(await (await board()).findByRole('button', { name: 'Match M1' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M1/ });
+    const card = within(drawer).getByRole('region', { name: 'Judge request' });
+    expect(within(card).getByRole('note')).toHaveTextContent('You’re playing in this match, so a TCG Judge must rule on it.');
+    expect(within(drawer).queryByRole('button', { name: /Close issue|^Resolve|^Resume/ })).toBeNull();
+    expect(within(drawer).getAllByRole('note')).toHaveLength(1);
+  });
+
+  it('shows the conflict once in the drawer of a match without a judge call', async () => {
+    const user = userEvent.setup();
+    const conflicted = { ...liveDispute, matches: liveDispute.matches.map(match => match.id === 'M1'
+      ? { ...match, adminActions: [], staffConflict: true as const } : match) };
+    renderConsole({ snapshot: conflicted, setup: server => { discord(server); } });
+    await user.click(await (await board()).findByRole('button', { name: 'Match M1' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M1/ });
+    expect(within(drawer).getAllByRole('note')).toHaveLength(1);
+    expect(within(drawer).getByRole('note')).toHaveTextContent('a TCG Judge must rule on it');
+  });
+
   it('closes a judge call from the drawer with a note: notes start focused, the button needs a note, and Ctrl+Enter sends once', async () => {
     const user = userEvent.setup();
     let release!: () => void;

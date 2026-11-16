@@ -14,7 +14,7 @@ import { tournamentDirectoryKey } from '../tournaments/directory';
 import { TournamentDetailsDialog } from '../tournaments/TournamentDetailsDialog';
 import { useCommands, type CommandsApi } from './CommandsProvider';
 import { availableEventActions, availableMatchActions, canRefreshPanels, canRemoveMember, canRun, isWritable,
-  MATCH_ACTION_LABEL, matchActionKey, REFRESH_KEY } from './model';
+  MATCH_ACTION_LABEL, matchActionKey, REFRESH_KEY, STAFF_CONFLICT_TEXT } from './model';
 
 type EventButton = Exclude<EventAdminAction, 'signupRemove'>;
 
@@ -149,12 +149,20 @@ export interface MatchActionsProps {
   variant?: 'buttons' | 'menu';
   /** Actions a surrounding UI already offers in its own way (the match drawer's judge card has Close issue). */
   exclude?: readonly MatchAdminAction[];
+  /** Explain a staff conflict in place of the buttons. A surrounding UI that already explains it passes false. */
+  showConflict?: boolean;
+}
+
+/** The operator is seated in this match: rulings are blocked, and this says why. */
+export function StaffConflictNotice({ className }: { className?: string }) {
+  return <p role="note" className={cx('rounded-md bg-warning-soft px-2.5 py-2 text-xs text-fg', className)}>{STAFF_CONFLICT_TEXT}</p>;
 }
 
 /** Resolve, judge-resume and correct for one match, as the domain allows them now. */
-export function MatchActions({ snapshot, match, readOnly = false, allowResultRuling = true, variant = 'buttons', exclude = [] }: MatchActionsProps) {
+export function MatchActions({ snapshot, match, readOnly = false, allowResultRuling = true, variant = 'buttons', exclude = [], showConflict = true }: MatchActionsProps) {
   const commands = useWritable(snapshot, readOnly);
   if (!commands) return null;
+  if (match.staffConflict && variant === 'buttons' && showConflict) return <StaffConflictNotice />;
   const actions = availableMatchActions(commands.session, snapshot, match)
     .filter(action => (allowResultRuling || action !== 'resolve') && !exclude.includes(action));
   if (actions.length === 0) return null;

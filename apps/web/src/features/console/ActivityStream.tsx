@@ -27,7 +27,7 @@ function actorKey(actor: ActorDto): string {
   switch (actor.kind) {
     case 'player': return `player:${actor.seat}`;
     case 'member': return `member:${actor.memberId}`;
-    case 'admin': return 'admin';
+    case 'admin': return actor.staff ? `admin:${actor.staff.memberId}` : 'admin';
     case 'system': return 'system';
   }
 }
@@ -170,7 +170,8 @@ function GroupAvatar({ group, snapshot }: { group: ActivityGroup; snapshot: Even
 function ActivityGroupView({ group, snapshot }: { group: ActivityGroup; snapshot: EventSnapshotDto | undefined }) {
   const { actor, formatted, first } = group;
   const name = actor.kind === 'player' ? (formatted.actorName ?? formatted.actorLabel) : formatted.actorLabel;
-  const role = actor.kind === 'player' ? `Seat ${actor.seat}` : actor.kind === 'member' ? 'member' : actor.kind === 'admin' ? 'admin' : 'system';
+  const role = actor.kind === 'player' ? `Seat ${actor.seat}` : actor.kind === 'member' ? 'member'
+    : actor.kind === 'admin' ? (actor.staff?.role ?? 'admin') : 'system';
   return (
     <article className="console-group" aria-label={`${name}, ${formatTimeOfDay(first.occurredAtMs)}`}>
       <GroupAvatar group={group} snapshot={snapshot} />

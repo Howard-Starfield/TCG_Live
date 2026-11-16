@@ -1,4 +1,5 @@
 // The setup wizard's last step: where each feature lives once the dashboard opens.
+import type { TournamentRolesEnsureResultDto } from '@tcg-live/core';
 import { BotSetupGuide } from '../bot-permissions/BotSetupGuide';
 
 export interface FeatureLink { id: string; name: string; where: string; what: string }
@@ -31,4 +32,24 @@ export function WhatsNext({ inviteUrl }: { inviteUrl: string | null }) {
     <BotSetupGuide inviteUrl={inviteUrl} />
     <p className="text-xs text-fg-subtle">Permission problems show as a banner in the dashboard, with a link to Admin tools → Settings.</p>
   </div>;
+}
+
+const ROLE_OUTCOME = { created: 'created', adopted: 'already existed, reused', failed: 'could not be created' } as const;
+
+/** Step 3: what Save and Start did about the TCG Organizer and TCG Judge roles. Setup never fails because of them. */
+export function SetupRolesResult({ roles }: { roles: TournamentRolesEnsureResultDto | null }) {
+  if (!roles) return null;
+  const failed = roles.organizer === 'failed' || roles.judge === 'failed';
+  return <section aria-label="Tournament roles" role={failed ? 'alert' : 'status'}
+    className={`space-y-1.5 rounded-lg border p-3 text-sm ${failed ? 'border-warning bg-warning-soft' : 'border-line bg-sunken'}`}>
+    <h2 className="font-semibold">Tournament roles</h2>
+    <ul className="list-disc space-y-0.5 pl-5 text-fg-muted">
+      <li>TCG Organizer: {ROLE_OUTCOME[roles.organizer]}.</li>
+      <li>TCG Judge: {ROLE_OUTCOME[roles.judge]}.</li>
+      {roles.assigned && <li>TCG Organizer was given to the organizer you chose.</li>}
+    </ul>
+    {roles.problem && <p className="text-fg">{roles.problem}</p>}
+    {failed && <p className="text-xs text-fg-muted">Setup is complete. Until the roles exist, only the server owner and this dashboard act as
+      organizer in Discord. Create them in Admin tools &gt; Settings &gt; Tournament roles.</p>}
+  </section>;
 }

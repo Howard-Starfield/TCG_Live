@@ -87,6 +87,15 @@ describe('activity stream', () => {
     expect(lineText(formatAuditEntry(auditTimeline[4]!, liveDispute))).toBe('Closed signup and assigned seats');
   });
 
+  it('names a staff actor with their role and groups by person', () => {
+    const staff = (memberId: string, role: 'judge' | 'organizer', name: string) => ({ memberId, role, via: 'role', name, username: name.toLowerCase(), roleName: null });
+    const resolve = (sequence: number, actorStaff: ReturnType<typeof staff>) => ({ ...auditTimeline[10]!, sequence, actor: { kind: 'admin' as const, staff: actorStaff },
+      command: { type: 'resolve' as const, matchId: 'M2' as const, winner: 'D' as const, reason: 'Ruling' } });
+    const groups = groupActivity([resolve(50, staff('1', 'judge', 'Jo')), resolve(51, staff('2', 'organizer', 'Olly'))], liveDispute);
+    expect(groups.map(group => group.formatted.actorLabel)).toEqual(['@Jo (TCG Judge)', '@Olly (TCG Organizer)']);
+    expect(groups[0]?.lines[0]?.text).toBe('Resolved M2 for Seat D — Ruling');
+  });
+
   it('renders the audit chat-style, newest at the bottom, and says it shows applied changes only', async () => {
     renderConsole();
     await ready();

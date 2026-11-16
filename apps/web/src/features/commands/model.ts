@@ -247,8 +247,12 @@ export function resultToasts(snapshot: EventSnapshotDto, command: AdminCommandDt
     toasts.push({ title: commandDone(snapshot, command), tone: 'success' });
   }
   if (result.roomWarning) toasts.push(roomWarningToast(result.roomWarning));
+  if (result.staffWarning) toasts.push({ title: 'Staff warning', description: result.staffWarning, tone: 'danger', duration: null });
   return toasts;
 }
+
+/** Why a ruling is unavailable on a match the operator is seated in (MatchDto.staffConflict). */
+export const STAFF_CONFLICT_TEXT = 'You’re playing in this match, so a TCG Judge must rule on it.';
 
 export function refreshToasts(result: PanelRefreshResultDto): ToastSpec[] {
   const toasts: ToastSpec[] = [result.cards === 'pending'

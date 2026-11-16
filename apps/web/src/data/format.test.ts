@@ -20,6 +20,20 @@ describe('formatAuditEntry', () => {
     expect(formatAuditEntry(dispute, liveDispute)).toMatchObject({ text: 'Seat D disputed the result of M2', tone: 'danger' });
   });
 
+  it('labels a staff actor with their name and role, falling back to the member directory, then to Admin', () => {
+    const staff = { memberId: FIXTURE_MEMBER_IDS[0], role: 'judge' as const, via: 'role', name: 'Ava', username: 'ava', roleName: 'TCG Judge' };
+    const resolve = { type: 'resolve' as const, matchId: 'M2' as const, winner: 'D' as const, reason: 'Ruling' };
+    expect(formatAuditEntry(entry({ actor: { kind: 'admin', staff }, via: 'discord', command: resolve }), liveDispute))
+      .toMatchObject({ actorLabel: '@Ava (TCG Judge)', text: '@Ava (TCG Judge) resolved M2 for Seat D — Ruling' });
+    expect(formatAuditEntry(entry({ actor: { kind: 'admin', staff: { ...staff, name: null, roleName: null } }, command: resolve }), liveDispute).actorLabel)
+      .toBe('@Ava Chen (TCG Judge)');
+    expect(formatAuditEntry(entry({ actor: { kind: 'admin', staff: { ...staff, role: 'organizer', roleName: null } }, command: resolve }), liveDispute).actorLabel)
+      .toBe('@Ava (TCG Organizer)');
+    expect(formatAuditEntry(entry({ actor: { kind: 'admin', staff: { ...staff, role: null, roleName: null } }, command: resolve }), liveDispute).actorLabel)
+      .toBe('@Ava');
+    expect(formatAuditEntry(entry({ actor: { kind: 'admin' }, command: resolve }), liveDispute).actorLabel).toBe('Admin');
+  });
+
   it('formats timer, admin and judge lines', () => {
     expect(formatAuditEntry(entry({ actor: { kind: 'system', source: 'timer' }, via: 'system',
       command: { type: 'clockCheck', matchId: 'M2' } }), liveDispute))

@@ -112,6 +112,9 @@ describe('result toasts', () => {
       { title: 'M2 resolved: Seat C · Cy Park wins', description: PENDING_DESCRIPTION, tone: 'neutral', duration: 8000 },
       { title: 'Match room warning', description: 'Could not move Seat D', tone: 'danger', duration: null }
     ]);
+    expect(resultToasts(liveDispute, command, { applied: true, result: 'signupClose', version: 18, cards: 'updated', roomWarning: null,
+      staffWarning: 'No other staff member could be confirmed.' }).slice(1))
+      .toEqual([{ title: 'Staff warning', description: 'No other staff member could be confirmed.', tone: 'danger', duration: null }]);
     expect(resultToasts(liveDispute, command, { applied: false, result: 'judge_already_called', version: 17, cards: 'updated', roomWarning: null }))
       .toEqual([{ title: 'No change', description: 'Nothing changed: judge already called.', tone: 'neutral' }]);
     expect(refreshToasts({ cards: 'pending', roomWarning: null })[0]).toMatchObject({ title: 'Panel refresh saved', description: PENDING_DESCRIPTION });

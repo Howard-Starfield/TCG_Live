@@ -7,7 +7,7 @@ import { ArrowUpRight, Copy, Maximize2, Minimize2 } from 'lucide-react';
 import { useRef, useState, type ReactNode } from 'react';
 import { useMatchCountdown } from '../../data';
 import { Badge, Button, Dialog, IconButton, cx, type Tone } from '../../ui';
-import { MatchActions } from '../commands';
+import { MatchActions, StaffConflictNotice } from '../commands';
 import { ModerateMembersMenu } from '../admin-tools/members/ModerateMembersMenu';
 import { MatchEvidencePanel } from '../evidence';
 import { JudgeRequestCard, useCanCloseIssue, type JudgeMatch } from './JudgeRequestCard';
@@ -72,7 +72,7 @@ export function MatchDrawer({ snapshot, matchId, onClose, onOpenInTournament }: 
   const allowResultRuling = !judge || judge.reasons.includes('dispute') || judge.reasons.includes('expired');
   const members = match.seats.map(seat => ({ id: snapshot.seats[seat] ?? null, name: seatName(snapshot, seat) }));
   const toggle = expanded ? 'Collapse to side panel' : 'Expand to centred panel';
-  const actions = <MatchActions snapshot={snapshot} match={match} readOnly={readOnly} allowResultRuling={allowResultRuling} exclude={['judgeClose']} />;
+  const actions = <MatchActions snapshot={snapshot} match={match} readOnly={readOnly} allowResultRuling={allowResultRuling} exclude={['judgeClose']} showConflict={false} />;
   const clock = <span className="tabular-nums"><b className="font-semibold text-fg">{countdown.label}</b>
     <span className="ml-1.5 text-xs text-fg-muted">{CLOCK_STATE[match.clock.state]}</span></span>;
   // Opened on a judge call that can be closed: start in the notes field so the note can be typed at once.
@@ -93,6 +93,7 @@ export function MatchDrawer({ snapshot, matchId, onClose, onOpenInTournament }: 
           <div className="flex flex-wrap items-center gap-2">{actions}</div>
         </section>}
         <div ref={contentRef} tabIndex={-1} className="flex min-w-0 flex-col gap-4 outline-none">
+          {match.staffConflict && !readOnly && !judge && <StaffConflictNotice />}
           {judge && <JudgeRequestCard snapshot={snapshot} match={match as JudgeMatch} notesRef={notesRef} />}
           <section aria-label="Evidence" className="match-drawer-section !border-t-0 !pt-0">
             <h3>Evidence</h3>
