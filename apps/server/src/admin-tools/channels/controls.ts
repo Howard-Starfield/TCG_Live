@@ -2,7 +2,8 @@
 // slowmode, and purge (by count or by user, within Discord's 14-day bulk-delete limit). Discord I/O goes
 // through ChannelGateway so the demo and tests use the same logic as the live bot.
 import { ChannelType, OverwriteType, PermissionFlagsBits, type Guild, type GuildTextBasedChannel } from 'discord.js';
-import { ADMIN_TOOLS_LIMITS as L, type ChannelPurgeRequestDto, type ChannelPurgeResultDto, type ChannelStateDto } from '@tcg-live/core';
+import { ADMIN_TOOLS_LIMITS as L, type ChannelCreateRequestDto, type ChannelPurgeRequestDto, type ChannelPurgeResultDto, type ChannelStateDto,
+  type GuildChannelDto } from '@tcg-live/core';
 import type pg from 'pg';
 import type { OpsAuditStore } from '../../ops/audit.js';
 import { OpsInputError } from '../../ops/errors.js';
@@ -24,7 +25,11 @@ export interface ChannelGateway {
   recentMessages(channelId: string, limit: number): Promise<RecentMessage[]>;
   /** Deletes messages younger than 14 days; returns how many were deleted. */
   bulkDelete(channelId: string, ids: readonly string[], reason: string): Promise<number>;
+  /** Creates a text or voice channel (inside `parentId` when it is a category of this server). */
+  createChannel(spec: ChannelCreateRequestDto): Promise<GuildChannelDto>;
 }
+
+const notCategory = () => new OpsInputError('Choose a category from this server, or no category.');
 
 /** What a lock replaced, so unlock restores it exactly. Stored in the channel.lock audit payload. */
 export interface LockPrior { everyoneSend: PermissionBit }
@@ -137,7 +142,7 @@ export function purgeSummary(result: ChannelPurgeResultDto): string {
 /** Maps Discord errors from channel controls to messages safe to show. */
 export function channelControlError(error: unknown): never {
   const kind = discordErrorKind(error);
-  if (kind === 'missing-permissions') throw new OpsInputError('The bot lacks permission here: it needs Manage Channels (lock, slowmode) or Manage Messages and Read Message History (purge).');
+  if (kind === 'missing-permissions') throw new OpsInputError('The bot lacks permission here: it needs Manage Channels (create, slowmode), Manage Permissions (lock) or Manage Messages and Read Message History (purge).');
   if (kind === 'channel-missing') throw missing();
   if (kind === 'too-old') throw new OpsInputError('Discord refused: messages older than 14 days cannot be bulk-deleted.');
   throw error;
@@ -201,6 +206,12 @@ export function liveChannelGateway(guild: Guild): ChannelGateway {
       }
       void reason; // Discord's bulk-delete endpoint accepts a reason header only through raw REST; the audit row keeps it.
       return deleted;
+    },
+    async createChannel(spec) {
+      if (spec.parentId && (await guild.channels.fetch(spec.parentId).catch(() => null))?.type !== ChannelType.GuildCategory) throw notCategory();
+      const channel = await guild.channels.create({ name: spec.name, type: spec.type === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText,
+        parent: spec.parentId, reason: spec.reason.slice(0, L.discordReasonLength) });
+      return { id: channel.id, name: channel.name, type: spec.type, parentId: channel.parentId, position: channel.position, reserved: false };
     }
   };
 }
@@ -211,7 +222,7 @@ interface DemoChannelState { everyoneSend: PermissionBit; slowmodeSeconds: numbe
 const demoStates = new WeakMap<object, Map<string, DemoChannelState>>();
 
 /** Synthetic channel state for the demo: 40 messages per channel spread over 20 days. */
-export function demoChannelGateway(demo: { channels: ReadonlyArray<{ id: string; type: string }>; members: ReadonlyArray<{ id: string; bot: boolean }> },
+export function demoChannelGateway(demo: { channels: GuildChannelDto[]; members: ReadonlyArray<{ id: string; bot: boolean }> },
   now: () => number): ChannelGateway {
   let states = demoStates.get(demo);
   if (!states) { states = new Map(); demoStates.set(demo, states); }
@@ -241,6 +252,16 @@ export function demoChannelGateway(demo: { channels: ReadonlyArray<{ id: string;
       const before = state.messages.length;
       state.messages = state.messages.filter(message => !ids.includes(message.id));
       return before - state.messages.length;
+    },
+    async createChannel(spec) {
+      if (spec.parentId && !demo.channels.some(item => item.id === spec.parentId && item.type === 'category')) throw notCategory();
+      const id = `${demo.channels.reduce((max, item) => BigInt(item.id) > max ? BigInt(item.id) : max, 0n) + 1n}`;
+      // Discord lowercases text channel names and joins words with hyphens; voice names keep their spaces.
+      const name = spec.type === 'text' ? spec.name.toLowerCase().replace(/\s+/g, '-') : spec.name;
+      const position = demo.channels.filter(item => item.parentId === spec.parentId && item.type !== 'category').length;
+      const created: GuildChannelDto = { id, name, type: spec.type, parentId: spec.parentId, position, reserved: false };
+      demo.channels.push(created);
+      return structuredClone(created);
     }
   };
 }

@@ -202,6 +202,8 @@ export interface ChannelPurgeResultDto {
   skippedTooOld: number;
 }
 export interface ChannelStateDto { channelId: Snowflake; locked: boolean; slowmodeSeconds: number }
+/** Creates a text or voice channel, optionally inside a category. Returns the new channel's GuildChannelDto. */
+export interface ChannelCreateRequestDto { name: string; type: 'text' | 'voice'; parentId: Snowflake | null; reason: string }
 
 // ---------------------------------------------------------------- tickets (agent B)
 
@@ -451,7 +453,7 @@ export interface AdminToolsStatusDto {
 export const ADMIN_TOOLS_AUDIT_KINDS = ['admin_tools.settings', 'admin_tools.intents_missing',
   'member.warn', 'member.timeout', 'member.untimeout', 'member.kick', 'member.ban', 'member.unban', 'member.tempban_expired',
   'member.note.added', 'member.note.updated', 'member.note.deleted', 'member.case.updated',
-  'sticky.saved', 'sticky.deleted', 'channel.lock', 'channel.unlock', 'channel.slowmode', 'channel.purge',
+  'sticky.saved', 'sticky.deleted', 'channel.lock', 'channel.unlock', 'channel.slowmode', 'channel.purge', 'channel.create',
   'ticket.opened', 'ticket.closed', 'ticket.reopened', 'ticket.deleted', 'ticket.settings',
   'button_roles.saved', 'button_roles.published', 'button_roles.deleted',
   'bulk_roles.queued', 'bulk_roles.finished', 'bulk_roles.cancelled',
@@ -489,6 +491,8 @@ export const ADMIN_TOOLS_LIMITS = {
   urlLength: 2048,
   slowmodeSecondsMax: 21_600,
   purgeCountMax: 100,
+  /** Discord's channel name limit. */
+  channelNameLength: 100,
   /** Discord bulk delete only accepts messages younger than 14 days. */
   bulkDeleteMaxAgeMs: 14 * 86_400_000,
   ticketStaffRoles: 10,

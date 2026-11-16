@@ -155,6 +155,7 @@ class FakeChannels implements ChannelGateway {
   async setEveryoneSend(_channelId: string, value: PermissionBit) { this.everyoneSend = value; this.calls.push(value); }
   async setSlowmode(_channelId: string, seconds: number) { this.slowmode = seconds; }
   async recentMessages(_channelId: string, limit: number) { return this.messages.slice(0, limit); }
+  async createChannel(): Promise<never> { throw new Error('not used'); }
   async bulkDelete(_channelId: string, ids: readonly string[]) {
     this.messages = this.messages.filter(message => !ids.includes(message.id));
     return ids.length;
@@ -282,6 +283,37 @@ test('channel control routes: lock/unlock, slowmode and purge in the demo, audit
       body: JSON.stringify({ channelId: DEMO_CHANNEL_IDS.general, locked: true, reason: 'x' }) });
     assert.equal(reply.status, 403);
   } finally { await reader.stop(); }
+});
+
+test('channel create route: creates text and voice channels in the demo, validates, audited, needs server.manage', async () => {
+  const options = adminTools();
+  const harness = await startHarness({ adminTools: options });
+  const play = options.demo!.channels.find(channel => channel.type === 'category' && channel.name === 'Play')!.id;
+  try {
+    const token = await login(harness);
+    const create = (body: unknown) => call(harness.port, '/api/v1/admin-tools/channels/create', { method: 'POST', token, body: JSON.stringify(body) });
+    const text = await create({ name: 'Side Events', type: 'text', parentId: play, reason: 'New format' });
+    assert.equal(text.status, 201, text.text);
+    assert.equal(text.json().name, 'side-events');
+    assert.equal(text.json().parentId, play);
+    const voice = await create({ name: 'TCG Match 3', type: 'voice', parentId: null, reason: 'Third table' });
+    assert.equal(voice.json().name, 'TCG Match 3');
+    assert.equal(voice.json().type, 'voice');
+    const meta = (await call(harness.port, '/api/v1/admin-tools/guild', { token })).json();
+    assert.ok(meta.channels.some((channel: { id: string }) => channel.id === voice.json().id), 'new channel shows in pickers');
+    assert.equal((await create({ name: ' ', type: 'text', parentId: null, reason: 'x' })).status, 400);
+    assert.equal((await create({ name: 'x', type: 'forum', parentId: null, reason: 'x' })).status, 400);
+    assert.equal((await create({ name: 'x', type: 'text', parentId: DEMO_CHANNEL_IDS.general, reason: 'x' })).status, 400);
+    const kinds = (options.audit as MemoryOpsAuditStore).entries.map(entry => entry.kind);
+    assert.deepEqual(kinds, ['channel.create', 'channel.create']);
+  } finally { await harness.stop(); }
+  const moderator = await startHarness({ adminTools: adminTools() }, { capabilities: ['dashboard.read', 'members.read', 'members.moderate'] });
+  try {
+    const token = await login(moderator);
+    const reply = await call(moderator.port, '/api/v1/admin-tools/channels/create', { method: 'POST', token,
+      body: JSON.stringify({ name: 'x', type: 'text', parentId: null, reason: 'x' }) });
+    assert.equal(reply.status, 403);
+  } finally { await moderator.stop(); }
 });
 
 // ---------------------------------------------------------------- Discord feature

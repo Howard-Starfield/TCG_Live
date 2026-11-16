@@ -222,7 +222,9 @@ export function createAdminHttp(options: AdminHandlerOptions, internals: AdminHt
       } },
       { pattern: /^\/api\/v1\/setup\/channels$/, methods: {
         GET: { access: 'session' as const, run: async ({ response, query }: Context) =>
-          sendJson(response, 200, await options.setup!.channels(single(query, 'guildId') ?? '')) }
+          sendJson(response, 200, await options.setup!.channels(single(query, 'guildId') ?? '')) },
+        POST: { access: 'session' as const, run: async ({ request, response }: Context) =>
+          sendJson(response, 201, await options.setup!.createChannel(await readJsonBody(request))) }
       } },
       { pattern: /^\/api\/v1\/setup\/check$/, methods: {
         POST: { access: 'session' as const, run: async ({ request, response }: Context) =>

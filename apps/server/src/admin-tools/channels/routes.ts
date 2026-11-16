@@ -1,12 +1,12 @@
 // Route module "channels" (agent B): sticky message CRUD and channel controls (lock, slowmode, purge).
 // Every mutation is audited; sticky changes notify the running Discord feature (area 'stickies').
 import { ChannelType } from 'discord.js';
-import { ADMIN_TOOLS_LIMITS as L, type ChannelPurgeRequestDto, type StickyMessageDto } from '@tcg-live/core';
+import { ADMIN_TOOLS_LIMITS as L, type ChannelCreateRequestDto, type ChannelPurgeRequestDto, type StickyMessageDto } from '@tcg-live/core';
 import { readJsonBody } from '../../admin/http/body.js';
 import { HttpError, sendJson } from '../../admin/http/respond.js';
 import { badRequest, onlyParams, UUID } from '../../ops/http.js';
 import type { AdminToolsRouteDeps, AdminToolsRouteModule } from '../module.js';
-import { bool, exactObject, int, oneOf, reason, snowflake } from '../validate.js';
+import { bool, exactObject, int, oneOf, reason, snowflake, snowflakeOrNull, text } from '../validate.js';
 import { auditLockLedger, channelControlError, channelState, demoChannelGateway, liveChannelGateway, pgLockLedger, purgeChannel,
   setChannelLock, setChannelSlowmode, type ChannelGateway, type LockLedger } from './controls.js';
 import { stickiesTicketsRuntime, type StickiesTicketsRuntime } from './runtime-status.js';
@@ -20,6 +20,11 @@ export function parseLockRequest(input: unknown) {
 export function parseSlowmodeRequest(input: unknown) {
   const value = exactObject(input, ['channelId', 'seconds', 'reason'], 'Slowmode request');
   return { channelId: snowflake(value.channelId, 'Channel'), seconds: int(value.seconds, 0, L.slowmodeSecondsMax, 'Slowmode seconds'), reason: reason(value.reason) };
+}
+export function parseCreateChannelRequest(input: unknown): ChannelCreateRequestDto {
+  const value = exactObject(input, ['name', 'type', 'parentId', 'reason'], 'Channel request');
+  return { name: text(value.name, L.channelNameLength, 'Channel name'), type: oneOf(value.type, ['text', 'voice'] as const, 'channel type'),
+    parentId: snowflakeOrNull(value.parentId, 'Category'), reason: reason(value.reason) };
 }
 export function parsePurgeRequest(input: unknown): ChannelPurgeRequestDto {
   const mode = oneOf((input as { mode?: unknown } | null)?.mode, ['count', 'user'] as const, 'purge mode');
@@ -146,6 +151,16 @@ export function channelsRouteModule(options: ChannelsModuleOptions = {}): AdminT
             const channelId = await deps.guarded(async () => snowflake(params[0], 'Channel'));
             const live = await gateway();
             sendJson(response, 200, await discordCall(() => channelState(live, channelId)));
+          } }
+        } },
+        { pattern: /^\/api\/v1\/admin-tools\/channels\/create$/, methods: {
+          POST: { access: 'server.manage', run: async ({ request, response }) => {
+            const input = await deps.guarded(async () => parseCreateChannelRequest(await readJsonBody(request)));
+            const live = await gateway();
+            const created = await discordCall(() => live.createChannel(input));
+            await deps.recordAudit('channel.create', { channelId: created.id, name: created.name, type: created.type,
+              parentId: created.parentId, reason: input.reason });
+            sendJson(response, 201, created);
           } }
         } },
         { pattern: /^\/api\/v1\/admin-tools\/channels\/lock$/, methods: {

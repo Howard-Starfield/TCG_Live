@@ -1,6 +1,6 @@
 import { API_PREFIX, type AuditEntryDto, type EventSnapshotDto, type EventSummaryDto,
   type RuntimeStatusDto, type SessionDto, type SessionGrantDto, type SetupStatusDto,
-  type SetupGuildDto, type SetupChannelDto, type SetupSelectionDto, type SetupCheckDto,
+  type SetupGuildDto, type SetupChannelDto, type SetupChannelCreateDto, type SetupSelectionDto, type SetupCheckDto,
   type SetupFinishDto, type TournamentDirectoryDto,
   type TournamentDirectoryEntryDto, type CreateTournamentDraftDto } from '@tcg-live/core';
 import { ApiError, errorFromResponse, isAbortError, networkError } from './errors';
@@ -64,6 +64,7 @@ export interface ApiClient {
   getSetupStatus(signal?: AbortSignal): Promise<SetupStatusDto>;
   listSetupGuilds(signal?: AbortSignal): Promise<SetupGuildDto[]>;
   listSetupChannels(guildId: string, signal?: AbortSignal): Promise<SetupChannelDto[]>;
+  createSetupChannel(input: SetupChannelCreateDto): Promise<SetupChannelDto>;
   checkSetup(selection: SetupSelectionDto): Promise<SetupCheckDto>;
   finishSetup(selection: SetupSelectionDto): Promise<SetupFinishDto>;
   /** Opens `GET /stream`; resolves with the streaming response once headers arrive. */
@@ -163,6 +164,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     listSetupGuilds: signal => request<SetupGuildDto[]>('GET', '/setup/guilds', withSignal(signal)),
     listSetupChannels: (guildId, signal) => request<SetupChannelDto[]>('GET',
       `/setup/channels?guildId=${segment(guildId)}`, withSignal(signal)),
+    createSetupChannel: input => request<SetupChannelDto>('POST', '/setup/channels', { body: input }),
     checkSetup: selection => request<SetupCheckDto>('POST', '/setup/check', { body: selection }),
     finishSetup: selection => request<SetupFinishDto>('POST', '/setup/finish', { body: selection }),
     async openStream({ lastEventId, signal }) {

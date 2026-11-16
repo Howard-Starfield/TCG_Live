@@ -4,6 +4,7 @@ import { useAdminData } from '../../data';
 import { Button, Field, Input, Select, Switch } from '../../ui';
 import { BrandMark } from '../shell/BrandMark';
 import { BotSetupGuide } from '../bot-permissions/BotSetupGuide';
+import { CreateChannelInline } from './CreateChannelInline';
 import { GRANT_EXPLANATION, GrantPermissionsLink, PermissionIssueList } from '../bot-permissions/PermissionIssues';
 import { LocalSettingsPanel } from './DashboardActionsSwitch';
 import { WhatsNext } from './WhatsNext';
@@ -99,6 +100,11 @@ export function SetupWizard() {
     try { await api.finishSetup(selection); setOpening(true); setStep(3); }
     catch (cause) { setError(errorText(cause)); setBusy(false); }
   };
+  /** A channel created from the wizard joins the list and is selected for its slot. */
+  const created = (channel: SetupChannelDto, slot: 'signup' | 'M1' | 'M2') => {
+    setChannels(current => [...current.filter(item => item.id !== channel.id), channel]);
+    if (slot === 'signup') set({ channelId: channel.id }); else setMatch(slot, channel.id);
+  };
   const frozen = status?.frozen ?? false;
   const selectedGuild = guilds.find(item => item.id === selection.guildId);
   const channelName = (id: string) => channels.find(item => item.id === id)?.name ?? id;
@@ -147,6 +153,8 @@ export function SetupWizard() {
               <option value="">Choose a text channel</option>{channelOptions(channels, 'text')}
             </Select>
           </Field>
+          {!frozen && <CreateChannelInline guildId={selection.guildId} type="text" defaultName="tcg-signup"
+            onCreated={channel => created(channel, 'signup')} />}
           {frozen && selection.matchChannels === null ?
             <p className="rounded-md bg-sunken p-3 text-sm text-fg-muted">
               This saved event uses signup-channel chat for both matches.</p> :
@@ -156,11 +164,15 @@ export function SetupWizard() {
                 onChange={event => setMatch(slot, event.target.value)}>
                 <option value="">Choose a voice room</option>{channelOptions(channels, 'voice')}
               </Select>
+              {!frozen && <div className="mt-2"><CreateChannelInline guildId={selection.guildId} type="voice"
+                defaultName={`TCG Match ${slot.slice(1)}`} hint="Keep the name starting with TCG Match."
+                onCreated={channel => created(channel, slot)} /></div>}
             </Field>)}
           <Field label="Public match rooms" description="Everyone can enter; only the assigned pair, organizer and bot can post."
             inline><Switch checked={selection.publicMatchRooms} disabled={frozen}
               onCheckedChange={value => set({ publicMatchRooms: value })} /></Field>
-          <p className="text-xs text-fg-muted">Bot can only discover channels Discord returns. Grant View Channel and refresh if one is missing.</p>
+          <p className="text-xs text-fg-muted">Bot can only discover channels Discord returns. Grant View Channel and refresh if one is missing.
+            Creating a channel here needs the bot’s Manage Channels permission.</p>
         </section>}
         {step === 2 && <section aria-label="Readiness" className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-3">

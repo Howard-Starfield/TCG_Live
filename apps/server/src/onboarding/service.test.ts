@@ -23,7 +23,11 @@ function discovery(guide: SetupDiscovery['guide'] = async () => ids[5]!): SetupD
       { id: ids[1]!, name: 'signup', category: 'Tournament', type: 'text', permissions, afk: false },
       { id: ids[2]!, name: 'TCG Match 1', category: 'Tournament', type: 'voice', permissions, afk: false },
       { id: ids[3]!, name: 'TCG Match 2', category: 'Tournament', type: 'voice', permissions, afk: false }
-    ]; }, guide };
+    ]; },
+    async createChannel(_guildId, name, type) {
+      if (name === 'denied') throw Object.assign(new Error('Missing Permissions'), { code: 50013 });
+      return { id: '888888888888888888', name, category: null, type, permissions, afk: false };
+    }, guide };
 }
 
 function activeSession(overrides: Partial<SessionRow> = {}): SessionRow {
@@ -196,4 +200,19 @@ test('guide replaces only a confirmed missing owned message and persists pending
   assert.deepEqual(calls, [ids[5], null]);
   assert.deepEqual((await profile.read()).guide, { channelId: selection.channelId,
     messageId: ids[6], pending: false });
+}));
+
+test('createChannel validates input, creates in a bot server and explains a missing Manage Channels', async () => fixture(async profile => {
+  const service = new SetupService({ token: 'SECRET', databaseConfigured: true, profile,
+    active: async () => null, prepare: async () => { throw new Error('unused'); }, onHandover: async () => {} });
+  await assert.rejects(service.createChannel({ guildId: ids[0], name: 'x', type: 'voice' }), /not ready/);
+  service.attach(discovery());
+  assert.deepEqual(await service.createChannel({ guildId: ids[0], name: '  TCG Match 3 ', type: 'voice' }),
+    { id: '888888888888888888', name: 'TCG Match 3', category: null, type: 'voice' });
+  await assert.rejects(service.createChannel({ guildId: ids[1], name: 'x', type: 'text' }), /server the bot belongs to/);
+  await assert.rejects(service.createChannel({ guildId: ids[0], name: ' ', type: 'text' }), /1-100 readable/);
+  await assert.rejects(service.createChannel({ guildId: ids[0], name: 'a'.repeat(101), type: 'text' }), /1-100 readable/);
+  await assert.rejects(service.createChannel({ guildId: ids[0], name: 'x', type: 'stage' }), /text or voice/);
+  await assert.rejects(service.createChannel({ guildId: ids[0], name: 'x', type: 'text', extra: 1 }), /text or voice/);
+  await assert.rejects(service.createChannel({ guildId: ids[0], name: 'denied', type: 'text' }), /Manage Channels/);
 }));

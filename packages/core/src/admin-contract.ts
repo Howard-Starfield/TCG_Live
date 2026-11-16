@@ -66,6 +66,8 @@ export interface SetupGuildDto { id: Snowflake; name: string; ownerId: Snowflake
 export interface SetupChannelDto {
   id: Snowflake; name: string; category: string | null; type: 'text' | 'voice';
 }
+/** Creates a top-level text or voice channel in the chosen server during setup. */
+export interface SetupChannelCreateDto { guildId: Snowflake; name: string; type: 'text' | 'voice' }
 export interface SetupCapabilityDto {
   slot: 'signup' | MatchId; channelId: Snowflake; channelName: string;
   missing: string[];

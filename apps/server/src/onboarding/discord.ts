@@ -52,6 +52,13 @@ export function discordSetupDiscovery(client: Client): SetupDiscovery {
       })
         .filter(item => item.permissions.includes('View Channel'));
     },
+    async createChannel(guildId, name, type) {
+      const target = await guild(guildId);
+      const channel = await target.channels.create({ name, type: type === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText,
+        reason: 'Created in TCG Live setup' });
+      const bot = await member(target);
+      return { id: channel.id, name: channel.name, category: null, type, permissions: permissions(channel, bot), afk: false };
+    },
     async guide(channelId, adminId, content, messageId, mentionAdmin) {
       const { channel, bot } = await textChannel(channelId);
       if (!channel.permissionsFor(bot)?.has(PermissionFlagsBits.SendMessages))
