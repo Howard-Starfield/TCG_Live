@@ -52,6 +52,14 @@ export function discordSetupDiscovery(client: Client): SetupDiscovery {
       })
         .filter(item => item.permissions.includes('View Channel'));
     },
+    async createChannel(guildId, name, type) {
+      const target = await guild(guildId);
+      const channel = await target.channels.create({ name, type: type === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText,
+        reason: 'Created in TCG Live setup' });
+      // The channel exists now: a failed member lookup must not report "not created" and invite a duplicate on retry.
+      const bot = await member(target).catch(() => null);
+      return { id: channel.id, name: channel.name, category: null, type, permissions: bot ? permissions(channel, bot) : [], afk: false };
+    },
     async guide(channelId, adminId, content, messageId, mentionAdmin) {
       const { channel, bot } = await textChannel(channelId);
       if (!channel.permissionsFor(bot)?.has(PermissionFlagsBits.SendMessages))

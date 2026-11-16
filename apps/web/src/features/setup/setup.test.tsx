@@ -144,3 +144,48 @@ it('sessions without local settings show no switches and never call the settings
   expect(screen.queryByRole('switch', { name: 'Allow dashboard actions' })).not.toBeInTheDocument();
   expect(server.callsTo('GET /settings/local')).toHaveLength(0);
 });
+
+it('creates missing channels from the wizard and selects them in their slots', async () => {
+  const user = userEvent.setup();
+  const { server } = mountSetup({ prerequisite: null, activeEventId: null, selection: null,
+    frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
+  server.once('POST /setup/channels', () => json(201, { id: '666666666666666666', name: 'TCG Match 3', category: null, type: 'voice' }));
+  server.once('POST /setup/channels', () => json(403, { error: { code: 'forbidden', message: 'The bot needs the Manage Channels permission in this server to create channels.' } }));
+  await user.selectOptions(await screen.findByRole('combobox', { name: /Discord server/ }), ids[0]!);
+  await user.click(screen.getByRole('button', { name: 'Next: channels' }));
+  await screen.findByRole('option', { name: 'signup' });
+  const m1 = screen.getAllByRole('button', { name: /New voice room/ })[0]!;
+  await user.click(m1);
+  const group = screen.getByRole('group', { name: 'Create a voice room' });
+  const name = within(group).getByRole('textbox', { name: /New voice room name/ });
+  expect(name).toHaveValue('TCG Match 1');
+  await user.clear(name);
+  await user.type(name, 'TCG Match 3');
+  await user.click(within(group).getByRole('button', { name: 'Create' }));
+  await waitFor(() => expect(screen.getByRole('combobox', { name: /M1 match voice room/ })).toHaveValue('666666666666666666'));
+  expect(server.callsTo('POST /setup/channels')[0]?.body).toEqual({ guildId: ids[0], name: 'TCG Match 3', type: 'voice' });
+  await user.click(screen.getByRole('button', { name: /New text channel/ }));
+  const text = screen.getByRole('group', { name: 'Create a text channel' });
+  await user.click(within(text).getByRole('button', { name: 'Create' }));
+  expect(await within(text).findByRole('alert')).toHaveTextContent(/Manage Channels/);
+});
+
+it('pressing Enter twice while Discord is creating a channel sends one request', async () => {
+  const user = userEvent.setup();
+  const { server } = mountSetup({ prerequisite: null, activeEventId: null, selection: null,
+    frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  server.once('POST /setup/channels', async () => { await gate; return json(201, { id: '666666666666666667', name: 'tcg-signup', category: null, type: 'text' }); });
+  await user.selectOptions(await screen.findByRole('combobox', { name: /Discord server/ }), ids[0]!);
+  await user.click(screen.getByRole('button', { name: 'Next: channels' }));
+  await screen.findByRole('option', { name: 'signup' });
+  await user.click(screen.getByRole('button', { name: /New text channel/ }));
+  const group = screen.getByRole('group', { name: 'Create a text channel' });
+  const name = within(group).getByRole('textbox', { name: /New text channel name/ });
+  await user.type(name, '{Enter}{Enter}');
+  await user.click(within(group).getByRole('button', { name: 'Create' }));
+  release();
+  await waitFor(() => expect(screen.queryByRole('group', { name: 'Create a text channel' })).not.toBeInTheDocument());
+  expect(server.callsTo('POST /setup/channels')).toHaveLength(1);
+});

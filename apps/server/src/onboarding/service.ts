@@ -1,4 +1,4 @@
-import type { SetupCapabilityDto, SetupChannelDto, SetupCheckDto, SetupFinishDto, SetupGuildDto,
+import type { SetupCapabilityDto, SetupChannelCreateDto, SetupChannelDto, SetupCheckDto, SetupFinishDto, SetupGuildDto,
   SetupSelectionDto, SetupStatusDto } from '@tcg-live/core';
 import { HttpError } from '../admin/http/respond.js';
 import { type PrivateDiscordConfig, sameIdentityMap } from '../discord/config.js';
@@ -20,6 +20,8 @@ export interface SetupDiscovery {
   readonly botName: string;
   guilds(): Promise<SetupGuildDto[]>;
   channels(guildId: string): Promise<DiscoveredChannel[]>;
+  /** Creates a top-level text or voice channel; `name` is already validated. */
+  createChannel(guildId: string, name: string, type: 'text' | 'voice'): Promise<DiscoveredChannel>;
   /** Creates once or edits an owned guide; `missing` is already validated. */
   guide(channelId: string, adminId: string, content: string, messageId: string | null,
     mentionAdmin: boolean): Promise<string>;
@@ -61,6 +63,21 @@ function sameSelection(left: SetupSelectionDto, right: SetupSelectionDto): boole
 }
 
 function ownMessageError(error: unknown): boolean { return (error as { code?: number })?.code === 10008; }
+const SNOWFLAKE = /^[1-9]\d{14,21}$/;
+// Printable text only: no control characters, 1-100 characters after trimming (Discord's channel name limit).
+const CONTROL = /[\u0000-\u001f\u007f]/;
+
+function parseChannelCreate(body: unknown): SetupChannelCreateDto {
+  const value = body as Partial<Record<keyof SetupChannelCreateDto, unknown>> | null;
+  const keys = value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : null;
+  const name = typeof value?.name === 'string' ? value.name.trim() : '';
+  if (!keys || keys.length !== 3 || !keys.every(key => ['guildId', 'name', 'type'].includes(key)) ||
+      typeof value!.guildId !== 'string' || !SNOWFLAKE.test(value!.guildId) || (value!.type !== 'text' && value!.type !== 'voice'))
+    throw new HttpError(400, 'bad_request', 'Choose a server, a channel name and text or voice.');
+  if (!name || [...name].length > 100 || CONTROL.test(name))
+    throw new HttpError(400, 'bad_request', 'Channel names must be 1-100 readable characters.');
+  return { guildId: value!.guildId, name, type: value!.type };
+}
 
 /** The bootstrap has no match-command capability. Every check refreshes discovery and DB identity. */
 export class SetupService {
@@ -121,6 +138,23 @@ export class SetupService {
     const guilds = await this.discovery.guilds();
     if (!guilds.some(guild => guild.id === guildId)) throw new HttpError(400, 'bad_request', 'Select a server the bot belongs to.');
     return (await this.discovery.channels(guildId)).map(({ permissions: _permissions, afk: _afk, ...channel }) => channel);
+  }
+
+  /** Creates a channel in a server the bot belongs to, so the wizard can select it right away. */
+  async createChannel(body: unknown): Promise<SetupChannelDto> {
+    const input = parseChannelCreate(body);
+    if (!this.discovery) throw new HttpError(503, 'unavailable', this.discoveryIssue ?? 'Discord is not ready.');
+    if (!(await this.discovery.guilds()).some(guild => guild.id === input.guildId))
+      throw new HttpError(400, 'bad_request', 'Select a server the bot belongs to.');
+    let created: DiscoveredChannel;
+    try { created = await this.discovery.createChannel(input.guildId, input.name, input.type); }
+    catch (error) {
+      if ((error as { code?: number })?.code === 50013) throw new HttpError(403, 'forbidden',
+        'The bot needs the Manage Channels permission in this server to create channels. Grant it, or create the channel in Discord and press Refresh.');
+      throw new HttpError(502, 'unavailable', 'Discord did not create the channel. Try again, or create it in Discord and press Refresh.');
+    }
+    const { permissions: _permissions, afk: _afk, ...channel } = created;
+    return channel;
   }
 
   private async evaluate(selection: SetupSelectionDto, active: SessionRow | null,

@@ -96,7 +96,7 @@ describe('channel controls', () => {
       server.once('POST /admin-tools/channels/purge', () => json(200, { deleted: 4, skippedTooOld: 1 }));
     });
     await screen.findByRole('option', { name: '#general' });
-    await user.selectOptions(screen.getByRole('combobox'), GENERAL);
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Channel' }), GENERAL);
     const controls = await screen.findByRole('region', { name: 'Channel controls' });
     await within(controls).findByText('Open');
     await user.click(within(controls).getByRole('button', { name: /^Lock/ }));
@@ -129,8 +129,37 @@ describe('channel controls', () => {
       server.always(`GET /admin-tools/channels/state/${GENERAL}`, () => json(200, { channelId: GENERAL, locked: false, slowmodeSeconds: 0 }));
     });
     await screen.findByRole('option', { name: '#general' });
-    await userEvent.setup().selectOptions(screen.getByRole('combobox'), GENERAL);
+    await userEvent.setup().selectOptions(screen.getByRole('combobox', { name: 'Channel' }), GENERAL);
     const controls = await screen.findByRole('region', { name: 'Channel controls' });
     expect(within(controls).queryByRole('button', { name: /^Lock/ })).toBeNull();
+  });
+
+  it('creates a channel after a confirmed reason and selects it', async () => {
+    const user = userEvent.setup();
+    const NEW = '200000000000000399';
+    const harness = mountWith(<ChannelsTab />, server => {
+      routes(server);
+      server.once('POST /admin-tools/channels/create', () => json(201, { id: NEW, name: 'side-events', type: 'text', parentId: null, position: 2, reserved: false }));
+      server.always(`GET /admin-tools/channels/state/${NEW}`, () => json(200, { channelId: NEW, locked: false, slowmodeSeconds: 0 }));
+    });
+    const section = await screen.findByRole('region', { name: 'Create a channel' });
+    const button = within(section).getByRole('button', { name: /Create channel/ });
+    expect(button).toBeDisabled();
+    await user.type(within(section).getByRole('textbox', { name: 'Name' }), 'Side Events');
+    await user.click(button);
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog).toHaveTextContent('Create the text channel “Side Events”?');
+    await user.type(within(dialog).getByRole('textbox'), 'New format');
+    await user.click(within(dialog).getByRole('button', { name: 'Create channel' }));
+    expect(await within(section).findByText('Created #side-events.')).toBeInTheDocument();
+    expect(harness.server.callsTo('POST /admin-tools/channels/create')[0]!.body)
+      .toEqual({ name: 'Side Events', type: 'text', parentId: null, reason: 'New format' });
+    expect(await screen.findByRole('region', { name: 'Channel controls' })).toBeInTheDocument();
+  });
+
+  it('hides channel creation without server.manage', async () => {
+    mountWith(<ChannelsTab />, server => routes(server, ['dashboard.read', 'members.read', 'members.moderate']));
+    await screen.findByRole('option', { name: '#general' });
+    expect(screen.queryByRole('region', { name: 'Create a channel' })).toBeNull();
   });
 });

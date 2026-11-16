@@ -116,6 +116,7 @@ class FakeChannels implements ChannelGateway {
   async state() { return { everyoneSend: 'neutral' as PermissionBit, slowmodeSeconds: 0 }; }
   async setEveryoneSend() {}
   async setSlowmode() {}
+  async createChannel(): Promise<never> { throw new Error('not used'); }
   async recentMessages(_channelId: string, limit: number) { return this.messages.slice(0, limit); }
   async bulkDelete(_channelId: string, ids: readonly string[]) {
     this.messages = this.messages.filter(message => !ids.includes(message.id));
