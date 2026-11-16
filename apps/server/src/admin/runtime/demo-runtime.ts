@@ -117,7 +117,7 @@ interface DemoEvent {
   panelRevision: number;
 }
 
-type AdminDecision = 'publish' | 'signupClose' | 'signupReopen' | 'signupRemove' | 'judgeResume' | 'resolve' | 'correct';
+type AdminDecision = 'publish' | 'signupClose' | 'signupReopen' | 'signupRemove' | 'judgeResume' | 'judgeClose' | 'resolve' | 'correct';
 
 /** Where an interactive scenario waits. */
 export interface DemoPause {

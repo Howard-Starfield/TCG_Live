@@ -5,14 +5,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type pg from 'pg';
 import { EVIDENCE_DELETE_REASON_MAX_LENGTH, EVIDENCE_DOWNLOAD_ONLY_MIME, EVIDENCE_FILE_TYPES, EVIDENCE_LIST_LIMIT, EVIDENCE_NOTE_MAX_LENGTH,
-  EVIDENCE_ORIGINAL_NAME_MAX_LENGTH, EVIDENCE_URL_MAX_LENGTH, isEvidenceFileExtension, isMatchId, isSeatId,
-  type EvidenceFileExtension, type EvidenceItemDto, type EvidenceKind, type EvidenceSource, type EvidenceStatus,
-  type EvidenceSubmitter, type MatchId, type Seat } from '@tcg-live/core';
+  EVIDENCE_NOTE_TEXT_MAX_LENGTH, EVIDENCE_ORIGINAL_NAME_MAX_LENGTH, EVIDENCE_REPLY_AUDIENCES, EVIDENCE_REPLY_LIST_LIMIT,
+  EVIDENCE_REPLY_MAX_LENGTH, EVIDENCE_REPLY_STALE_MS, EVIDENCE_URL_MAX_LENGTH, isEvidenceFileExtension, isMatchId, isSeatId,
+  type EvidenceFileExtension, type EvidenceItemDto, type EvidenceKind, type EvidenceReplyAudience, type EvidenceReplyDto,
+  type EvidenceReplyStatus, type EvidenceSource, type EvidenceStatus, type EvidenceSubmitter, type MatchId, type Seat } from '@tcg-live/core';
 import { transaction, withClient } from '../rehearsal/store.js';
 import { insertOpsAudit, type OpsActor, type OpsAuditInput, type OpsAuditStore } from '../ops/audit.js';
 import { OpsConflictError, OpsInputError, OpsNotFoundError } from '../ops/errors.js';
 import { readableText, SNOWFLAKE, UUID } from '../ops/http.js';
-import { requireEvidenceSchema } from './schema.js';
+import { requireEvidenceRepliesSchema, requireEvidenceSchema } from './schema.js';
 
 export const DEFAULT_EVIDENCE_DIR = fileURLToPath(new URL('../../../../data/evidence/', import.meta.url));
 const RELATIVE_PATH = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.([a-z0-9]{2,4})$/;
@@ -31,6 +32,20 @@ interface NewEvidenceBase {
   actor: OpsActor;
 }
 export interface NewLinkEvidence extends NewEvidenceBase { url: string }
+/** Text-only evidence: `text` becomes the item's note. */
+export interface NewNoteEvidence extends Omit<NewEvidenceBase, 'note'> { text: string }
+export interface NewEvidenceReply {
+  eventId: string;
+  matchId: string;
+  body: string;
+  audience: EvidenceReplyAudience;
+  author: string;
+  actor: OpsActor;
+}
+/** A reply plus the token of the delivery attempt just started (null for a staff reply, which has none). */
+export type ReplyAttempt = EvidenceReplyDto & { attempt: number | null };
+/** How a Discord delivery attempt ended: the posted message, or a safe sentence saying why not. */
+export type ReplyDeliveryOutcome = { messageId: string } | { error: string };
 export interface NewFileEvidence extends NewEvidenceBase {
   kind: 'upload' | 'voice';
   extension: EvidenceFileExtension;
@@ -44,6 +59,8 @@ export interface StoredFileInfo { byteSize: number; sha256: string; mime?: strin
 export interface EvidenceStore {
   /** Validates an https link and records it as stored; audits evidence.submitted. */
   createLink(input: NewLinkEvidence): Promise<EvidenceItemDto>;
+  /** Records typed text as evidence of kind 'note' (no file, no link); audits evidence.submitted. */
+  createNote(input: NewNoteEvidence): Promise<EvidenceItemDto>;
   /** Reserves an ID and relative storage path with status 'pending'; the caller then writes the file. */
   createPendingUpload(input: NewFileEvidence): Promise<EvidenceRecord>;
   /** pending -> stored; audits evidence.submitted. */
@@ -56,6 +73,21 @@ export interface EvidenceStore {
   setHold(id: string, hold: boolean, actor: OpsActor): Promise<EvidenceItemDto>;
   /** Marks deleted and returns the record so the caller can remove its file. Held items refuse. Idempotent. */
   softDelete(id: string, reason: string, actor: OpsActor): Promise<EvidenceRecord>;
+
+  // ---- reply thread ----
+  /** Staff replies are 'recorded'; players replies start 'pending' until a delivery attempt finishes. Audits evidence.reply. */
+  createReply(input: NewEvidenceReply): Promise<ReplyAttempt>;
+  /** Oldest first. */
+  listReplies(eventId: string, matchId: string): Promise<EvidenceReplyDto[]>;
+  getReply(id: string): Promise<EvidenceReplyDto | null>;
+  /** failed -> pending for a retry. Refuses (OpsConflictError) anything else, so two retries cannot both post. */
+  claimReplyRetry(id: string, actor: OpsActor): Promise<ReplyAttempt>;
+  /**
+   * pending -> delivered (with the Discord message ID) or failed (with the reason). Audits evidence.reply.
+   * `attempt` is the token from createReply/claimReplyRetry: a finish from an older attempt, or for a reply that is no
+   * longer pending, changes nothing and returns the reply as it stands (never an error: the message may have posted).
+   */
+  finishReplyDelivery(id: string, outcome: ReplyDeliveryOutcome, actor: OpsActor, attempt: number | null): Promise<EvidenceReplyDto>;
 }
 
 // ---- path layout ----
@@ -97,6 +129,30 @@ export function parseEvidenceNote(raw: unknown): string {
     fail(`Note must be at most ${EVIDENCE_NOTE_MAX_LENGTH} readable characters.`);
   return (raw as string).trim();
 }
+const UNREADABLE = /[\p{Cc}\p{Cf}]/u;
+/** Line breaks and tabs are fine in typed text; every other control or format character is not. */
+const withoutWhitespaceControls = (text: string) => text.replace(/[\n\r\t]/g, '');
+/** Typed evidence text: 1 to EVIDENCE_NOTE_TEXT_MAX_LENGTH readable characters. */
+export function parseEvidenceText(raw: unknown): string {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!text || [...text].length > EVIDENCE_NOTE_TEXT_MAX_LENGTH || UNREADABLE.test(withoutWhitespaceControls(text)))
+    fail(`Text must be 1-${EVIDENCE_NOTE_TEXT_MAX_LENGTH} readable characters.`);
+  return text;
+}
+export function parseReplyBody(raw: unknown): string {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!text || [...text].length > EVIDENCE_REPLY_MAX_LENGTH || UNREADABLE.test(withoutWhitespaceControls(text)))
+    fail(`A reply must be 1-${EVIDENCE_REPLY_MAX_LENGTH} readable characters.`);
+  return text;
+}
+export function parseReplyAudience(raw: unknown): EvidenceReplyAudience {
+  if (typeof raw !== 'string' || !(EVIDENCE_REPLY_AUDIENCES as readonly string[]).includes(raw)) fail('audience must be "players" or "staff".');
+  return raw as EvidenceReplyAudience;
+}
+/** Keeps a delivery error to one short, readable sentence before it is stored or shown. */
+export function safeDeliveryError(raw: string): string {
+  return [...String(raw).replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim()].slice(0, 200).join('') || 'Discord did not accept the message.';
+}
 export function parseDeleteReason(raw: unknown): string {
   if (typeof raw !== 'string' || !raw.trim() || !readableText(raw.trim(), EVIDENCE_DELETE_REASON_MAX_LENGTH, true))
     fail(`A delete reason of 1-${EVIDENCE_DELETE_REASON_MAX_LENGTH} readable characters is required.`);
@@ -111,7 +167,7 @@ function target(eventId: string, matchId: string): { eventId: string; matchId: M
   if (!isMatchId(matchId) || matchId.length > 5) fail('Invalid match ID.');
   return { eventId: eventId.toLowerCase(), matchId: matchId as MatchId };
 }
-function base(input: NewEvidenceBase) {
+function base(input: Omit<NewEvidenceBase, 'note'> & { note?: string }) {
   const where = target(input.eventId, input.matchId);
   if (!['discord', 'web', 'bot'].includes(input.source)) fail('Invalid evidence source.');
   if (typeof input.submittedBy !== 'string' || !(SNOWFLAKE.test(input.submittedBy) || input.submittedBy === 'local-admin' || input.submittedBy === 'bot'))
@@ -159,7 +215,8 @@ function safeReason(reason: string): string {
 /** The DTO for a record: storagePath stripped. */
 export function publicEvidence(record: EvidenceRecord): EvidenceItemDto {
   const { storagePath: _omit, ...item } = record;
-  return item;
+  // A deleted note's text is gone from reads as well as from the row (defense in depth for rows deleted before this rule).
+  return item.kind === 'note' && item.status === 'deleted' ? { ...item, note: '' } : item;
 }
 
 // ---- PostgreSQL ----
@@ -189,6 +246,44 @@ export function evidenceFromRow(row: EvidenceRow): EvidenceRecord {
     ...(row.kind === 'voice' ? { recordedUserId: row.recorded_user_id, recordingStartedAtMs: num(row.recording_started_at_ms) } : {}),
     storagePath: row.storage_path
   };
+}
+
+interface ReplyRow {
+  id: string; event_id: string; match_id: string; author: string; body: string; audience: EvidenceReplyAudience; status: EvidenceReplyStatus;
+  discord_message_id: string | null; delivery_error: string | null; attempted_at_ms: string | null; created_at_ms: string;
+}
+const REPLY_COLUMNS = `id::text AS id, event_id::text AS event_id, match_id, author, body, audience, status, discord_message_id,
+  delivery_error, attempted_at_ms, created_at_ms`;
+const STALE_REPLY_ERROR = 'Sending was interrupted before Discord confirmed it.';
+
+/** A 'pending' reply whose attempt began long ago was cut short by a stop or crash: it reads as failed and can be retried. */
+function effectiveReply(reply: EvidenceReplyDto, attemptedAtMs: number | null, nowMs: number): EvidenceReplyDto {
+  if (reply.status === 'pending' && nowMs - (attemptedAtMs ?? reply.createdAtMs) > EVIDENCE_REPLY_STALE_MS)
+    return { ...reply, status: 'failed', deliveryError: STALE_REPLY_ERROR };
+  return reply;
+}
+function replyFromRow(row: ReplyRow, nowMs: number): EvidenceReplyDto {
+  return effectiveReply({ id: row.id, eventId: row.event_id, matchId: row.match_id as MatchId, author: row.author as EvidenceReplyDto['author'],
+    body: row.body, audience: row.audience, status: row.status, deliveryError: row.delivery_error,
+    discordMessageId: row.discord_message_id, createdAtMs: Number(row.created_at_ms) }, num(row.attempted_at_ms), nowMs);
+}
+function replyAudit(reply: EvidenceReplyDto, actor: OpsActor, stage: 'created' | 'delivered' | 'failed' | 'retry',
+  extra: Record<string, unknown> = {}): OpsAuditInput {
+  // Never the body: the reply text lives in the thread, not in the audit.
+  return { kind: 'evidence.reply', actor, eventId: reply.eventId, payload: { replyId: reply.id, matchId: reply.matchId,
+    audience: reply.audience, stage, ...extra } };
+}
+function newReply(input: NewEvidenceReply) {
+  const where = target(input.eventId, input.matchId);
+  if (typeof input.author !== 'string' || !(SNOWFLAKE.test(input.author) || input.author === 'local-admin')) fail('Invalid reply author.');
+  return { where, body: parseReplyBody(input.body), audience: parseReplyAudience(input.audience), author: input.author };
+}
+function outcomeOf(outcome: ReplyDeliveryOutcome): ReplyDeliveryOutcome {
+  if ('messageId' in outcome) {
+    if (typeof outcome.messageId !== 'string' || !SNOWFLAKE.test(outcome.messageId)) fail('Invalid Discord message ID.');
+    return { messageId: outcome.messageId };
+  }
+  return { error: safeDeliveryError(outcome.error) };
 }
 
 function auditInput(kind: OpsAuditInput['kind'], record: EvidenceRecord, actor: OpsActor, extra: Record<string, unknown> = {}): OpsAuditInput {
@@ -222,6 +317,19 @@ export function pgEvidenceStore(now: () => number = Date.now): EvidenceStore {
           value.submittedBy, value.seat, value.note, null, null, null, url, 'stored', now(), null, null]);
         await insertOpsAudit(client, auditInput('evidence.submitted', record, input.actor, { source: record.source }), now);
         return publicEvidence(record);
+      });
+    },
+    async createNote(input) {
+      const value = base(input);
+      const text = parseEvidenceText(input.text);
+      return withClient(async client => {
+        await requireEvidenceRepliesSchema(client);
+        return transaction(client, async () => {
+          const record = await insert(client, [randomUUID(), value.eventId, value.matchId, value.proposalRevision, 'note', value.source,
+            value.submittedBy, value.seat, text, null, null, null, null, 'stored', now(), null, null]);
+          await insertOpsAudit(client, auditInput('evidence.submitted', record, input.actor, { source: record.source, length: [...text].length }), now);
+          return publicEvidence(record);
+        });
       });
     },
     async createPendingUpload(input) {
@@ -296,11 +404,92 @@ export function pgEvidenceStore(now: () => number = Date.now): EvidenceStore {
         const current = await lockRow(client, key);
         if (current.status === 'deleted') return current;
         if (current.hold) throw new OpsConflictError('Remove the hold before deleting this evidence.');
+        // A note IS its text, so deleting it blanks the text (retention goes through here too).
         const result = await client.query<EvidenceRow>(`UPDATE public.tcg_evidence SET status = 'deleted', deleted_at_ms = $2,
-          delete_reason = $3 WHERE id = $1 RETURNING ${COLUMNS}`, [key, now(), why]);
+          delete_reason = $3, note = CASE WHEN kind = 'note' THEN '' ELSE note END WHERE id = $1 RETURNING ${COLUMNS}`, [key, now(), why]);
         const record = evidenceFromRow(result.rows[0]!);
         await insertOpsAudit(client, auditInput('evidence.deleted', record, actor, { reason: why }), now);
         return record;
+      });
+    },
+    async createReply(input) {
+      const value = newReply(input);
+      return withClient(async client => {
+        await requireEvidenceRepliesSchema(client);
+        return transaction(client, async () => {
+          const at = now();
+          const players = value.audience === 'players';
+          const result = await client.query<ReplyRow>(
+            `INSERT INTO public.tcg_evidence_replies (id, event_id, match_id, author, body, audience, status, attempted_at_ms, created_at_ms)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${REPLY_COLUMNS}`,
+            [randomUUID(), value.where.eventId, value.where.matchId, value.author, value.body, value.audience,
+              players ? 'pending' : 'recorded', players ? at : null, at]);
+          const reply = replyFromRow(result.rows[0]!, at);
+          await insertOpsAudit(client, replyAudit(reply, input.actor, 'created'), now);
+          return { ...reply, attempt: players ? at : null };
+        });
+      });
+    },
+    async listReplies(eventId, matchId) {
+      const where = target(eventId, matchId);
+      return withClient(async client => {
+        await requireEvidenceRepliesSchema(client);
+        const result = await client.query<ReplyRow>(`SELECT ${REPLY_COLUMNS} FROM public.tcg_evidence_replies
+          WHERE event_id = $1 AND match_id = $2 ORDER BY created_at_ms, id LIMIT $3`, [where.eventId, where.matchId, EVIDENCE_REPLY_LIST_LIMIT]);
+        return result.rows.map(row => replyFromRow(row, now()));
+      });
+    },
+    async getReply(id) {
+      if (!UUID.test(id)) return null;
+      return withClient(async client => {
+        await requireEvidenceRepliesSchema(client);
+        const result = await client.query<ReplyRow>(`SELECT ${REPLY_COLUMNS} FROM public.tcg_evidence_replies WHERE id = $1`, [id.toLowerCase()]);
+        return result.rows[0] ? replyFromRow(result.rows[0], now()) : null;
+      });
+    },
+    async claimReplyRetry(id, actor) {
+      if (!UUID.test(id)) throw new OpsNotFoundError('Reply not found.');
+      return withClient(async client => {
+        await requireEvidenceRepliesSchema(client);
+        return transaction(client, async () => {
+          const locked = await client.query<ReplyRow>(`SELECT ${REPLY_COLUMNS} FROM public.tcg_evidence_replies WHERE id = $1 FOR UPDATE`, [id.toLowerCase()]);
+          if (!locked.rows[0]) throw new OpsNotFoundError('Reply not found.');
+          const current = replyFromRow(locked.rows[0], now());
+          if (current.audience !== 'players' || current.status !== 'failed')
+            throw new OpsConflictError(current.status === 'delivered' ? 'This reply was already delivered.' : 'This reply is not waiting for a retry.');
+          // Strictly after the previous attempt, so every attempt has a distinct token.
+          const previous = Number(locked.rows[0].attempted_at_ms ?? 0);
+          const at = Math.max(now(), previous + 1);
+          const result = await client.query<ReplyRow>(`UPDATE public.tcg_evidence_replies SET status = 'pending', delivery_error = NULL,
+            attempted_at_ms = $2 WHERE id = $1 RETURNING ${REPLY_COLUMNS}`, [current.id, at]);
+          const reply = replyFromRow(result.rows[0]!, now());
+          await insertOpsAudit(client, replyAudit(reply, actor, 'retry'), now);
+          return { ...reply, attempt: at };
+        });
+      });
+    },
+    async finishReplyDelivery(id, outcome, actor, attempt) {
+      if (!UUID.test(id)) throw new OpsNotFoundError('Reply not found.');
+      const result = outcomeOf(outcome);
+      return withClient(async client => {
+        await requireEvidenceRepliesSchema(client);
+        return transaction(client, async () => {
+          const locked = await client.query<ReplyRow>(`SELECT ${REPLY_COLUMNS} FROM public.tcg_evidence_replies WHERE id = $1 FOR UPDATE`, [id.toLowerCase()]);
+          if (!locked.rows[0]) throw new OpsNotFoundError('Reply not found.');
+          // Only the attempt that is still current can finish. An older one (a retry started after the stale window) or
+          // a reply that is no longer pending is left as it is: the message may well have posted, so this is not an error.
+          if (locked.rows[0].status !== 'pending' || Number(locked.rows[0].attempted_at_ms) !== attempt)
+            return replyFromRow(locked.rows[0], now());
+          const updated = 'messageId' in result
+            ? await client.query<ReplyRow>(`UPDATE public.tcg_evidence_replies SET status = 'delivered', discord_message_id = $2, delivery_error = NULL
+                WHERE id = $1 RETURNING ${REPLY_COLUMNS}`, [locked.rows[0].id, result.messageId])
+            : await client.query<ReplyRow>(`UPDATE public.tcg_evidence_replies SET status = 'failed', delivery_error = $2
+                WHERE id = $1 RETURNING ${REPLY_COLUMNS}`, [locked.rows[0].id, result.error]);
+          const reply = replyFromRow(updated.rows[0]!, now());
+          await insertOpsAudit(client, replyAudit(reply, actor, reply.status === 'delivered' ? 'delivered' : 'failed',
+            reply.status === 'delivered' ? { discordMessageId: reply.discordMessageId } : { reason: reply.deliveryError }), now);
+          return reply;
+        });
       });
     }
   };
@@ -311,6 +500,7 @@ export function pgEvidenceStore(now: () => number = Date.now): EvidenceStore {
 /** In-memory store for tests and the demo runtime; `events` lists event IDs that exist (null accepts any). */
 export class MemoryEvidenceStore implements EvidenceStore {
   readonly records = new Map<string, EvidenceRecord>();
+  readonly replies = new Map<string, { reply: EvidenceReplyDto; attemptedAtMs: number | null }>();
   constructor(private readonly audit: OpsAuditStore, private readonly now: () => number = Date.now,
     private readonly events: Set<string> | null = null) {}
 
@@ -340,6 +530,14 @@ export class MemoryEvidenceStore implements EvidenceStore {
     this.exists(value.eventId);
     const record = this.save({ ...this.blank(value, randomUUID()), kind: 'link', externalUrl: url, status: 'stored' });
     await this.audit.append(auditInput('evidence.submitted', record, input.actor, { source: record.source }));
+    return publicEvidence(record);
+  }
+  async createNote(input: NewNoteEvidence) {
+    const value = base(input);
+    const text = parseEvidenceText(input.text);
+    this.exists(value.eventId);
+    const record = this.save({ ...this.blank({ ...value, note: text }, randomUUID()), kind: 'note', status: 'stored' });
+    await this.audit.append(auditInput('evidence.submitted', record, input.actor, { source: record.source, length: [...text].length }));
     return publicEvidence(record);
   }
   async createPendingUpload(input: NewFileEvidence) {
@@ -392,9 +590,62 @@ export class MemoryEvidenceStore implements EvidenceStore {
     const why = parseDeleteReason(reason);
     if (current.status === 'deleted') return structuredClone(current);
     if (current.hold) throw new OpsConflictError('Remove the hold before deleting this evidence.');
-    const record = this.save({ ...current, status: 'deleted', deletedAtMs: this.now(), deleteReason: why });
+    const record = this.save({ ...current, status: 'deleted', deletedAtMs: this.now(), deleteReason: why,
+      note: current.kind === 'note' ? '' : current.note });
     await this.audit.append(auditInput('evidence.deleted', record, actor, { reason: why }));
     return record;
+  }
+
+  private reply(id: string): { reply: EvidenceReplyDto; attemptedAtMs: number | null } {
+    const entry = UUID.test(id) ? this.replies.get(id.toLowerCase()) : undefined;
+    if (!entry) throw new OpsNotFoundError('Reply not found.');
+    return entry;
+  }
+  private view(entry: { reply: EvidenceReplyDto; attemptedAtMs: number | null }): EvidenceReplyDto {
+    return structuredClone(effectiveReply(entry.reply, entry.attemptedAtMs, this.now()));
+  }
+  async createReply(input: NewEvidenceReply) {
+    const value = newReply(input);
+    this.exists(value.where.eventId);
+    const at = this.now();
+    const players = value.audience === 'players';
+    const reply: EvidenceReplyDto = { id: randomUUID(), eventId: value.where.eventId, matchId: value.where.matchId,
+      author: value.author as EvidenceReplyDto['author'], body: value.body, audience: value.audience,
+      status: players ? 'pending' : 'recorded', deliveryError: null, discordMessageId: null, createdAtMs: at };
+    this.replies.set(reply.id, { reply, attemptedAtMs: players ? at : null });
+    await this.audit.append(replyAudit(reply, input.actor, 'created'));
+    return { ...structuredClone(reply), attempt: players ? at : null };
+  }
+  async listReplies(eventId: string, matchId: string) {
+    const where = target(eventId, matchId);
+    return [...this.replies.values()].filter(({ reply }) => reply.eventId === where.eventId && reply.matchId === where.matchId)
+      .sort((a, b) => a.reply.createdAtMs - b.reply.createdAtMs || a.reply.id.localeCompare(b.reply.id)).slice(0, EVIDENCE_REPLY_LIST_LIMIT)
+      .map(entry => this.view(entry));
+  }
+  async getReply(id: string) {
+    const entry = UUID.test(id) ? this.replies.get(id.toLowerCase()) : undefined;
+    return entry ? this.view(entry) : null;
+  }
+  async claimReplyRetry(id: string, actor: OpsActor) {
+    const entry = this.reply(id);
+    const current = this.view(entry);
+    if (current.audience !== 'players' || current.status !== 'failed')
+      throw new OpsConflictError(current.status === 'delivered' ? 'This reply was already delivered.' : 'This reply is not waiting for a retry.');
+    entry.reply = { ...entry.reply, status: 'pending', deliveryError: null };
+    entry.attemptedAtMs = Math.max(this.now(), (entry.attemptedAtMs ?? 0) + 1);
+    await this.audit.append(replyAudit(entry.reply, actor, 'retry'));
+    return { ...this.view(entry), attempt: entry.attemptedAtMs };
+  }
+  async finishReplyDelivery(id: string, outcome: ReplyDeliveryOutcome, actor: OpsActor, attempt: number | null) {
+    const entry = this.reply(id);
+    const result = outcomeOf(outcome);
+    if (entry.reply.status !== 'pending' || entry.attemptedAtMs !== attempt) return this.view(entry);
+    entry.reply = 'messageId' in result
+      ? { ...entry.reply, status: 'delivered', discordMessageId: result.messageId, deliveryError: null }
+      : { ...entry.reply, status: 'failed', deliveryError: result.error };
+    await this.audit.append(replyAudit(entry.reply, actor, entry.reply.status === 'delivered' ? 'delivered' : 'failed',
+      'messageId' in result ? { discordMessageId: result.messageId } : { reason: result.error }));
+    return this.view(entry);
   }
 }
 

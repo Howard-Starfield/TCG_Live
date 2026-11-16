@@ -96,3 +96,16 @@ test('admin tools (013) shape is the evidence shape plus exactly its tables and 
     assert.equal(directorySetupDecision(names), 'refuse');
   }
 });
+
+test('migration 015 evidence replies table is optional: every guard sees the same shape with or without it', () => {
+  const withReplies = [...withEvidence, 'tcg_evidence_replies'];
+  assert.equal(classifyPublicSchema(withReplies), 'v2_directory_evidence');
+  assert.equal(evidenceSetupDecision(withReplies), 'already_ready');
+  assert.equal(directorySetupDecision(withReplies), 'already_ready');
+  assert.equal(rehearsalSetupDecision(withReplies, '2'), 'already_ready');
+  assert.equal(privateDiscordSetupDecision(withReplies, '2'), 'already_ready');
+  // A stray replies table never makes a half-applied 012 or a foreign schema acceptable.
+  assert.equal(classifyPublicSchema([...TABLES_V2_DIRECTORY, 'tcg_evidence', 'tcg_evidence_replies']), 'unexpected');
+  assert.equal(classifyPublicSchema([...TABLES_V2_DIRECTORY, 'tcg_evidence_replies']), 'unexpected');
+  assert.equal(classifyPublicSchema([...withReplies, 'users']), 'unexpected');
+});

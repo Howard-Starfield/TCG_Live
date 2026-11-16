@@ -8,6 +8,7 @@ import { MotionGlobalConfig } from 'motion/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createHarness, sessionFixture } from '../../app/testing';
+import { ToastProvider } from '../../ui';
 import { AdminDataProvider, ServerClock } from '../../data';
 import { ServerClockContext } from '../../data/clock';
 import { json, type FakeServer } from '../../data/test/fakes';
@@ -57,7 +58,7 @@ function base(server: FakeServer, saved = settings()) {
 }
 function mount(ui: ReactNode, setup: (server: FakeServer) => void) {
   const harness = createHarness({ stream: false, setup });
-  const view = render(<AdminDataProvider data={harness.data}>{ui}</AdminDataProvider>);
+  const view = render(<ToastProvider><AdminDataProvider data={harness.data}>{ui}</AdminDataProvider></ToastProvider>);
   return { harness, view };
 }
 
@@ -146,7 +147,7 @@ describe('announcement scheduling uses the server clock', () => {
     const draft = { ...newDraft(), channelId: CHANNEL, body: { content: 'Hi', embed: null }, when: 'schedule' as const,
       scheduledAt: toLocalInput(Date.now() + 3_600_000) };
     mount(<ServerClockContext.Provider value={clock}>
-      <AnnouncementComposer draft={draft} onChange={() => {}} onDone={() => {}} canEdit />
+      <AnnouncementComposer draft={draft} open onChange={() => {}} onDone={() => {}} canEdit />
     </ServerClockContext.Provider>, server => base(server));
     expect(await screen.findByText('Choose a time in the future.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Schedule' })).toBeDisabled();
@@ -170,7 +171,7 @@ describe('button-role panels', () => {
       server.once(`POST /admin-tools/button-roles/${saved.id}/publish`, () => json(200, { ...saved, messageState: 'posted' }));
     });
     await user.click(await screen.findByRole('button', { name: 'New panel' }));
-    const editor = screen.getByRole('region', { name: 'Panel editor' });
+    const editor = await screen.findByRole('dialog', { name: 'New panel' });
     await waitFor(() => expect(within(editor).getAllByRole('option', { name: '#general' }).length).toBeGreaterThan(0));
     const [channel, , , buttonRole] = within(editor).getAllByRole('combobox');
     await user.selectOptions(channel!, CHANNEL);

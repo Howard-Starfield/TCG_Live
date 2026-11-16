@@ -170,7 +170,7 @@ test('judge: called, then judge-resume (attention stays), then expiry adds a rea
   const calledAt = r.now;
   let m2 = snapshotOf(r).matches[1]!;
   assert.deepEqual(m2.judge, { reasons: ['called'], sinceMs: calledAt, raisedBy: ['D'] });
-  assert.deepEqual(m2.adminActions, ['resolve', 'judgeResume']);
+  assert.deepEqual(m2.adminActions, ['resolve', 'judgeResume', 'judgeClose']);
   r.after(1_000, ADMIN, { type: 'judgeResume', matchId: 'M2', reason: 'Checked' });
   m2 = snapshotOf(r).matches[1]!;
   assert.equal(m2.phase, 'running');

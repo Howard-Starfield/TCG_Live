@@ -1,17 +1,18 @@
-// "New channel" control under a setup channel picker: creates the channel in Discord and hands it back so the
-// wizard can select it at once. The bot needs Manage Channels in the server.
+// "New channel" control under a setup channel picker: opens a small dialog that creates the channel in Discord
+// and hands it back so the wizard can select it at once. The bot needs Manage Channels in the server.
 import type { SetupChannelDto } from '@tcg-live/core';
 import { Plus } from 'lucide-react';
 import { useId, useRef, useState } from 'react';
 import { useAdminData } from '../../data';
-import { Button, Input } from '../../ui';
+import { Button, Field, Input } from '../../ui';
+import { EditorDialog } from '../admin-tools/shared/EditorDialog';
 
 export function CreateChannelInline({ guildId, type, defaultName, hint, disabled, onCreated }: {
   guildId: string; type: 'text' | 'voice'; defaultName: string; hint?: string; disabled?: boolean;
   onCreated(channel: SetupChannelDto): void;
 }) {
   const { api } = useAdminData();
-  const inputId = useId();
+  const formId = useId();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(defaultName);
   const [busy, setBusy] = useState(false);
@@ -21,9 +22,6 @@ export function CreateChannelInline({ guildId, type, defaultName, hint, disabled
   const inFlight = useRef(false);
   const currentGuild = useRef(guildId);
   currentGuild.current = guildId;
-
-  if (!open) return <Button size="sm" variant="ghost" icon={<Plus aria-hidden />} disabled={disabled || !guildId}
-    onClick={() => { setName(defaultName); setError(null); setOpen(true); }}>New {kind}</Button>;
 
   const create = async () => {
     if (inFlight.current || !name.trim()) return;
@@ -38,16 +36,21 @@ export function CreateChannelInline({ guildId, type, defaultName, hint, disabled
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Discord did not create the channel.'); }
     finally { inFlight.current = false; setBusy(false); }
   };
-  return <div role="group" aria-label={`Create a ${kind}`} className="space-y-1.5 rounded-md border border-line bg-sunken p-2">
-    <label htmlFor={inputId} className="text-xs font-medium text-fg">New {kind} name</label>
-    <div className="flex flex-wrap items-center gap-2">
-      <Input id={inputId} value={name} maxLength={100} className="min-w-0 flex-1" autoFocus readOnly={busy}
-        onChange={event => setName(event.target.value)}
-        onKeyDown={event => { if (event.key === 'Enter') void create(); if (event.key === 'Escape' && !busy) setOpen(false); }} />
-      <Button size="sm" variant="primary" loading={busy} disabled={!name.trim()} onClick={() => void create()}>Create</Button>
-      <Button size="sm" variant="ghost" disabled={busy} onClick={() => setOpen(false)}>Cancel</Button>
-    </div>
-    {hint && <p className="text-[11px] text-fg-subtle">{hint}</p>}
-    {error && <p role="alert" className="text-xs text-danger">{error}</p>}
-  </div>;
+  return <>
+    <Button size="sm" variant="ghost" icon={<Plus aria-hidden />} disabled={disabled || !guildId}
+      onClick={() => { setName(defaultName); setError(null); setOpen(true); }}>New {kind}</Button>
+    <EditorDialog open={open} width="sm" title={`New ${kind}`} busy={busy} dirty={name.trim() !== defaultName} onClose={() => setOpen(false)}
+      footer={<>
+        <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setOpen(false)}>Cancel</Button>
+        <Button type="submit" form={formId} size="sm" variant="primary" loading={busy} disabled={!name.trim()}>Create</Button>
+      </>}>
+      <form id={formId} aria-label={`Create a ${kind}`} className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void create(); }}>
+        <Field label={`New ${kind} name`}>
+          <Input value={name} maxLength={100} readOnly={busy} onChange={event => setName(event.target.value)} />
+        </Field>
+        {hint && <p className="text-[11px] text-fg-subtle">{hint}</p>}
+        {error && <p role="alert" className="text-xs text-danger">{error}</p>}
+      </form>
+    </EditorDialog>
+  </>;
 }

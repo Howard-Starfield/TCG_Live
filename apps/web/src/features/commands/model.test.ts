@@ -1,7 +1,7 @@
 import { ADMIN_REASON_MAX_LENGTH, CAPABILITIES, type SessionDto } from '@tcg-live/core';
 import { checkin, FIXTURE_MEMBER_IDS, final, liveDispute, liveInterrupted, signupOpen } from '@tcg-live/core/fixtures';
 import { describe, expect, it } from 'vitest';
-import { availableEventActions, availableMatchActions, canRefreshPanels, canRemoveMember, canRunAny, checkReason,
+import { availableEventActions, availableMatchActions, canCloseJudgeIssue, canRefreshPanels, canRemoveMember, canRunAny, checkReason,
   preconditionFor, refreshToasts, resultToasts, PENDING_DESCRIPTION } from './model';
 
 type Gate = Pick<SessionDto, 'commandsEnabled' | 'capabilities'>;
@@ -37,6 +37,24 @@ describe('gating (decision 4)', () => {
     expect(availableMatchActions(admin, liveDispute, m(liveDispute, 'M2'))).toEqual(['resolve', 'judgeResume']);
     expect(availableMatchActions(admin, final, m(final, 'M2'))).toEqual(['correct']);
     expect(availableMatchActions(admin, liveInterrupted, m(liveInterrupted, 'M1'))).toEqual([]);
+  });
+
+  it('offers Close issue only for an open judge request that is not a dispute', () => {
+    const base = m(liveDispute, 'M2');
+    const called = { ...base, proposal: null, judge: { reasons: ['called' as const], sinceMs: 1, raisedBy: ['C' as const] },
+      adminActions: ['resolve' as const, 'judgeClose' as const] };
+    const snap = (match: typeof base) => ({ ...liveDispute, matches: [liveDispute.matches[0]!, match] });
+    expect(canCloseJudgeIssue(admin, snap(called), called)).toBe(true);
+    expect(availableMatchActions(admin, snap(called), called)).toEqual(['judgeClose', 'resolve']);
+    expect(canCloseJudgeIssue(readOnly, snap(called), called)).toBe(false);
+    const noRequest = { ...called, judge: null };
+    expect(canCloseJudgeIssue(admin, snap(noRequest), noRequest)).toBe(false);
+    expect(canCloseJudgeIssue(admin, liveDispute, base)).toBe(false);
+    const disputed = { ...called, proposal: base.proposal };
+    expect(canCloseJudgeIssue(admin, snap(disputed), disputed)).toBe(false);
+    const notMine = { ...called, adminActions: ['resolve' as const] };
+    expect(canCloseJudgeIssue(admin, snap(notMine), notMine)).toBe(false);
+    expect(canCloseJudgeIssue({ ...admin, capabilities: ['dashboard.read'] }, snap(called), called)).toBe(false);
   });
 
   it('never acts on retired events', () => {

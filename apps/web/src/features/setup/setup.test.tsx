@@ -156,7 +156,7 @@ it('creates missing channels from the wizard and selects them in their slots', a
   await screen.findByRole('option', { name: 'signup' });
   const m1 = screen.getAllByRole('button', { name: /New voice room/ })[0]!;
   await user.click(m1);
-  const group = screen.getByRole('group', { name: 'Create a voice room' });
+  const group = await screen.findByRole('dialog', { name: 'New voice room' });
   const name = within(group).getByRole('textbox', { name: /New voice room name/ });
   expect(name).toHaveValue('TCG Match 1');
   await user.clear(name);
@@ -165,7 +165,7 @@ it('creates missing channels from the wizard and selects them in their slots', a
   await waitFor(() => expect(screen.getByRole('combobox', { name: /M1 match voice room/ })).toHaveValue('666666666666666666'));
   expect(server.callsTo('POST /setup/channels')[0]?.body).toEqual({ guildId: ids[0], name: 'TCG Match 3', type: 'voice' });
   await user.click(screen.getByRole('button', { name: /New text channel/ }));
-  const text = screen.getByRole('group', { name: 'Create a text channel' });
+  const text = await screen.findByRole('dialog', { name: 'New text channel' });
   await user.click(within(text).getByRole('button', { name: 'Create' }));
   expect(await within(text).findByRole('alert')).toHaveTextContent(/Manage Channels/);
 });
@@ -181,11 +181,11 @@ it('pressing Enter twice while Discord is creating a channel sends one request',
   await user.click(screen.getByRole('button', { name: 'Next: channels' }));
   await screen.findByRole('option', { name: 'signup' });
   await user.click(screen.getByRole('button', { name: /New text channel/ }));
-  const group = screen.getByRole('group', { name: 'Create a text channel' });
+  const group = await screen.findByRole('dialog', { name: 'New text channel' });
   const name = within(group).getByRole('textbox', { name: /New text channel name/ });
   await user.type(name, '{Enter}{Enter}');
   await user.click(within(group).getByRole('button', { name: 'Create' }));
   release();
-  await waitFor(() => expect(screen.queryByRole('group', { name: 'Create a text channel' })).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New text channel' })).not.toBeInTheDocument());
   expect(server.callsTo('POST /setup/channels')).toHaveLength(1);
 });

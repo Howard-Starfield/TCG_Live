@@ -9,6 +9,7 @@ import { createAdminHandler, type AdminHandler, type AdminHandlerOptions } from 
 import { DemoAdminRuntime, type DemoAdminRuntimeOptions } from './runtime/demo-runtime.js';
 import { MemoryEvidenceStore } from '../evidence/store.js';
 import { createEvidenceSeams } from '../evidence/seams.js';
+import { demoReplyDelivery } from '../evidence/replies.js';
 import { tmpdir } from 'node:os';
 import { MemoryModerationFlagStore } from '../moderation/flags.js';
 import { MemoryModerationSettingsStore } from '../moderation/settings.js';
@@ -37,7 +38,7 @@ export function demoOpsOptions(): Pick<AdminHandlerOptions, 'evidence' | 'modera
   return {
     // Demo uploads go to a per-process OS temp directory, never data/evidence.
     evidence: { store: new MemoryEvidenceStore(audit), audit,
-      seams: createEvidenceSeams({ root: demoEvidenceRoot() }).seams },
+      seams: createEvidenceSeams({ root: demoEvidenceRoot() }).seams, replyDelivery: demoReplyDelivery() },
     moderation: { settings: new MemoryModerationSettingsStore(audit), flags: new MemoryModerationFlagStore(audit), audit,
       voiceBots: new MemoryVoiceBotRegistry(), guildId: () => DEMO_GUILD_ID },
     // Admin tools act on a synthetic server (members, bans, roles, channels); route modules use Memory* stores.

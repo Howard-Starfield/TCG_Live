@@ -242,6 +242,21 @@ function DownloadButton({ item, label = 'Download' }: { item: EvidenceItemDto; l
 }
 export { DownloadButton as EvidenceDownloadButton };
 
+/** Text longer than this starts clamped, with a Show more button. */
+const NOTE_CLAMP_CHARS = 280;
+
+/** Text-only evidence (kind 'note'): the written account, clamped when long and expandable. No player, no download. */
+export function NoteEvidence({ item }: { item: EvidenceItemDto }) {
+  const [expanded, setExpanded] = useState(false);
+  const long = item.note.length > NOTE_CLAMP_CHARS || item.note.split('\n').length > 6;
+  return <div className="flex flex-col items-start gap-1.5 rounded-lg bg-sunken p-3" data-testid="evidence-note">
+    <p className={cx('w-full whitespace-pre-wrap break-words text-xs text-fg', long && !expanded && 'line-clamp-6')}>{item.note}</p>
+    {long && <Button size="sm" variant="ghost" aria-expanded={expanded} onClick={() => setExpanded(open => !open)}>
+      {expanded ? 'Show less' : 'Show more'}
+    </Button>}
+  </div>;
+}
+
 /** External link evidence: never embedded; opens in a new tab after a clear warning. */
 function LinkEvidence({ item }: { item: EvidenceItemDto }) {
   const url = item.externalUrl ?? '';
@@ -289,7 +304,7 @@ export interface EvidencePlayerProps {
 /** Plays one evidence item: inline media, a download-only notice, or an external-link card. */
 export function EvidencePlayer({ item, markers = [], ref }: EvidencePlayerProps) {
   const media = useRef<HTMLMediaElement | null>(null);
-  const playable = item.kind !== 'link' && item.status === 'stored' && item.playable;
+  const playable = item.kind !== 'link' && item.kind !== 'note' && item.status === 'stored' && item.playable;
   const source = useTicketedSource(item.id, media, playable);
   const attachMedia = useMediaRef(media);
   const seek = useCallback((offsetMs: number) => {
@@ -301,6 +316,8 @@ export function EvidencePlayer({ item, markers = [], ref }: EvidencePlayerProps)
   useImperativeHandle(ref, () => ({ seek }), [seek]);
 
   if (item.kind === 'link') return <LinkEvidence item={item} />;
+  // A deleted note falls through to the generic "Deleted" message: its text is not shown again.
+  if (item.kind === 'note' && item.status === 'stored') return <NoteEvidence item={item} />;
   if (item.status !== 'stored') {
     return <p className="rounded-lg bg-sunken p-3 text-xs text-fg-muted" data-testid="evidence-unavailable">
       {item.status === 'pending' ? 'This file is still being stored. Check again in a moment.'

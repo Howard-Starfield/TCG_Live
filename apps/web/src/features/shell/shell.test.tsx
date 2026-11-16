@@ -1,4 +1,4 @@
-import { final, liveDispute, liveInterrupted } from '@tcg-live/core/fixtures';
+import { final, FIXTURE_NOW_MS, liveDispute, liveInterrupted } from '@tcg-live/core/fixtures';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -35,16 +35,16 @@ describe('top bar', () => {
     expect(toggle('Live preview')).toHaveAttribute('aria-pressed', 'false');
     await user.click(toggle('Live preview'));
     expect(toggle('Live preview')).toHaveAttribute('aria-pressed', 'true');
-    expect(preferences.getSnapshot().panes).toEqual({ live: true, list: false });
+    expect(preferences.getSnapshot().panes).toEqual({ live: true, list: false, kanban: false });
     expect(await screen.findByTestId('live-preview')).toHaveAttribute('data-event', liveDispute.eventId);
 
     await user.click(toggle('List preview'));
-    expect(preferences.getSnapshot().panes).toEqual({ live: true, list: true });
+    expect(preferences.getSnapshot().panes).toEqual({ live: true, list: true, kanban: false });
     expect(screen.getByTestId('list-preview')).toBeInTheDocument();
     expect(screen.getByRole('separator', { name: 'Resize live and list previews' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Close live preview' }));
-    expect(preferences.getSnapshot().panes).toEqual({ live: false, list: true });
+    expect(preferences.getSnapshot().panes).toEqual({ live: false, list: true, kanban: false });
   });
 
   it('restores open panes from preferences on the next visit', async () => {
@@ -210,10 +210,17 @@ describe('home', () => {
     await screen.findByRole('heading', { name: 'Home' });
     const chart = await screen.findByRole('list', { name: 'Player counts' }, { timeout: 5000 });
     expect(within(chart).getAllByRole('listitem').map(row => row.textContent)).toEqual(['Joined4', 'Assigned4', 'Checked in4']);
-    const actions = screen.getByRole('region', { name: 'Action needed' });
+    const actions = screen.getByRole('region', { name: 'Tournament task board' });
+    expect(screen.getByRole('heading', { name: 'Matches' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Action needed' })).not.toBeInTheDocument();
     expect(within(actions).getByText('Awaiting result confirmation')).toBeInTheDocument();
     expect(within(actions).getByRole('button', { name: 'Match M1' })).toBeInTheDocument();
     await user.click(within(actions).getByRole('button', { name: 'Match M2' }));
+    // The card opens the match drawer; it does not navigate away from Home.
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    expect(screen.getByRole('heading', { name: 'Home' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Needs you/ })).not.toBeInTheDocument();
+    await user.click(within(drawer).getByRole('button', { name: 'Open in tournament view' }));
     await ready();
     expect(screen.getByRole('button', { name: 'Match M2', pressed: true })).toBeInTheDocument();
     const sidebar = screen.getByRole('complementary', { name: 'Sidebar' });
@@ -591,3 +598,350 @@ function statusOf() {
     cards: { updatePending: false }, rooms: { enabled: false, warning: null }, commandsEnabled: true
   };
 }
+
+describe('Home task board and match drawer', () => {
+  const discord = (server: { always(route: string, handler: () => unknown): void }) => server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord' }));
+  const waitingFor = (minutes: number) => ({ ...liveDispute, matches: liveDispute.matches.map(match => match.id === 'M2' && match.judge
+    ? { ...match, judge: { ...match.judge, sinceMs: FIXTURE_NOW_MS - minutes * 60_000 } } : match) });
+  const mountHome = (snapshot = liveDispute) => renderConsole({ snapshot, setup: server => { discord(server); } });
+  const board = async () => within(await screen.findByRole('region', { name: 'Tournament task board' }));
+  const laneHeader = async (name: string) => {
+    const heading = await screen.findByRole('heading', { name, level: 3 });
+    return within(heading.closest('header') as HTMLElement);
+  };
+  const called = (patch: Partial<NonNullable<typeof liveDispute.matches[number]['judge']>> = {}) => ({ ...liveDispute, matches: liveDispute.matches.map(match => match.id === 'M1'
+    ? { ...match, phase: 'paused' as const, adminActions: ['resolve' as const, 'judgeResume' as const, 'judgeClose' as const],
+      judge: { reasons: ['called' as const], sinceMs: FIXTURE_NOW_MS - 60_000, raisedBy: ['A' as const], requests: [], ...patch } } : match) });
+
+  afterEach(() => { window.history.replaceState(null, '', window.location.pathname); });
+
+  it('has no stat-card row; the Judge needed lane header shows its count and an oldest-wait pill that warns after 5 minutes and alarms after 10', async () => {
+    mountHome(waitingFor(6));
+    await screen.findByRole('list', { name: 'Player counts' }, { timeout: 5000 });
+    expect(screen.queryByRole('button', { name: /^Judge needed/ })).not.toBeInTheDocument();
+    const judge = await laneHeader('Judge needed');
+    expect(judge.getByText('1')).toBeInTheDocument();
+    expect(await judge.findByText('oldest 6m')).toHaveClass('text-warning');
+    expect((await laneHeader('Decision needed')).queryByText(/oldest/)).toBeNull();
+    cleanup();
+    mountHome(waitingFor(11));
+    expect(await screen.findByText('oldest 11m', {}, { timeout: 5000 })).toHaveClass('text-danger');
+  });
+
+  it('opens the drawer from the deep link, and closes it with Escape, restoring the hash and focusing the card', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', `${window.location.pathname}#/match/${liveDispute.eventId}/M2`);
+    mountHome();
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    expect(within(drawer).getByRole('region', { name: 'Judge request' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^Match M2/ })).not.toBeInTheDocument());
+    expect(window.location.hash).toBe('');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Match M2' })).toHaveFocus());
+  });
+
+  it('writes the open match to the hash and puts the previous hash back on close', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', `${window.location.pathname}#before`);
+    mountHome();
+    await user.click(await (await board()).findByRole('button', { name: 'Match M1' }));
+    await screen.findByRole('dialog', { name: /^Match M1/ });
+    expect(window.location.hash).toBe(`#/match/${liveDispute.eventId}/M1`);
+    await user.click(screen.getByRole('button', { name: 'Close dialog' }));
+    expect(window.location.hash).toBe('#before');
+  });
+
+  it('runs a match action from the drawer through the existing command dialog', async () => {
+    const user = userEvent.setup();
+    const { server } = renderConsole({ snapshot: liveDispute, setup: srv => {
+      discord(srv);
+      srv.always('POST /commands', () => json(403, { error: { code: 'forbidden', message: 'x' } }));
+    } });
+    await user.click(await (await board()).findByRole('button', { name: 'Match M2' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    await user.click(within(drawer).getByRole('button', { name: 'Resolve M2' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Resolve M2' });
+    await user.click(within(dialog).getByRole('radio', { name: /Seat C/ }));
+    fireEvent.change(within(dialog).getByRole('textbox', { name: /Reason/ }), { target: { value: 'Judge ruling' } });
+    await user.click(within(dialog).getByRole('button', { name: 'Resolve match' }));
+    await waitFor(() => expect(server.callsTo('POST /commands')).toHaveLength(1));
+  });
+
+  it('opens the drawer from the card overflow menu and offers the quick actions', async () => {
+    const user = userEvent.setup();
+    mountHome();
+    await user.click(await (await board()).findByRole('button', { name: 'Actions for match M2' }));
+    const names = (await screen.findAllByRole('menuitem')).map(item => item.textContent);
+    expect(names).toEqual(expect.arrayContaining(['Open', 'Resolve…', 'Resume play…', 'Copy match ID', 'Open in tournament view']));
+    await user.click(screen.getByRole('menuitem', { name: 'Open' }));
+    expect(await screen.findByRole('dialog', { name: /^Match M2/ })).toBeInTheDocument();
+  });
+
+  it('opens the same menu from the keyboard with Shift+F10 and keeps controls from opening the drawer', async () => {
+    const user = userEvent.setup();
+    mountHome();
+    const card = await (await board()).findByRole('button', { name: 'Match M1' });
+    card.focus();
+    await user.keyboard('{Shift>}{F10}{/Shift}');
+    expect(await screen.findByRole('menuitem', { name: 'Copy match ID' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: /^Match M1/ })).not.toBeInTheDocument();
+  });
+
+  it('shows the pill as neutral, then warning, then danger as the server clock advances', async () => {
+    const { data } = mountHome(waitingFor(4));
+    expect(await screen.findByText('oldest 4m', {}, { timeout: 5000 })).not.toHaveClass('text-warning');
+    act(() => { data.clock.observe(FIXTURE_NOW_MS + 2 * 60_000); });
+    expect(await screen.findByText('oldest 6m')).toHaveClass('text-warning');
+    act(() => { data.clock.observe(FIXTURE_NOW_MS + 7 * 60_000); });
+    expect(await screen.findByText('oldest 11m')).toHaveClass('text-danger');
+  });
+
+  it('leaves resumed matches out of the pill and says play resumed in the drawer', async () => {
+    const user = userEvent.setup();
+    const resumed = { ...liveDispute, matches: liveDispute.matches.map(match => match.id === 'M2'
+      ? { ...match, phase: 'running' as const, clock: { ...match.clock, state: 'running' as const, runningSinceMs: FIXTURE_NOW_MS } } : match) };
+    mountHome(resumed);
+    await screen.findByRole('list', { name: 'Player counts' }, { timeout: 5000 });
+    const judge = await laneHeader('Judge needed');
+    expect(judge.getByText('1')).toBeInTheDocument();
+    expect(judge.queryByText(/oldest/)).toBeNull();
+    await user.click(await (await board()).findByRole('button', { name: 'Match M2' }));
+    expect(await screen.findByText(/play resumed/)).toBeInTheDocument();
+  });
+
+  it('starts focus in the drawer content, not on the expand toggle, and expands to a centred panel', async () => {
+    const user = userEvent.setup();
+    mountHome();
+    await user.click(await (await board()).findByRole('button', { name: 'Match M2' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    expect(within(drawer).getByRole('button', { name: 'Expand to centred panel' })).not.toHaveFocus();
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    expect(drawer.className).toContain('h-[calc(100vh-16px)]');
+    await user.click(within(drawer).getByRole('button', { name: 'Expand to centred panel' }));
+    expect(screen.getByRole('dialog', { name: /^Match M2/ }).className).toContain('max-w-[880px]');
+    await user.click(within(drawer).getByRole('button', { name: 'Collapse to side panel' }));
+    expect(screen.getByRole('dialog', { name: /^Match M2/ }).className).toContain('h-[calc(100vh-16px)]');
+  });
+
+  it('closes the card menu when its "…" button is pressed again', async () => {
+    const user = userEvent.setup();
+    mountHome();
+    const more = await (await board()).findByRole('button', { name: 'Actions for match M2' });
+    await user.click(more);
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
+    await user.click(more);
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    await user.click(more);
+    await screen.findByRole('menu');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    expect(more).toHaveFocus();
+  });
+
+  it('hides actions in the drawer and the card menu for a read-only session', async () => {
+    const user = userEvent.setup();
+    renderConsole({ snapshot: liveDispute, setup: server => {
+      server.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', commandsEnabled: false }));
+    } });
+    await user.click(await (await board()).findByRole('button', { name: 'Actions for match M2' }));
+    const names = (await screen.findAllByRole('menuitem')).map(item => item.textContent);
+    expect(names).toEqual(['Open', 'Copy match ID', 'Open in tournament view']);
+    await user.click(screen.getByRole('menuitem', { name: 'Open' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    expect(within(drawer).queryByRole('button', { name: /^Resolve|^Resume/ })).toBeNull();
+  });
+
+  it('updates an open drawer when the match changes lane, and closes it, restoring the hash, when the match leaves', async () => {
+    const user = userEvent.setup();
+    const { bodies } = renderConsole({ snapshot: liveDispute, setup: server => { discord(server); } });
+    await waitFor(() => expect(bodies.length).toBe(1));
+    await user.click(await (await board()).findByRole('button', { name: 'Match M1' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M1/ });
+    expect(within(drawer).queryByRole('region', { name: 'Judge request' })).toBeNull();
+    const flagged = { ...liveDispute, version: liveDispute.version + 1, matches: liveDispute.matches.map(match => match.id === 'M1'
+      ? { ...match, judge: { reasons: ['called' as const], sinceMs: FIXTURE_NOW_MS, raisedBy: ['A' as const], requests: [] } } : match) };
+    await act(async () => { const { event, id } = change(flagged, []); bodies[0]!.push(frame(event, id)); });
+    expect(await within(await screen.findByRole('dialog', { name: /^Match M1/ })).findByRole('region', { name: 'Judge request' })).toBeInTheDocument();
+    expect(window.location.hash).toBe(`#/match/${liveDispute.eventId}/M1`);
+    const gone = { ...flagged, version: flagged.version + 1, matches: flagged.matches.filter(match => match.id !== 'M1') };
+    await act(async () => { const { event, id } = change(gone, []); bodies[0]!.push(frame(event, id)); });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^Match M1/ })).not.toBeInTheDocument());
+    expect(window.location.hash).toBe('');
+  });
+
+  it('drops the drawer and its hash when another event takes over, so a repeated match ID does not reopen it', async () => {
+    const user = userEvent.setup();
+    const { bodies, server } = renderConsole({ snapshot: liveDispute, setup: srv => { discord(srv); } });
+    await waitFor(() => expect(bodies.length).toBe(1));
+    await user.click(await (await board()).findByRole('button', { name: 'Match M1' }));
+    await screen.findByRole('dialog', { name: /^Match M1/ });
+    const next = { ...liveDispute, eventId: 'event-2', version: 1, createdAtMs: liveDispute.createdAtMs + 3_600_000 };
+    const retiredCopy = { ...liveDispute, status: 'retired' as const, retiredAtMs: next.createdAtMs, version: 18 };
+    const reply = (body: unknown) => () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    server.always('GET /events', reply([summaryOf(next), summaryOf(retiredCopy)]));
+    server.always(`GET /events/${liveDispute.eventId}/snapshot`, reply(retiredCopy));
+    server.always('GET /events/event-2/snapshot', reply(next));
+    server.always('GET /events/event-2/audit', reply([]));
+    await act(async () => { const { event, id } = change(next, []); bodies[0]!.push(frame(event, id)); });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^Match M1/ })).not.toBeInTheDocument());
+    expect(window.location.hash).toBe('');
+  });
+
+  it('clears a match link that names a match or event that does not exist', async () => {
+    window.history.replaceState(null, '', `${window.location.pathname}#/match/${liveDispute.eventId}/M9`);
+    mountHome();
+    await screen.findByRole('list', { name: 'Player counts' }, { timeout: 5000 });
+    await waitFor(() => expect(window.location.hash).toBe(''));
+    expect(screen.queryByRole('dialog', { name: /^Match/ })).not.toBeInTheDocument();
+    cleanup();
+    window.history.replaceState(null, '', `${window.location.pathname}#/match/other-event/M1`);
+    mountHome();
+    await screen.findByRole('list', { name: 'Player counts' }, { timeout: 5000 });
+    await waitFor(() => expect(window.location.hash).toBe(''));
+    expect(screen.queryByRole('dialog', { name: /^Match/ })).not.toBeInTheDocument();
+  });
+
+  it('closes a judge call from the drawer with a note: notes start focused, the button needs a note, and Ctrl+Enter sends once', async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const { server } = renderConsole({ snapshot: called(), setup: srv => {
+      discord(srv);
+      srv.always('POST /commands', async () => { await gate; return json(200, { applied: true, result: 'ok', version: 99, cards: 'updated', roomWarning: null }); });
+    } });
+    await user.click(await (await board()).findByRole('button', { name: 'Match M1' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M1/ });
+    const notes = within(drawer).getByRole('textbox', { name: /Notes/ });
+    expect(notes).toHaveFocus();
+    const close = within(drawer).getByRole('button', { name: 'Close issue' });
+    expect(within(drawer).queryByRole('button', { name: /^Close issue…/ })).toBeNull();
+    expect(close).toBeDisabled();
+    await user.type(notes, 'Checked the table, all fine');
+    expect(close).toBeEnabled();
+    await user.keyboard('{Control>}{Enter}{Enter}{/Control}');
+    release();
+    await waitFor(() => expect(server.callsTo('POST /commands')).toHaveLength(1));
+    expect(JSON.stringify(server.callsTo('POST /commands')[0]!.body)).toContain('"type":"judgeClose"');
+    expect(JSON.stringify(server.callsTo('POST /commands')[0]!.body)).toContain('Checked the table, all fine');
+    await waitFor(() => expect(notes).toHaveValue(''));
+  });
+
+  it('shows the server error inline and keeps the note when closing fails', async () => {
+    const user = userEvent.setup();
+    renderConsole({ snapshot: called(), setup: srv => {
+      discord(srv);
+      srv.always('POST /commands', () => json(422, { error: { code: 'rule', message: 'The judge call was already closed.' } }));
+    } });
+    await user.click(await (await board()).findByRole('button', { name: 'Match M1' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M1/ });
+    await user.type(within(drawer).getByRole('textbox', { name: /Notes/ }), 'Done');
+    await user.click(within(drawer).getByRole('button', { name: 'Close issue' }));
+    expect(await within(drawer).findByRole('alert')).toHaveTextContent('The judge call was already closed.');
+    expect(within(drawer).getByRole('textbox', { name: /Notes/ })).toHaveValue('Done');
+  });
+
+  it('sends a dispute to Resolve instead of offering Close issue', async () => {
+    const user = userEvent.setup();
+    mountHome();
+    await user.click(await (await board()).findByRole('button', { name: 'Match M2' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    expect(within(drawer).getByText(/This is a dispute: choose a winner with Resolve/)).toBeInTheDocument();
+    expect(within(drawer).queryByRole('button', { name: 'Close issue' })).toBeNull();
+    expect(within(drawer).getByRole('button', { name: 'Resolve M2' })).toBeInTheDocument();
+  });
+
+  it('has no notes field for a read-only session', async () => {
+    const user = userEvent.setup();
+    renderConsole({ snapshot: called(), setup: srv => {
+      srv.always('GET /session', () => json(200, { ...sessionFixture, mode: 'discord', commandsEnabled: false }));
+    } });
+    await user.click(await (await board()).findByRole('button', { name: 'Match M1' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M1/ });
+    expect(within(drawer).getByRole('region', { name: 'Judge request' })).toBeInTheDocument();
+    expect(within(drawer).queryByRole('textbox', { name: /Notes/ })).toBeNull();
+    expect(within(drawer).queryByRole('button', { name: 'Close issue' })).toBeNull();
+  });
+
+  it('lays the drawer out as a rail of sections when expanded, and a summary strip when narrow', async () => {
+    const user = userEvent.setup();
+    mountHome();
+    await user.click(await (await board()).findByRole('button', { name: 'Match M2' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    expect(within(drawer).getByRole('region', { name: 'Match summary' })).toBeInTheDocument();
+    expect(within(drawer).queryByRole('region', { name: 'Status' })).toBeNull();
+    expect(within(drawer).getByRole('region', { name: 'Players' })).toBeInTheDocument();
+    expect(within(drawer).getByRole('region', { name: 'Links' })).toBeInTheDocument();
+    await user.click(within(drawer).getByRole('button', { name: 'Expand to centred panel' }));
+    const rail = within(screen.getByRole('complementary', { name: 'Match properties' }));
+    expect(['Status', 'Players', 'Actions', 'Links'].every(name => rail.queryByRole('region', { name }))).toBe(true);
+    expect(within(drawer).queryByRole('region', { name: 'Match summary' })).toBeNull();
+  });
+});
+
+describe('Kanban pane', () => {
+  const kanban = () => screen.getByRole('button', { name: 'Kanban' });
+  const pane = () => within(screen.getByTestId('kanban-pane'));
+
+  it('toggles from the top bar, persists, and the preview toggles no longer draw Alt hints', async () => {
+    const user = userEvent.setup();
+    const { preferences } = renderConsole();
+    await ready();
+    expect(kanban()).toHaveAttribute('aria-pressed', 'false');
+    for (const name of [/^Live preview/, /^List preview/]) {
+      const button = screen.getByRole('button', { name });
+      expect(button).toHaveTextContent(/^(Live|List) preview$/);
+      expect(within(button).queryByText('Alt')).toBeNull();
+    }
+    expect(screen.getByRole('button', { name: /^Live preview/ })).toHaveAttribute('aria-keyshortcuts', 'Alt+1');
+    expect(screen.getByRole('button', { name: /^List preview/ })).toHaveAttribute('aria-keyshortcuts', 'Alt+2');
+    await user.click(kanban());
+    expect(kanban()).toHaveAttribute('aria-pressed', 'true');
+    expect(preferences.getSnapshot().panes.kanban).toBe(true);
+    expect(await screen.findByTestId('kanban-pane')).toBeInTheDocument();
+    await user.click(kanban());
+    await waitFor(() => expect(screen.queryByTestId('kanban-pane')).not.toBeInTheDocument());
+    expect(preferences.getSnapshot().panes.kanban).toBe(false);
+    // The shortcuts still work.
+    fireEvent.keyDown(document.body, { key: '2', code: 'Digit2', altKey: true });
+    expect(preferences.getSnapshot().panes.list).toBe(true);
+  });
+
+  it('shows the viewed event\'s matches and opens the match drawer from a card', async () => {
+    const user = userEvent.setup();
+    renderConsole({ preferences: { panes: { live: false, list: false, kanban: true } } });
+    await ready();
+    const board = within(await pane().findByRole('region', { name: 'Tournament task board' }));
+    expect(board.getByRole('button', { name: 'Match M1' })).toBeInTheDocument();
+    expect(board.getByRole('button', { name: 'Match M2' })).toBeInTheDocument();
+    expect(board.getByText('Result disputed')).toBeInTheDocument();
+    await user.click(board.getByRole('button', { name: 'Match M2' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    expect(window.location.hash).toBe(`#/match/${liveDispute.eventId}/M2`);
+    expect(within(drawer).getByRole('button', { name: 'Resolve M2' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /^Match M2/ })).not.toBeInTheDocument());
+    expect(window.location.hash).toBe('');
+  });
+
+  it('is read-only for a retired event: its own matches, no actions, no Close issue', async () => {
+    const user = userEvent.setup();
+    const retired = { ...liveDispute, eventId: 'retired-1', status: 'retired' as const, retiredAtMs: liveDispute.createdAtMs + 3_600_000,
+      matches: liveDispute.matches.filter(match => match.id === 'M2') };
+    renderConsole({ retired: [retired], preferences: { panes: { live: false, list: false, kanban: true } } });
+    await ready();
+    const history = screen.getByRole('navigation', { name: 'Event history' });
+    await user.click(within(history).getByRole('button'));
+    await screen.findByText('Retired event · read-only history.');
+    const board = within(await pane().findByRole('region', { name: 'Tournament task board' }));
+    await waitFor(() => expect(board.queryByRole('button', { name: 'Match M1' })).not.toBeInTheDocument());
+    await user.click(board.getByRole('button', { name: 'Actions for match M2' }));
+    expect((await screen.findAllByRole('menuitem')).map(item => item.textContent)).toEqual(['Open', 'Copy match ID', 'Open in tournament view']);
+    await user.click(screen.getByRole('menuitem', { name: 'Open' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Match M2/ });
+    expect(within(drawer).queryByRole('button', { name: /^Resolve|^Resume|^Correct/ })).toBeNull();
+    expect(within(drawer).queryByRole('button', { name: 'Close issue' })).toBeNull();
+    expect(within(drawer).queryByRole('textbox', { name: /Notes/ })).toBeNull();
+    expect(within(drawer).getByText(/This event is closed/)).toBeInTheDocument();
+  });
+});
+

@@ -14,6 +14,6 @@ export { MatchActionDialog, RemoveMemberDialog } from './dialogs';
 export { COMMAND_SPECS, parseCommand, suggest, usage, mentionFor, resolveMention } from './grammar';
 export type { CommandSpec, ComposerIntent, ParseResult, Suggestion, SuggestionList } from './grammar';
 export {
-  availableEventActions, availableMatchActions, canRefreshPanels, canRemoveMember, canRun, canRunAny, checkReason,
+  availableEventActions, availableMatchActions, canCloseJudgeIssue, canRefreshPanels, canRemoveMember, canRun, canRunAny, checkReason,
   commandsEnabled, errorMessage, isWritable, preconditionFor
 } from './model';

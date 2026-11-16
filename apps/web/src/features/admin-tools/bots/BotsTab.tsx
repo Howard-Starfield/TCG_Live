@@ -8,6 +8,7 @@ import { getModerationSettings, getVoiceBots, useModerationAccess } from '../../
 import { VOICE_DISABLED_ENV_TEXT, VOICE_DISABLED_TEXT } from '../../moderation/VoiceBots';
 import { VoiceMonitoringSwitch } from '../../setup/DashboardActionsSwitch';
 import { useLocalSettingsAvailable } from '../../setup/localSettings';
+import { HIGHLIGHT_CLASS, useHighlightNew } from '../shared/useHighlightNew';
 import { AddHelperWizard } from './AddHelperWizard';
 import { BotCard } from './BotCard';
 import { CapacityBanner } from './CapacityBanner';
@@ -24,6 +25,7 @@ export function BotsTab() {
   const [loadError, setLoadError] = useState<unknown>(null);
   /** The poll in flight; a mutation's answer is newer, so it cancels the poll. */
   const polling = useRef<AbortController | null>(null);
+  const highlight = useHighlightNew();
   const applyPool = useCallback((next: VoiceBotPoolDto) => { polling.current?.abort(); setPool(next); }, []);
 
   useEffect(() => {
@@ -61,10 +63,12 @@ export function BotsTab() {
     <p className="text-xs text-fg-muted">A Discord bot can be in one voice room per server. The main bot covers one match room and each helper bot covers one more at the same time. Bots record audio only; video is never recorded by a bot.</p>
     {pool.runtime === 'disabled' && <div className="space-y-2 rounded-md bg-sunken p-2"><p className="text-xs text-fg-muted">{voiceSwitch ? VOICE_DISABLED_TEXT : VOICE_DISABLED_ENV_TEXT}</p><VoiceMonitoringSwitch /></div>}
     <CapacityBanner pool={pool} knownRooms={knownRooms} />
+    <AddHelperWizard helpers={helpers} channelIds={channelIds} disabled={disabled} onPool={applyPool}
+      onClosed={addedId => { if (addedId) highlight.highlight(addedId); }} />
     <ul aria-label="Voice bots" className="flex flex-col gap-2">
-      {pool.bots.map(bot => <BotCard key={`${bot.id}:${bot.nickname ?? ''}`} bot={bot} channelIds={channelIds} disabled={disabled} onPool={applyPool} />)}
+      {pool.bots.map(bot => <BotCard key={`${bot.id}:${bot.nickname ?? ''}`} bot={bot} channelIds={channelIds} disabled={disabled} onPool={applyPool}
+        cardRef={highlight.ref(bot.id)} highlightClass={highlight.isHighlighted(bot.id) ? HIGHLIGHT_CLASS : undefined} />)}
     </ul>
-    <AddHelperWizard helpers={helpers} channelIds={channelIds} disabled={disabled} onPool={applyPool} />
     <RoomGrid settings={settings} pool={pool} disabled={disabled} onSaved={setSettings} />
   </div>;
 }

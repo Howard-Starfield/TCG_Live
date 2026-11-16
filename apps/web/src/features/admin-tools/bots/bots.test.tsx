@@ -7,6 +7,7 @@ import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { createHarness, sessionFixture } from '../../../app/testing';
+import { ToastProvider } from '../../../ui';
 import { AdminDataProvider } from '../../../data';
 import { json, type FakeServer } from '../../../data/test/fakes';
 import { RecordingSection } from '../../moderation/VoiceSections';
@@ -38,7 +39,7 @@ function mount(ui: ReactNode, setup?: (server: FakeServer) => void) {
     server.always('GET /moderation/settings', () => json(200, SETTINGS));
     setup?.(server);
   } });
-  render(<AdminDataProvider data={harness.data}>{ui}</AdminDataProvider>);
+  render(<ToastProvider><AdminDataProvider data={harness.data}>{ui}</AdminDataProvider></ToastProvider>);
   return harness;
 }
 
@@ -74,7 +75,8 @@ describe('Bots tab', () => {
       server.always('POST /moderation/voice-bots', () => json(201, { ...POOL, bots: [...POOL.bots, { ...helperDto, status: 'idle', lastErrorCode: null }] }));
       server.always(`POST /moderation/voice-bots/${HELPER}/verify`, () => json(200, REPORT));
     });
-    const wizard = await screen.findByRole('region', { name: 'Add helper bot' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Add helper bot' }));
+    const wizard = await screen.findByRole('dialog', { name: 'Add a helper bot' });
     expect(wizard).toHaveTextContent('Public Bot');
     expect(wizard).toHaveTextContent('View Channel');
     fireEvent.change(screen.getByRole('textbox', { name: 'Label' }), { target: { value: 'Helper 1' } });

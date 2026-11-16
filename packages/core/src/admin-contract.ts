@@ -122,7 +122,7 @@ export const MAX_JUDGE_REQUEST_LENGTH = 500;
 export function isJudgeRequestCategory(value: unknown): value is JudgeRequestCategory {
   return typeof value === 'string' && Object.hasOwn(JUDGE_REQUEST_CATEGORIES, value);
 }
-export type MatchAdminAction = 'resolve' | 'correct' | 'judgeResume';
+export type MatchAdminAction = 'resolve' | 'correct' | 'judgeResume' | 'judgeClose';
 export type EventAdminAction = 'publish' | 'signupClose' | 'signupReopen' | 'signupRemove';
 
 export interface ClockDto {
@@ -249,13 +249,15 @@ export type AdminCommandDto =
   /** Organizer checks a seated player in (next wave). */
   | { type: 'checkinFor'; seat: Seat }
   | { type: 'judgeResume'; matchId: MatchId; reason: string }
+  /** Closes a judge request with the admin's note; refused for a disputed proposal (that needs resolve). */
+  | { type: 'judgeClose'; matchId: MatchId; reason: string }
   | { type: 'resolve'; matchId: MatchId; winner: Seat; reason: string }
   | { type: 'correct'; matchId: MatchId; winner: Seat; reason: string };
 
 export interface CommandPreconditionDto {
   eventVersion?: number;                                     // publish
   match?: { matchId: MatchId; phase: MatchPhase; proposalRevision: number | null;
-            finalWinner: Seat | null; pauseGeneration: number };  // judgeResume, resolve, correct
+            finalWinner: Seat | null; pauseGeneration: number };  // judgeResume, judgeClose, resolve, correct
   signup?: { status: 'open' | 'assigned'; rosterSize: number };   // signup commands
 }
 
@@ -273,7 +275,7 @@ export const ADMIN_REASON_MAX_LENGTH = 500;                    // after trimming
 
 export const COMMAND_CAPABILITY: Record<AdminCommandDto['type'], Capability> = {
   publish: 'event.publish', delayStart: 'event.publish', signupClose: 'signup.manage', signupReopen: 'signup.manage',
-  signupRemove: 'signup.manage', signupAdd: 'signup.manage', checkinFor: 'signup.manage', judgeResume: 'match.judge', resolve: 'match.judge',
+  signupRemove: 'signup.manage', signupAdd: 'signup.manage', checkinFor: 'signup.manage', judgeResume: 'match.judge', judgeClose: 'match.judge', resolve: 'match.judge',
   correct: 'match.correct'
 };
 

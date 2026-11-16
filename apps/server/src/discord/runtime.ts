@@ -28,6 +28,7 @@ import { filenameFromThumbnail, noticeEmbed, retainedVisual, setVisualArtworkSto
 import { defaultArtworkStore } from '../artwork/store.js';
 import { pgEvidenceStore } from '../evidence/store.js';
 import { createEvidenceSeams } from '../evidence/seams.js';
+import { createReplyDelivery, ReplyDeliveryError, type MatchRoomMessage } from '../evidence/replies.js';
 import { discordAutoModSync } from '../moderation/automod.js';
 import { pgModerationFlagStore } from '../moderation/flags.js';
 import { pgModerationSettingsStore } from '../moderation/settings.js';
@@ -192,7 +193,10 @@ export async function registerPrivateCommand(config: PrivateDiscordConfig,
   return result;
 }
 
-export function discordTransport(channel: TextChannel | (() => TextChannel), matches?: ConfiguredRooms<VoiceChannel>, botId?: string, roundRoom?: (slot: MatchId) => VoiceChannel | undefined): CardTransport {
+/** Posts into the room where a match already talks to its players: the channel its card lives in. */
+export interface MatchRoomPoster { postToMatchRoom(slot: MatchId, message: MatchRoomMessage, nonce: string): Promise<string> }
+
+export function discordTransport(channel: TextChannel | (() => TextChannel), matches?: ConfiguredRooms<VoiceChannel>, botId?: string, roundRoom?: (slot: MatchId) => VoiceChannel | undefined): CardTransport & MatchRoomPoster {
   const payload = (card: CardPayload) => ({ embeds: card.embeds, components: card.components,
     allowedMentions: card.allowedMentions });
   const cardFile = (card: CardPayload) => {
@@ -223,6 +227,10 @@ export function discordTransport(channel: TextChannel | (() => TextChannel), mat
       if (!file) { await message.edit({ ...payload(card), attachments: [] }); return; }
       const retained = retainedVisual(message, target.id, botId ?? '', file.name);
       await message.edit(retained ? payload(card) : { ...payload(card), attachments: [], files: [file] });
+    },
+    async postToMatchRoom(slot, message, nonce) {
+      // enforceNonce: if a timed-out send actually created the message, a retry with this nonce returns it instead of posting again.
+      return (await destination(slot).send({ ...message, nonce, enforceNonce: true })).id;
     },
     async resumeReminder(slot, waitingIds) {
       const ids = [...new Set(waitingIds)];
@@ -567,6 +575,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   let deletedCardRetry: ReturnType<typeof setInterval> | undefined;
   let signupSchedule: ReturnType<typeof setInterval> | undefined;
   let controller: PrivateDiscordController | undefined;
+  /** Set once the controller's transport exists: sends into a match's room. Evidence replies deliver through it. */
+  let postToMatchRoom: MatchRoomPoster['postToMatchRoom'] | undefined;
   let health: Awaited<ReturnType<typeof startServer>> | undefined;
   let lease: AdvisoryLease | undefined;
   let roomSync: MatchRoomReconciler | undefined;
@@ -635,7 +645,21 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         if (!prepareSignupChannel || !client.isReady()) throw new RuleError('Discord is not ready.');
         return prepareSignupChannel(id);
       },
-      evidence: { store: evidence, audit: opsAudit, seams: createEvidenceSeams().seams },
+      evidence: { store: evidence, audit: opsAudit, seams: createEvidenceSeams().seams,
+        replyDelivery: createReplyDelivery({
+          ready: () => !!postToMatchRoom && client.isReady(),
+          // Only the active tournament has match rooms; the seats come from its frozen player assignment.
+          seatedPlayers: async (eventId, matchId) => {
+            const current = await getSessionState(config).catch(() => null);
+            if (!current || current.session.event_id !== eventId)
+              throw new ReplyDeliveryError('That is not the active Discord tournament, so it has no match room. Send a staff-only note instead.');
+            const match = current.state.matches.find(candidate => candidate.id === matchId);
+            if (!match) throw new ReplyDeliveryError(`Match ${matchId} is not in the active tournament.`);
+            const seated = resolvePlayers(current.session, current.state);
+            return seated ? match.players.map(player => seated[player]).filter((id): id is string => !!id) : [];
+          },
+          post: (matchId, message, nonce) => postToMatchRoom!(matchId, message, nonce)
+        }) },
       moderation: { settings: moderationSettings, flags: moderationFlags, audit: opsAudit, voiceBots, voicePool,
         guildId: () => config.guildId, mainBotUserId: () => client.user?.id ?? config.applicationId,
         onSettingsSaved: settings => featureEvents.emit({ type: 'moderationSettingsChanged', settings }),
@@ -774,9 +798,11 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       }
       config.roundRooms = savedRooms;
     };
+    const cardTransport = discordTransport(() => signupChannel, matches, botId, slot =>
+      config.roundRooms?.[slot] === roundRooms.get(slot)?.id ? roundRooms.get(slot) : undefined);
+    postToMatchRoom = (slot, message, nonce) => cardTransport.postToMatchRoom(slot, message, nonce);
     controller = new PrivateDiscordController(config, runnerId,
-      discordTransport(() => signupChannel, matches, botId, slot =>
-        config.roundRooms?.[slot] === roundRooms.get(slot)?.id ? roundRooms.get(slot) : undefined),
+      cardTransport,
       undefined, undefined, undefined, undefined, undefined, undefined, () => !stopping && !lease?.isLost(),
       undefined, undefined, explicit => roomSync?.trigger(explicit) ?? Promise.resolve(), undefined, provisionRound);
     admin?.attachController(controller);

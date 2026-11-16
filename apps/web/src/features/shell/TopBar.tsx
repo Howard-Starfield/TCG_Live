@@ -1,4 +1,4 @@
-import { ChevronDown, FileClock, House, Table2, Workflow } from 'lucide-react';
+import { ChevronDown, Columns3, FileClock, House, Table2, Workflow } from 'lucide-react';
 import { Avatar, Breadcrumb, ConnectionPill, ToggleTab, Tooltip, type BreadcrumbItem } from '../../ui';
 import { useConsolePreferences } from '../../app/preferences';
 import { AccountMenu, ThemeIcon } from './AccountMenu';
@@ -38,11 +38,15 @@ export function TopBar() {
       <div role="group" aria-label="Previews" className="shell-toggles">
         <span data-toggle="live" className="contents">
           <ToggleTab pressed={dock.visible.live} onPressedChange={() => dock.toggle('live')}
-            icon={<Workflow />} shortcut={['Alt', '1']}>Live preview</ToggleTab>
+            icon={<Workflow />} shortcut={['Alt', '1']} showShortcut={false}>Live preview</ToggleTab>
         </span>
         <span data-toggle="list" className="contents">
           <ToggleTab pressed={dock.visible.list} onPressedChange={() => dock.toggle('list')}
-            icon={<Table2 />} shortcut={['Alt', '2']}>List preview</ToggleTab>
+            icon={<Table2 />} shortcut={['Alt', '2']} showShortcut={false}>List preview</ToggleTab>
+        </span>
+        <span data-toggle="kanban" className="contents">
+          <ToggleTab pressed={dock.visible.kanban} onPressedChange={() => dock.toggle('kanban')}
+            icon={<Columns3 />}>Kanban</ToggleTab>
         </span>
       </div></>}
       <div className="ml-auto flex min-w-0 items-center gap-1.5">

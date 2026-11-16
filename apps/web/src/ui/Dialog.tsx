@@ -27,6 +27,8 @@ export interface DialogProps {
   width?: 'sm' | 'md' | 'lg' | 'xl';
   /** `drawer` docks the panel to the right edge at full height (same focus and dismissal rules). */
   layout?: 'center' | 'drawer';
+  /** Extra header controls (an expand toggle, a badge) shown before the close button. */
+  headerActions?: ReactNode;
 }
 
 const WIDTH = { sm: 'max-w-[400px]', md: 'max-w-[480px]', lg: 'max-w-[640px]', xl: 'max-w-[880px]' } as const;
@@ -63,7 +65,7 @@ function lockPageScroll(document: Document): () => void {
  * Modal dialog: traps Tab focus inside, closes on Escape and backdrop click, makes the rest of the page
  * inert, and returns focus to the element that opened it.
  */
-export function Dialog({ open, onClose, title, description, children, footer, initialFocusRef, role = 'dialog', tone = 'default', dismissible = true, width = 'md', layout = 'center' }: DialogProps) {
+export function Dialog({ open, onClose, title, description, children, footer, initialFocusRef, role = 'dialog', tone = 'default', dismissible = true, width = 'md', layout = 'center', headerActions }: DialogProps) {
   const drawer = layout === 'drawer';
   const titleId = useId();
   const descriptionId = useId();
@@ -147,6 +149,7 @@ export function Dialog({ open, onClose, title, description, children, footer, in
                   <h2 id={titleId} className="text-[15px] font-semibold leading-snug">{title}</h2>
                   {description && <p id={descriptionId} className="mt-1 text-[13px] text-fg-muted">{description}</p>}
                 </div>
+                {headerActions}
                 <IconButton aria-label="Close dialog" data-dialog-close="true" size="sm" icon={<X aria-hidden />}
                   onClick={onClose} disabled={!dismissible} className="-mr-2 -mt-1" />
               </header>

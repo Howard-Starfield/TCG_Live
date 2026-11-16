@@ -69,6 +69,7 @@ export function voiceFeature(env: NodeJS.ProcessEnv = process.env): DiscordFeatu
         context.on('judgeCalled', event => { void active.judgeCalled(event.eventId, event.matchId); }),
         context.on('disputeOpened', event => { void active.judgeCalled(event.eventId, event.matchId); }),
         context.on('judgeResumed', () => { void active.schedule(); }),
+        context.on('judgeClosed', event => { void active.judgeClosed(event.eventId, event.matchId); }),
         context.on('matchResolved', event => { void active.matchResolved(event.eventId, event.matchId); }),
         context.on('matchRoomAssigned', event => { void active.roomAssigned(event.eventId, event.matchId); }),
         context.on('moderationSettingsChanged', event => { void active.settingsChanged(event.settings); }),

@@ -244,7 +244,7 @@ export class PreconditionFailedError extends RuleError {}
 const WEB_COMMAND_ID = /^web:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** A console principal issues admin commands only, the same set as the /tcg-test admin subcommands. */
 const WEB_COMMAND_TYPES: ReadonlySet<string> = new Set<Command['type']>(
-  ['publish', 'delayStart', 'signupClose', 'signupReopen', 'signupRemove', 'signupAdd', 'checkinFor', 'judgeResume', 'resolve', 'correct']);
+  ['publish', 'delayStart', 'signupClose', 'signupReopen', 'signupRemove', 'signupAdd', 'checkinFor', 'judgeResume', 'judgeClose', 'resolve', 'correct']);
 
 export interface DiscordCommandContext {
   config: PrivateDiscordConfig;

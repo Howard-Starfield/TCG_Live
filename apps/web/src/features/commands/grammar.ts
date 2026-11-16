@@ -36,7 +36,8 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   { name: 'refresh', kind: 'refresh', description: 'Create or repair the Discord cards', args: [] },
   { name: 'resolve', kind: 'resolve', description: 'Resolve a match', args: ['match', 'winner', 'reason'] },
   { name: 'correct', kind: 'correct', description: 'Correct a final result', args: ['match', 'winner', 'reason'] },
-  { name: 'judge-resume', kind: 'judgeResume', description: 'Override a pause and resume play', args: ['match', 'reason'] }
+  { name: 'judge-resume', kind: 'judgeResume', description: 'Override a pause and resume play', args: ['match', 'reason'] },
+  { name: 'judge-close', kind: 'judgeClose', description: 'Close a judge request with a note', args: ['match', 'reason'] }
 ];
 
 /** Named option keys, Discord's first. */
@@ -287,7 +288,8 @@ export function parseCommand(text: string, context: ComposerContext): ParseResul
     }
     case 'resolve':
     case 'correct':
-    case 'judgeResume': {
+    case 'judgeResume':
+    case 'judgeClose': {
       const action = spec.kind;
       const rawMatch = scanned.values.match;
       if (!rawMatch) return fail(`Name the match: ${usage(spec)}.`);

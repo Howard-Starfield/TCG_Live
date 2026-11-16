@@ -11,7 +11,7 @@ export type CanvasView = 'event' | 'match';
 /** Console layout and display preferences, persisted per browser. */
 export interface Preferences {
   /** Which preview panes are open in the dock. */
-  panes: { live: boolean; list: boolean };
+  panes: { live: boolean; list: boolean; kanban: boolean };
   /** Dock width in px, and the live/list split ratio (live share, 0–1). */
   sizes: { dockWidth: number; split: number };
   sidebarCollapsed: boolean;
@@ -33,7 +33,7 @@ export const SPLIT_MAX = 0.9;
 
 /** Defaults: live preview open, list closed, a 480 px dock split evenly, system theme. */
 export const DEFAULT_PREFERENCES: Preferences = Object.freeze({
-  panes: Object.freeze({ live: true, list: false }),
+  panes: Object.freeze({ live: true, list: false, kanban: false }),
   sizes: Object.freeze({ dockWidth: 480, split: 0.5 }),
   sidebarCollapsed: false,
   theme: 'system',
@@ -60,7 +60,7 @@ export function sanitizePreferences(value: unknown): Preferences {
   const sizes = record(root.sizes) ?? {};
   const d = DEFAULT_PREFERENCES;
   return {
-    panes: { live: bool(panes.live, d.panes.live), list: bool(panes.list, d.panes.list) },
+    panes: { live: bool(panes.live, d.panes.live), list: bool(panes.list, d.panes.list), kanban: bool(panes.kanban, d.panes.kanban) },
     sizes: {
       dockWidth: Math.round(clamped(sizes.dockWidth, DOCK_WIDTH_MIN, DOCK_WIDTH_MAX, d.sizes.dockWidth)),
       split: clamped(sizes.split, SPLIT_MIN, SPLIT_MAX, d.sizes.split)
@@ -82,7 +82,7 @@ function parse(raw: string | null): Preferences {
 }
 
 function equal(a: Preferences, b: Preferences): boolean {
-  return a.panes.live === b.panes.live && a.panes.list === b.panes.list
+  return a.panes.live === b.panes.live && a.panes.list === b.panes.list && a.panes.kanban === b.panes.kanban
     && a.sizes.dockWidth === b.sizes.dockWidth && a.sizes.split === b.sizes.split
     && a.sidebarCollapsed === b.sidebarCollapsed && a.theme === b.theme
     && a.listTab === b.listTab && a.canvasView === b.canvasView;
