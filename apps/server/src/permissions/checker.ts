@@ -49,6 +49,8 @@ export interface PermissionConfig {
   lfg?: { channels: LfgChannelNeed[] } | null;
   /** The saved TCG Organizer and TCG Judge role IDs (null for one that is not created yet); null/absent when unknown. */
   tournamentRoles?: { organizerRoleId: string | null; judgeRoleId: string | null } | null;
+  /** The match room pool: its categories and rooms (bot-created or adopted); null/absent when unknown or not in use. */
+  matchRooms?: { categoryIds: string[]; roomChannelIds: string[] } | null;
 }
 
 /** Administrator bypasses every permission check (not the role hierarchy). */
@@ -99,7 +101,9 @@ function targetsFor(req: FeatureRequirement, config: PermissionConfig, view: Gui
     case 'tournament.pin': return t?.signupMode ? channel(t.signupChannelId) : [];
     case 'tournament.matchRoom': return t ? unique(t.matchChannelIds.flatMap(id => channel(id))) : [];
     case 'tournament.publicRoom': return t?.publicMatchRooms ? unique(t.matchChannelIds.flatMap(id => channel(id))) : [];
-    case 'tournament.roundRooms': return t ? guild : [];
+    case 'tournament.roundRooms': return t?.publicMatchRooms ? guild : [];
+    case 'tournament.roomCategory': return t?.publicMatchRooms && config.matchRooms ? unique(config.matchRooms.categoryIds.flatMap(id => channel(id))) : [];
+    case 'tournament.roomChat': return t?.publicMatchRooms && config.matchRooms ? unique(config.matchRooms.roomChannelIds.flatMap(id => channel(id))) : [];
     case 'automod.manage': return m?.textEnabled ? guild : [];
     case 'automod.timeout': return m?.textEnabled && m.timeoutRules ? guild : [];
     case 'voice.rooms': case 'voice.notice': return m?.voiceEnabled && t ? unique(t.matchChannelIds.flatMap(id => channel(id))) : [];
@@ -229,7 +233,7 @@ export function checkPermissions(view: GuildPermissionView, config: PermissionCo
     for (const name of PRIVILEGED_INTENT_NAMES) {
       if (!config.intents.wanted[name]) continue;
       const label = PRIVILEGED_INTENT_PORTAL_LABELS[name];
-      const feature = name === 'guildMembers' ? 'Join/leave log, welcome and auto-role' : 'Message log and full ticket transcripts';
+      const feature = name === 'guildMembers' ? 'Join/leave log, welcome and auto-role' : 'Message log, full ticket transcripts and room chat text';
       if (config.intents.state[name] === 'missing') {
         issues.push({ severity: 'blocking', kind: 'intent', featureId: `intent.${name}`, feature: 'Logging', permission: label,
           scope: { kind: 'guild' }, why: `Discord refused the ${label}; ${feature} stay idle.`,

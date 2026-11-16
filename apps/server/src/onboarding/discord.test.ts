@@ -134,3 +134,24 @@ test('role setup through discovery reports a failure instead of throwing', async
   assert.deepEqual([result.organizer, result.judge, result.assigned], ['failed', 'failed', null]);
   assert.match(result.problem ?? '', /Could not read the server's roles/);
 });
+
+test('discovery lists categories as their own channel type, with no parent and the room permissions', async () => {
+  const categoryId = '777777777777777777';
+  const permissionsFor = () => ({ has: () => true });
+  const category = { id: categoryId, guildId, type: ChannelType.GuildCategory, name: 'Matches', parent: null, permissionsFor };
+  const voice = { id: voiceId, guildId, type: ChannelType.GuildVoice, name: 'Lobby', parent: category, permissionsFor };
+  const all = new Collection<string, unknown>([[categoryId, category], [voiceId, voice]]);
+  const guild = { id: guildId, name: 'TCG Test', ownerId: adminId, afkChannelId: null,
+    roles: { async fetch() {} },
+    members: { async fetchMe() { return { id: botId, permissions: { has: (flag: bigint) => flag !== PermissionFlagsBits.ManageMessages } }; } },
+    channels: { async fetch() { return all; } } };
+  const client = { user: { id: botId, username: 'BoBoAssist' }, application: { id: botId },
+    guilds: { cache: new Collection([[guildId, guild]]), async fetch() { return guild; } } } as unknown as Client;
+  const discovery = discordSetupDiscovery(client);
+  const channels = await discovery.channels(guildId);
+  assert.deepEqual(channels.map(channel => [channel.name, channel.type, channel.category]),
+    [['Matches', 'category', null], ['Lobby', 'voice', 'Matches']]);
+  assert.ok(channels[0]!.permissions.includes('Manage Messages'));
+  const server = await discovery.serverPermissions!(guildId);
+  assert.ok(server.includes('Manage Channels') && !server.includes('Manage Messages'));
+});

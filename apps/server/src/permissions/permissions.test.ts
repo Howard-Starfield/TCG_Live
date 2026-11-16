@@ -391,3 +391,81 @@ test('the demo permission report includes the seeded TCG roles with no extra rol
   // The demo bot lacks Manage Roles on purpose, so that one warning shows; the roles themselves are fine.
   assert.deepEqual(issues.map(item => item.featureId), ['tournamentRoles.manage']);
 });
+
+test('match rooms: the round rooms rule is server-wide and blocking, the category and chat rules follow the pool', () => {
+  const round = FEATURE_PERMISSIONS.find(item => item.id === 'tournament.roundRooms')!;
+  assert.deepEqual([round.scope, round.severity, [...round.permissions]], ['guild', 'blocking', ['ManageChannels', 'ManageRoles']]);
+  assert.doesNotMatch(`${round.when} ${round.why}`, /uncertain|more than two/i);
+  const category = FEATURE_PERMISSIONS.find(item => item.id === 'tournament.roomCategory')!;
+  assert.deepEqual([category.scope, category.severity, [...category.permissions]],
+    ['channel', 'blocking', ['ViewChannel', 'ManageChannels', 'ManageRoles', 'Connect']]);
+  const chat = FEATURE_PERMISSIONS.find(item => item.id === 'tournament.roomChat')!;
+  assert.deepEqual([chat.scope, chat.severity, [...chat.permissions]], ['channel', 'warning', ['ViewChannel', 'ReadMessageHistory', 'ManageMessages']]);
+  assert.equal(chat.why, "Room chat can't be archived or cleared.");
+  assert.match(chat.when, /Message Content Intent/);
+
+  const tournament = { signupChannelId: ch(1), matchChannelIds: [], publicMatchRooms: true, signupMode: true };
+  const pool = { categoryIds: [ch(5), ch(5), ch(6)], roomChannelIds: [ch(7), ch(8)] };
+  const channels = [...view().channels,
+    { id: ch(5), name: 'Matches', type: 'category' as const, permissions: EVERYTHING & ~F.ManageChannels },
+    { id: ch(6), name: 'One Piece 51-100', type: 'category' as const, permissions: EVERYTHING },
+    { id: ch(7), name: 'Table 1', type: 'voice' as const, permissions: EVERYTHING },
+    { id: ch(8), name: 'Table 2', type: 'voice' as const, permissions: EVERYTHING & ~F.ManageMessages & ~F.ReadMessageHistory }];
+  const result = checkPermissions(view({ channels }), { ...off, tournament, matchRooms: pool });
+  const rows = result.issues.filter(item => item.featureId.startsWith('tournament.room'))
+    .map(item => [item.featureId, item.severity, item.scope.kind === 'channel' ? item.scope.id : null, item.permission]);
+  assert.deepEqual(rows, [['tournament.roomCategory', 'blocking', ch(5), 'Manage Channels'],
+    ['tournament.roomChat', 'warning', ch(8), 'Read Message History, Manage Messages']]);
+  const needs = BigInt(result.enabledBits);
+  assert.notEqual(needs & F.ManageMessages, 0n);
+
+  // Without public rooms or without a pool nothing of the three is checked.
+  assert.deepEqual(checkPermissions(view({ channels }), { ...off, tournament: { ...tournament, publicMatchRooms: false }, matchRooms: pool }).issues, []);
+  assert.deepEqual(checkPermissions(view({ channels }), { ...off, tournament, matchRooms: null }).issues
+    .filter(item => item.featureId.startsWith('tournament.room') && item.featureId !== 'tournament.roundRooms'), []);
+
+  // A server without Manage Channels or Manage Roles cannot run the pool at all.
+  const weak = checkPermissions(view({ guildPermissions: EVERYTHING & ~F.ManageRoles }), { ...off, tournament });
+  assert.deepEqual(weak.issues.map(item => [item.featureId, item.permission, item.severity]), [['tournament.roundRooms', 'Manage Roles', 'blocking']]);
+});
+
+test('the Message Content intent note names room chat text', () => {
+  const result = checkPermissions(view(), { ...off,
+    intents: { wanted: { guildMembers: false, messageContent: true }, state: { guildMembers: 'on', messageContent: 'missing' } } });
+  assert.match(result.issues[0]!.why, /room chat text/);
+});
+
+test('the live report passes the pool through to the checker and ignores a pool that fails to load', async () => {
+  const everything = EVERYTHING;
+  const channel = (id: string, name: string, type: number) => ({ id, name, type, isThread: () => false,
+    permissionsFor: () => ({ bitfield: id === ch(8) ? everything & ~F.ManageMessages : everything }) });
+  const guild = { id: GUILD, channels: { cache: new Map([[ch(8), channel(ch(8), 'Table 1', 2)]]) },
+    roles: { cache: new Map() }, members: { fetchMe: async () => ({ permissions: { bitfield: everything }, roles: { highest: null } }) } };
+  const client = { isReady: () => true, guilds: { fetch: async () => guild } } as unknown as Client;
+  const deps = { client: () => client, guildId: GUILD, applicationId: APP,
+    tournament: () => ({ signupChannelId: ch(8), matchChannelIds: [], publicMatchRooms: true, signupMode: true }),
+    moderation: async () => null, voiceRuntime: false, adminToolsSettings: async () => settings(), intents: () => null,
+    stores: { stickies: { list: async () => [] }, panels: { list: async () => [] }, bulk: { open: async () => [] }, announcements: { list: async () => [] } },
+    now: () => 1 };
+  const withPool = await livePermissionReport({ ...deps, matchRooms: async () => ({ categoryIds: [], roomChannelIds: [ch(8)] }) });
+  assert.ok(withPool.issues.some(item => item.featureId === 'tournament.roomChat' && item.permission === 'Manage Messages'));
+  const failing = await livePermissionReport({ ...deps, matchRooms: async () => { throw new Error('schema missing'); } });
+  assert.ok(!failing.issues.some(item => item.featureId === 'tournament.roomChat'));
+});
+
+test('setup readiness: the rooms row is a category or the server, and room chat is only a warning', () => {
+  const capabilities = (rooms: { channelId: string; channelName: string; missing: string[] }) => [
+    { slot: 'signup' as const, channelId: ch(1), channelName: 'signup', missing: [] },
+    { slot: 'rooms' as const, ...rooms }];
+  const category = setupPermissionReport({ applicationId: APP, guildId: GUILD, publicMatchRooms: true, checkedAtMs: 1,
+    capabilities: capabilities({ channelId: ch(5), channelName: 'Matches', missing: ['Manage Channels', 'Manage Messages'] }) });
+  assert.deepEqual(category.issues.map(item => [item.featureId, item.severity, item.scope.kind, item.permission]),
+    [['tournament.roomCategory', 'blocking', 'channel', 'Manage Channels'], ['tournament.roomChat', 'warning', 'channel', 'Manage Messages']]);
+  const server = setupPermissionReport({ applicationId: APP, guildId: GUILD, publicMatchRooms: true, checkedAtMs: 1,
+    capabilities: capabilities({ channelId: GUILD, channelName: 'Server', missing: ['Manage Permissions'] }) });
+  assert.deepEqual(server.issues.map(item => [item.featureId, item.scope.kind, item.permission, item.kind]),
+    [['tournament.roomCategory', 'guild', 'Manage Roles', 'permission']], 'server-wide Manage Roles, named as the server shows it');
+  const bits = BigInt(server.permissionsInteger);
+  assert.notEqual(bits & F.ManageMessages, 0n, 'the invite covers room chat');
+  assert.equal(bits & F.BanMembers, 0n);
+});

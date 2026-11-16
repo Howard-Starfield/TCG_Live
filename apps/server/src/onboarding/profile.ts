@@ -49,12 +49,23 @@ function roleIds(value: unknown): TournamentRoleIdsDto | null {
   return { guildId: row.guildId, organizerRoleId: row.organizerRoleId as string | null, judgeRoleId: row.judgeRoleId as string | null };
 }
 
+/** The optional match room pool choice: a category to use, or a request to create one (never both). */
+function validMatchRooms(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).sort().join(',') !== 'categoryId,createCategory' || typeof row.createCategory !== 'boolean') return false;
+  if (row.categoryId !== null && !(typeof row.categoryId === 'string' && ID.test(row.categoryId))) return false;
+  return !(row.categoryId !== null && row.createCategory);
+}
+
 export function validSelection(value: unknown): value is SetupSelectionDto {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  if (Object.keys(row).sort().join(',') !== 'adminId,channelId,guildId,matchChannels,publicMatchRooms' ||
+  // matchRooms is the only optional key: legacy selections never had it.
+  const { matchRooms, ...required } = row;
+  if (Object.keys(required).sort().join(',') !== 'adminId,channelId,guildId,matchChannels,publicMatchRooms' ||
       ![row.adminId, row.channelId, row.guildId].every(id => typeof id === 'string' && ID.test(id)) ||
-      typeof row.publicMatchRooms !== 'boolean') return false;
+      typeof row.publicMatchRooms !== 'boolean' || ('matchRooms' in row && !validMatchRooms(matchRooms))) return false;
   if (row.matchChannels === null) return true;
   if (!row.matchChannels || typeof row.matchChannels !== 'object' || Array.isArray(row.matchChannels)) return false;
   const channels = row.matchChannels as Record<string, unknown>;
