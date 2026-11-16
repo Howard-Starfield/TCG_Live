@@ -2,6 +2,7 @@
 // Changes during a wave go through the contract-change procedure in docs/ADMIN_DASHBOARD_PLAN.md.
 
 import type { PermissionReportDto, PermissionSummaryDto } from './permissions-contract.js';
+import type { TournamentRoleKind, TournamentRolesEnsureResultDto } from './staff-contract.js';
 
 export const ADMIN_API_VERSION = 1 as const;
 
@@ -85,7 +86,7 @@ export interface SetupStatusDto {
   botName: string | null; check: SetupCheckDto | null;
   openingDashboard: boolean; handoverError?: string | null;
 }
-export interface SetupFinishDto { openingDashboard: true; eventId: string }
+export interface SetupFinishDto { openingDashboard: true; eventId: string; roles?: TournamentRolesEnsureResultDto }
 
 export interface RuntimeStatusDto {
   mode: 'discord' | 'demo'; bootId: string; buildId: string;
@@ -149,6 +150,8 @@ export interface MatchDto {
   finalSource: null | 'agreed' | 'admin';      // confirmedBy present -> agreed
   confirmedBy: Seat | null;
   adminActions: MatchAdminAction[];            // computed from the domain rules
+  /** True when the operator is seated in this match, so rulings on it are blocked (adminActions is empty). */
+  staffConflict?: true;
 }
 
 export interface StandingDto { seat: Seat; points: number; rating: number }
@@ -180,10 +183,16 @@ export interface EventSnapshotDto {
   };
 }
 
+/** The Discord staff member behind an admin action (TCG Organizer or Judge). role is null for legacy rows. */
+export interface StaffActorDto {
+  memberId: Snowflake; role: TournamentRoleKind | null; via: string;
+  name: string | null; username: string | null; roleName: string | null;
+}
+
 export type ActorDto =
   | { kind: 'player'; seat: Seat }
   | { kind: 'member'; memberId: Snowflake }
-  | { kind: 'admin' }
+  | { kind: 'admin'; staff?: StaffActorDto }
   | { kind: 'system'; source: 'timer' | 'scheduler' };      // mapped from principal_kind = 'system'
 
 // Sanitized copy of the stored domain command.
@@ -268,6 +277,7 @@ export interface AdminCommandRequestDto {
 export interface AdminCommandResultDto {
   applied: boolean; result: string; version: number;
   cards: 'updated' | 'pending'; roomWarning: string | null;
+  staffWarning?: string | null;
 }
 export interface PanelRefreshRequestDto { eventId: string }   // must be the active event
 export interface PanelRefreshResultDto { cards: 'refreshed' | 'pending'; roomWarning: string | null }

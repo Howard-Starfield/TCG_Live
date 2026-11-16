@@ -8,3 +8,4 @@ export * from './clock.js';
 export * from './permissions-contract.js';
 export * from './local-settings-contract.js';
 export * from './lfg-contract.js';
+export * from './staff-contract.js';
