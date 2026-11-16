@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -27,6 +27,9 @@ function discovery(guide: SetupDiscovery['guide'] = async () => ids[5]!): SetupD
     async createChannel(_guildId, name, type) {
       if (name === 'denied') throw Object.assign(new Error('Missing Permissions'), { code: 50013 });
       return { id: '888888888888888888', name, category: null, type, permissions, afk: false };
+    },
+    async ensureTournamentRoles(_guildId, organizerId) {
+      return { organizer: 'created', judge: 'created', assigned: organizerId, problem: null };
     }, guide };
 }
 
@@ -215,4 +218,48 @@ test('createChannel validates input, creates in a bot server and explains a miss
   await assert.rejects(service.createChannel({ guildId: ids[0], name: 'x', type: 'stage' }), /text or voice/);
   await assert.rejects(service.createChannel({ guildId: ids[0], name: 'x', type: 'text', extra: 1 }), /text or voice/);
   await assert.rejects(service.createChannel({ guildId: ids[0], name: 'denied', type: 'text' }), /Manage Channels/);
+}));
+
+test('Finish ensures the TCG roles for the chosen organizer before preparing, and reports them', async () => fixture(async profile => {
+  const order: string[] = [];
+  const service = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    active: async () => null, prepare: async () => { order.push('prepare'); return activeSession(); }, onHandover: async () => {} });
+  const base = discovery();
+  service.attach({ ...base, async ensureTournamentRoles(guildId, organizerId, store) {
+    order.push(`roles:${guildId}:${organizerId}`);
+    await store.set({ guildId, organizerRoleId: ids[5]!, judgeRoleId: ids[6]! });
+    return { organizer: 'created', judge: 'created', assigned: organizerId, problem: null };
+  } });
+  const finished = await service.finish(selection);
+  assert.deepEqual(order, [`roles:${selection.guildId}:${selection.adminId}`, 'prepare']);
+  assert.deepEqual(finished.roles, { organizer: 'created', judge: 'created', assigned: selection.adminId, problem: null });
+  // The IDs went into the setup profile, and the Finish save kept them.
+  assert.deepEqual((await profile.read()).roles, { guildId: selection.guildId, organizerRoleId: ids[5], judgeRoleId: ids[6] });
+  assert.equal((await profile.read()).completed, true);
+}));
+
+test('Finish succeeds when the roles cannot be set up and says so', async () => fixture(async profile => {
+  let prepared = 0;
+  const service = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    active: async () => null, prepare: async () => { prepared++; return activeSession(); }, onHandover: async () => {} });
+  service.attach({ ...discovery(), async ensureTournamentRoles() { throw new Error('Missing Permissions'); } });
+  const finished = await service.finish(selection);
+  assert.equal(finished.eventId, activeSession().event_id);
+  assert.equal(prepared, 1);
+  assert.deepEqual([finished.roles?.organizer, finished.roles?.judge, finished.roles?.assigned], ['failed', 'failed', null]);
+  assert.match(finished.roles?.problem ?? '', /Create them later/);
+  assert.doesNotMatch(JSON.stringify(finished), /Missing Permissions/);
+  assert.equal((await profile.read()).completed, true);
+}));
+
+test('a save that omits roles fails instead of erasing them when the profile cannot be read', async () => fixture(async profile => {
+  const saved = { guildId: ids[0]!, organizerRoleId: ids[5]!, judgeRoleId: ids[6]! };
+  await profile.save({ selection, guide: null, completed: false, roles: saved });
+  const before = await readFile(profile.file, 'utf8');
+  await writeFile(profile.file, '{ not json');
+  await assert.rejects(() => profile.save({ selection, guide: null, completed: true }), /invalid/i);
+  assert.equal(await readFile(profile.file, 'utf8'), '{ not json');
+  // The IDs are still recoverable once the file is repaired.
+  await writeFile(profile.file, before);
+  assert.deepEqual((await profile.read()).roles, saved);
 }));

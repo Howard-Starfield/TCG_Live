@@ -115,6 +115,8 @@ export interface LivePermissionDeps {
   stores: AdminToolsNeedStores;
   /** Saved LFG settings; null when unavailable (schema missing, database down). */
   lfgSettings?(): Promise<LfgSettingsBodyDto | null>;
+  /** The saved TCG Organizer and TCG Judge role IDs (profileTournamentRoleStore); null/absent when unknown. */
+  tournamentRoles?(): Promise<PermissionConfig['tournamentRoles']>;
   now?(): number;
   debounceMs?: number;
 }
@@ -133,7 +135,8 @@ export async function livePermissionReport(deps: LivePermissionDeps): Promise<Pe
     moderation: moderationNeeds(moderation, deps.voiceRuntime),
     adminTools: await adminToolsNeeds(deps.guildId, settings, deps.stores),
     intents: deps.intents(settings),
-    lfg: lfgNeeds(await (deps.lfgSettings?.() ?? Promise.resolve(null)).catch(() => null))
+    lfg: lfgNeeds(await (deps.lfgSettings?.() ?? Promise.resolve(null)).catch(() => null)),
+    tournamentRoles: await (deps.tournamentRoles?.() ?? Promise.resolve(null)).catch(() => null)
   };
   return permissionReport(checkPermissions(view, config), { applicationId: deps.applicationId, guildId: deps.guildId,
     checkedAtMs: (deps.now ?? Date.now)(), botRoleName: view.botTopRole?.name ?? null });

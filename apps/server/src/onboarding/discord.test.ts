@@ -124,3 +124,13 @@ test('rich guide sends and retains the selected game thumbnail', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('role setup through discovery reports a failure instead of throwing', async () => {
+  // The hand-made guild has no role list to read, as when Discord is unreachable.
+  const f = fixture([PermissionFlagsBits.ViewChannel]);
+  const discovery = discordSetupDiscovery(f.client);
+  const store = { async get() { return { guildId, organizerRoleId: null, judgeRoleId: null }; }, async set() { throw new Error('must not save'); } };
+  const result = await discovery.ensureTournamentRoles(guildId, adminId, store);
+  assert.deepEqual([result.organizer, result.judge, result.assigned], ['failed', 'failed', null]);
+  assert.match(result.problem ?? '', /Could not read the server's roles/);
+});

@@ -1,5 +1,7 @@
 import { ChannelType, PermissionFlagsBits, type Client, type Guild, type GuildBasedChannel,
   type GuildMember, type TextChannel } from 'discord.js';
+import { discordTournamentRolesPort } from '../admin-tools/tournament-roles/port.js';
+import { ensureTournamentRoles } from '../admin-tools/tournament-roles/service.js';
 import { filenameFromThumbnail, retainedVisual, visualFile, visualThumbnail } from '../discord/visuals.js';
 import type { DiscoveredChannel, SetupDiscovery } from './service.js';
 import { SETUP_DISCOVERY_FLAGS } from '../permissions/table.js';
@@ -59,6 +61,10 @@ export function discordSetupDiscovery(client: Client): SetupDiscovery {
       // The channel exists now: a failed member lookup must not report "not created" and invite a duplicate on retry.
       const bot = await member(target).catch(() => null);
       return { id: channel.id, name: channel.name, category: null, type, permissions: bot ? permissions(channel, bot) : [], afk: false };
+    },
+    async ensureTournamentRoles(guildId, organizerId, store) {
+      const target = await guild(guildId);
+      return ensureTournamentRoles(discordTournamentRolesPort(target), store, guildId, organizerId, { kind: 'admin', id: 'setup' });
     },
     async guide(channelId, adminId, content, messageId, mentionAdmin) {
       const { channel, bot } = await textChannel(channelId);

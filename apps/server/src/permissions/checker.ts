@@ -47,6 +47,8 @@ export interface PermissionConfig {
   intents: { wanted: Record<PrivilegedIntentName, boolean>; state: Record<PrivilegedIntentName, PrivilegedIntentState> } | null;
   /** LFG channels while LFG is enabled; null/absent when off or unknown. */
   lfg?: { channels: LfgChannelNeed[] } | null;
+  /** The saved TCG Organizer and TCG Judge role IDs (null for one that is not created yet); null/absent when unknown. */
+  tournamentRoles?: { organizerRoleId: string | null; judgeRoleId: string | null } | null;
 }
 
 /** Administrator bypasses every permission check (not the role hierarchy). */
@@ -129,6 +131,10 @@ function targetsFor(req: FeatureRequirement, config: PermissionConfig, view: Gui
       const ignored = new Set(a.settings.logging.messageLog.ignoredChannelIds);
       return view.channels.filter(item => item.type === 'text' && !ignored.has(item.id)).map(item => ({ kind: 'channel', id: item.id }));
     }
+    case 'tournamentRoles.manage': return config.tournamentRoles ? guild : [];
+    case 'tournamentRoles.hierarchy': return unique([config.tournamentRoles?.organizerRoleId, config.tournamentRoles?.judgeRoleId]
+      .filter((id): id is string => !!id).map(id => ({ kind: 'role' as const, id })));
+    case 'tournamentRoles.created': return config.tournamentRoles && !(config.tournamentRoles.organizerRoleId && config.tournamentRoles.judgeRoleId) ? guild : [];
     case 'lfg.channel': return config.lfg ? unique(config.lfg.channels.flatMap(item => channel(item.channelId))) : [];
     case 'lfg.mention': {
       if (!config.lfg) return [];
@@ -163,6 +169,13 @@ export function checkPermissions(view: GuildPermissionView, config: PermissionCo
     let sourceIssues = 0;
     for (const target of targets) {
       if (target.kind === 'guild') {
+        if (req.id === 'tournamentRoles.created') {
+          const roles = config.tournamentRoles!;
+          const names = [roles.organizerRoleId ? null : 'TCG Organizer', roles.judgeRoleId ? null : 'TCG Judge'].filter(Boolean).join(' and ');
+          issues.push({ ...base, kind: 'missing', permission: names, scope: { kind: 'guild' }, why: req.why,
+            fix: 'In the dashboard, open Admin tools > Settings > Tournament roles and use Create TCG roles.' });
+          continue;
+        }
         const missing = req.permissions.filter(key => !hasPermission(view.guildPermissions, key));
         if (missing.length) issues.push({ ...base, kind: 'permission', permission: missing.map(key => permissionLabel(key)).join(', '),
           scope: { kind: 'guild' }, why: req.why, fix: 'Use "Grant missing permissions" and authorize the bot again.' });
@@ -171,11 +184,15 @@ export function checkPermissions(view: GuildPermissionView, config: PermissionCo
       if (target.kind === 'role') {
         const role = view.roles.find(item => item.id === target.id);
         if (!role) {
+          const own = req.group === 'Tournament roles';
           issues.push({ ...base, kind: 'missing', permission: 'Role', scope: { kind: 'role', id: target.id, name: target.id },
-            why: 'A configured role was deleted.', fix: 'Choose another role where it is configured.' });
+            why: own ? 'A TCG role was deleted in Discord.' : 'A configured role was deleted.',
+            fix: own ? 'In the dashboard, open Admin tools > Settings > Tournament roles and use Create TCG roles.' : 'Choose another role where it is configured.' });
         } else if (role.managed) {
           issues.push({ ...base, kind: 'hierarchy', permission: 'Role order', scope: { kind: 'role', id: role.id, name: role.name },
-            why: `@${role.name} is managed by an integration, so no bot can give it.`, fix: 'Choose another role where it is configured.' });
+            why: `@${role.name} is managed by an integration, so no bot can give it.`,
+            fix: req.group === 'Tournament roles' ? 'In the dashboard, open Admin tools > Settings > Tournament roles and use Create TCG roles to make a new one.'
+              : 'Choose another role where it is configured.' });
         } else if (!view.botTopRole || role.position >= view.botTopRole.position) {
           issues.push({ ...base, kind: 'hierarchy', permission: 'Role order', scope: { kind: 'role', id: role.id, name: role.name },
             why: `${req.why} @${role.name} is not below ${botRole}.`,

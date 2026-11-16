@@ -17,6 +17,8 @@ export interface DemoGuild {
   emojis: GuildEmojiDto[];
   members: DemoMember[];
   bans: DemoBan[];
+  /** The server owner, when the demo has one (tournament role management reads it). */
+  ownerId?: string;
 }
 
 const DAY = 86_400_000;
@@ -29,7 +31,9 @@ const NAMES = ['ash', 'misty', 'brock', 'kaiba', 'yugi', 'joey', 'mai', 'luffy',
   'hancock', 'perona', 'buggy', 'mihawk', 'shanks', 'garp'];
 
 export const DEMO_ROLE_IDS = { admin: id(201), judge: id(202), player: id(203), season3: id(204), lfg: id(205), bot: id(206),
-  moderator: id(207) } as const;
+  moderator: id(207), tcgOrganizer: id(208), tcgJudge: id(209) } as const;
+/** The demo console's organizer (admin/runtime/demo-runtime.ts DEMO_ADMIN_ID): owns the demo server and holds TCG Organizer. */
+export const DEMO_ORGANIZER_ID = '910000000000000001';
 export const DEMO_CHANNEL_IDS = {
   info: id(301), general: id(302), signup: id(303), support: id(304), modLog: id(305), welcome: id(306),
   announcements: id(307), tickets: id(308), matchM1: id(309), matchM2: id(310)
@@ -45,8 +49,11 @@ export function createDemoGuild(guildId: string): DemoGuild {
     { id: DEMO_ROLE_IDS.judge, name: 'Judge', color: 0xa855f7, position: 4, managed: false, aboveBot: false, elevated: false },
     // Below the bot but staff-level (Ban Members): never offered by panels, bulk jobs or auto-role.
     { id: DEMO_ROLE_IDS.moderator, name: 'Moderator', color: 0x14b8a6, position: 5, managed: false, aboveBot: false, elevated: true },
-    { id: DEMO_ROLE_IDS.bot, name: 'TCG Live', color: 0, position: 6, managed: true, aboveBot: true, elevated: true },
-    { id: DEMO_ROLE_IDS.admin, name: 'Admin', color: 0xef4444, position: 7, managed: false, aboveBot: true, elevated: true }
+    // The two bot-managed tournament roles: no permissions, directly under the bot's role.
+    { id: DEMO_ROLE_IDS.tcgJudge, name: 'TCG Judge', color: 0x3498db, position: 6, managed: false, aboveBot: false, elevated: false },
+    { id: DEMO_ROLE_IDS.tcgOrganizer, name: 'TCG Organizer', color: 0xe67e22, position: 7, managed: false, aboveBot: false, elevated: false },
+    { id: DEMO_ROLE_IDS.bot, name: 'TCG Live', color: 0, position: 8, managed: true, aboveBot: true, elevated: true },
+    { id: DEMO_ROLE_IDS.admin, name: 'Admin', color: 0xef4444, position: 9, managed: false, aboveBot: true, elevated: true }
   ];
   const category = (n: number, name: string, position: number): GuildChannelDto =>
     ({ id: id(n), name, type: 'category', parentId: null, position, reserved: false });
@@ -75,6 +82,11 @@ export function createDemoGuild(guildId: string): DemoGuild {
     accountCreatedAtMs: index >= NAMES.length - 2 ? DEMO_EPOCH_MS - (NAMES.length - index) * 3 * DAY - DAY : DEMO_EPOCH_MS - (400 + index * 10) * DAY,
     bot: false, timedOutUntilMs: index === 5 ? DEMO_EPOCH_MS + 2 * DAY : null
   }));
+  // The demo organizer (owner of the demo server) holds TCG Organizer; the second demo member also holds TCG Judge.
+  members.push({ id: DEMO_ORGANIZER_ID, username: 'organizer', displayName: 'Organizer', avatarUrl: null,
+    roleIds: [DEMO_ROLE_IDS.player, DEMO_ROLE_IDS.tcgOrganizer], joinedAtMs: DEMO_EPOCH_MS - 200 * DAY,
+    accountCreatedAtMs: DEMO_EPOCH_MS - 600 * DAY, bot: false, timedOutUntilMs: null });
+  members[1]!.roleIds.push(DEMO_ROLE_IDS.tcgJudge);
   members.push({ id: id(99), username: 'tcg-live', displayName: 'TCG Live', avatarUrl: null, roleIds: [DEMO_ROLE_IDS.bot],
     joinedAtMs: DEMO_EPOCH_MS - 120 * DAY, accountCreatedAtMs: DEMO_EPOCH_MS - 130 * DAY, bot: true, timedOutUntilMs: null });
   const bans: DemoBan[] = [
@@ -83,5 +95,5 @@ export function createDemoGuild(guildId: string): DemoGuild {
     { userId: id(103), username: 'old-ban', reason: null }
   ];
   const emojis: GuildEmojiDto[] = [{ id: id(501), name: 'tcg_ticket', animated: false }, { id: id(502), name: 'gg', animated: true }];
-  return { id: guildId, name: 'TCG Live Demo Server', roles, channels, emojis, members, bans };
+  return { id: guildId, name: 'TCG Live Demo Server', roles, channels, emojis, members, bans, ownerId: DEMO_ORGANIZER_ID };
 }

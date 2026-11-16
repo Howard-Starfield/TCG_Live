@@ -1,5 +1,6 @@
 import type { SetupCapabilityDto, SetupChannelCreateDto, SetupChannelDto, SetupCheckDto, SetupFinishDto, SetupGuildDto,
-  SetupSelectionDto, SetupStatusDto } from '@tcg-live/core';
+  SetupSelectionDto, SetupStatusDto, TournamentRolesEnsureResultDto } from '@tcg-live/core';
+import { profileTournamentRoleStore, type TournamentRoleStore } from '../admin-tools/tournament-roles/store.js';
 import { HttpError } from '../admin/http/respond.js';
 import { type PrivateDiscordConfig, sameIdentityMap } from '../discord/config.js';
 import type { SessionRow } from '../discord/session.js';
@@ -25,6 +26,8 @@ export interface SetupDiscovery {
   /** Creates once or edits an owned guide; `missing` is already validated. */
   guide(channelId: string, adminId: string, content: string, messageId: string | null,
     mentionAdmin: boolean): Promise<string>;
+  /** Creates or adopts the TCG Organizer and TCG Judge roles (IDs kept in `store`) and gives `organizerId` the Organizer role. Never throws for Discord failures. */
+  ensureTournamentRoles(guildId: string, organizerId: string, store: TournamentRoleStore): Promise<TournamentRolesEnsureResultDto>;
 }
 
 export interface SetupServiceOptions {
@@ -274,6 +277,8 @@ export class SetupService {
         configFromSelection(selection, this.discovery!.applicationId, this.options.token!);
       if (active && !sameIdentityMap(active.identity_map, config))
         throw new HttpError(409, 'conflict', 'Active event identity changed; refresh setup.');
+      // Role trouble never fails setup: it is reported in the result and the dashboard offers Create TCG roles again.
+      const roles = await this.ensureRoles(selection);
       let session = active;
       if (!session) {
         try { session = await this.options.prepare(config); }
@@ -284,8 +289,18 @@ export class SetupService {
       this.selectedFresh = !active;
       this.openingDashboard = true;
       this.handoverError = null;
-      return { openingDashboard: true, eventId: session.event_id };
+      return { openingDashboard: true, eventId: session.event_id, roles };
     } finally { this.finishing = false; }
+  }
+
+  private async ensureRoles(selection: SetupSelectionDto): Promise<TournamentRolesEnsureResultDto> {
+    try {
+      return await this.discovery!.ensureTournamentRoles(selection.guildId, selection.adminId,
+        profileTournamentRoleStore(this.options.profile));
+    } catch {
+      return { organizer: 'failed', judge: 'failed', assigned: null,
+        problem: 'The TCG roles could not be set up. Create them later in Admin tools > Settings > Tournament roles.' };
+    }
   }
 
   async handover(): Promise<void> {

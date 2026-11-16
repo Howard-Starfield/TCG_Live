@@ -350,3 +350,44 @@ test('the runtime status carries the permission summary and changes after each c
   await runtime.close();
   monitor.close();
 });
+
+test('tournament roles: Manage Roles, the hierarchy of the stored role IDs, and a warning until both roles exist', () => {
+  const organizer = role(51), judge = role(52);
+  const roles = [...view().roles, { id: organizer, name: 'TCG Organizer', position: 4, managed: false, mentionable: false },
+    { id: judge, name: 'TCG Judge', position: 3, managed: false, mentionable: false }];
+  const ok = checkPermissions(view({ roles }), { ...off, tournamentRoles: { organizerRoleId: organizer, judgeRoleId: judge } });
+  assert.deepEqual(ok.issues, []);
+  assert.equal(ok.enabledBits, F.ManageRoles);
+
+  // Unknown or absent: the feature is not checked at all.
+  assert.deepEqual(checkPermissions(view(), off).issues, []);
+  assert.deepEqual(checkPermissions(view(), { ...off, tournamentRoles: null }).issues, []);
+
+  // Not created yet: one warning naming what is missing, and no hierarchy rows for it.
+  const none = checkPermissions(view(), { ...off, tournamentRoles: { organizerRoleId: null, judgeRoleId: null } });
+  assert.deepEqual(none.issues.map(item => [item.featureId, item.severity, item.kind, item.permission]),
+    [['tournamentRoles.created', 'warning', 'missing', 'TCG Organizer and TCG Judge']]);
+  assert.match(none.issues[0]!.fix, /Create TCG roles/);
+  const half = checkPermissions(view({ roles }), { ...off, tournamentRoles: { organizerRoleId: organizer, judgeRoleId: null } });
+  assert.deepEqual(half.issues.map(item => item.permission), ['TCG Judge']);
+
+  // Missing Manage Roles, a role above the bot, and a role deleted in Discord.
+  const weak = checkPermissions(view({ guildPermissions: EVERYTHING & ~F.ManageRoles, roles: roles.map(item =>
+    item.id === organizer ? { ...item, position: 6 } : item) }),
+  { ...off, tournamentRoles: { organizerRoleId: organizer, judgeRoleId: role(53) } });
+  assert.deepEqual(weak.issues.map(item => [item.featureId, item.kind, item.scope.kind === 'role' ? item.scope.id : null]),
+    [['tournamentRoles.manage', 'permission', null], ['tournamentRoles.hierarchy', 'hierarchy', organizer],
+      ['tournamentRoles.hierarchy', 'missing', role(53)]]);
+  assert.match(weak.issues[1]!.fix, /TCG Live above @TCG Organizer/);
+  assert.match(weak.issues[2]!.fix, /Create TCG roles/);
+  assert.ok(weak.issues.every(item => item.severity === 'warning'));
+});
+
+test('the demo permission report includes the seeded TCG roles with no extra role issue', async () => {
+  const demo = createDemoGuild(DEMO_GUILD_ID);
+  const monitor = demoPermissionMonitor(demo, new MemoryAdminToolsSettingsStore(new MemoryOpsAuditStore()));
+  const report = await monitor.recheck();
+  const issues = report.issues.filter(item => item.featureId.startsWith('tournamentRoles.'));
+  // The demo bot lacks Manage Roles on purpose, so that one warning shows; the roles themselves are fine.
+  assert.deepEqual(issues.map(item => item.featureId), ['tournamentRoles.manage']);
+});

@@ -8,6 +8,7 @@ import { loggingRouteModule } from './logging/routes.js';
 import { rolesRouteModule } from './roles/routes.js';
 import { announcementsRouteModule } from './announcements/routes.js';
 import { lfgRouteModule } from './lfg/routes.js';
+import { tournamentRolesRouteModule } from './tournament-roles/routes.js';
 
 export const adminToolsRouteModules: readonly AdminToolsRouteModule[] = [
   // (A) members, bans, mod actions, cases, notes, mod audit
@@ -20,4 +21,6 @@ export const adminToolsRouteModules: readonly AdminToolsRouteModule[] = [
   loggingRouteModule(),
   // LFG (looking for a game)
   lfgRouteModule(),
+  // TCG Organizer and TCG Judge roles
+  tournamentRolesRouteModule(),
 ];
