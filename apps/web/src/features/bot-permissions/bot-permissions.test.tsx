@@ -154,12 +154,12 @@ describe('setup readiness', () => {
     const check: SetupCheckDto = { valid: false, frozen: false, botName: 'Bot', issues: ['Grant the bot the missing permissions shown for each channel.'],
       guide: 'guide', notice: 'cannot_post', capabilities: [
         { slot: 'signup', channelId: ids[1]!, channelName: 'signup', missing: ['Embed Links'] },
-        { slot: 'M1', channelId: ids[2]!, channelName: 'TCG Match 1', missing: [] },
-        { slot: 'M2', channelId: ids[3]!, channelName: 'TCG Match 2', missing: [] }],
+        { slot: 'rooms', channelId: ids[2]!, channelName: 'Matches', missing: ['Manage Channels'] }],
       permissions: report({ issues: [{ severity: 'blocking', kind: 'permission', featureId: 'tournament.signup', feature: 'Tournament',
         permission: 'Embed Links', scope: { kind: 'channel', id: ids[1]!, name: 'signup' },
         why: 'The bot cannot post or update the signup, check-in and match cards.', fix: 'Use "Grant missing permissions".' }] }) };
-    const selection = { guildId: ids[0]!, channelId: ids[1]!, matchChannels: { M1: ids[2]!, M2: ids[3]! }, adminId: ids[4]!, publicMatchRooms: true };
+    const selection = { guildId: ids[0]!, channelId: ids[1]!, matchChannels: null, matchRooms: { categoryId: ids[2]!, createCategory: false },
+      adminId: ids[4]!, publicMatchRooms: true };
     renderConsole({ setup: server => {
       server.always('GET /session', () => json(200, { ...sessionFixture, setup: true }));
       server.always('GET /setup', () => json(200, { prerequisite: null, activeEventId: null, selection, frozen: false, botName: 'Bot',
@@ -167,8 +167,7 @@ describe('setup readiness', () => {
       server.always('GET /setup/guilds', () => json(200, [{ id: ids[0]!, name: 'TCG Test', ownerId: ids[4]! }]));
       server.always('GET /setup/channels', () => json(200, [
         { id: ids[1]!, name: 'signup', category: null, type: 'text' },
-        { id: ids[2]!, name: 'TCG Match 1', category: null, type: 'voice' },
-        { id: ids[3]!, name: 'TCG Match 2', category: null, type: 'voice' }]));
+        { id: ids[2]!, name: 'Matches', category: null, type: 'category' }]));
       server.always('POST /setup/check', () => json(200, check));
     } });
     expect(await screen.findByRole('button', { name: /Bot setup guide/ })).toBeInTheDocument();
@@ -176,6 +175,7 @@ describe('setup readiness', () => {
     await user.click(await screen.findByRole('button', { name: 'Check readiness' }));
     const section = await screen.findByRole('region', { name: 'Bot permissions' });
     expect(within(section).getByRole('region', { name: 'Tournament' })).toHaveTextContent('Embed Links');
+    expect(screen.getByText('Missing: Manage Channels')).toBeInTheDocument();
     const grant = within(section).getByRole('link', { name: /Grant missing permissions in Discord/ });
     expect(grant).toHaveAttribute('href', INVITE);
     expect(grant).toHaveAttribute('rel', 'noopener noreferrer');

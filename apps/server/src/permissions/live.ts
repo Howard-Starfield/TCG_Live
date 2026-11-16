@@ -117,6 +117,8 @@ export interface LivePermissionDeps {
   lfgSettings?(): Promise<LfgSettingsBodyDto | null>;
   /** The saved TCG Organizer and TCG Judge role IDs (profileTournamentRoleStore); null/absent when unknown. */
   tournamentRoles?(): Promise<PermissionConfig['tournamentRoles']>;
+  /** The match room pool's categories and rooms; null/absent when unknown (memory pool, schema missing). */
+  matchRooms?(): Promise<PermissionConfig['matchRooms']>;
   now?(): number;
   debounceMs?: number;
 }
@@ -136,7 +138,8 @@ export async function livePermissionReport(deps: LivePermissionDeps): Promise<Pe
     adminTools: await adminToolsNeeds(deps.guildId, settings, deps.stores),
     intents: deps.intents(settings),
     lfg: lfgNeeds(await (deps.lfgSettings?.() ?? Promise.resolve(null)).catch(() => null)),
-    tournamentRoles: await (deps.tournamentRoles?.() ?? Promise.resolve(null)).catch(() => null)
+    tournamentRoles: await (deps.tournamentRoles?.() ?? Promise.resolve(null)).catch(() => null),
+    matchRooms: await (deps.matchRooms?.() ?? Promise.resolve(null)).catch(() => null)
   };
   return permissionReport(checkPermissions(view, config), { applicationId: deps.applicationId, guildId: deps.guildId,
     checkedAtMs: (deps.now ?? Date.now)(), botRoleName: view.botTopRole?.name ?? null });

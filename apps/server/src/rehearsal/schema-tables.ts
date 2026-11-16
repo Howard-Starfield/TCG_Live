@@ -46,8 +46,17 @@ export function sameTables(names: readonly string[], expected: readonly string[]
  */
 export const EVIDENCE_REPLY_TABLES = ['tcg_evidence_replies'] as const;
 
+/**
+ * Migration 017's tables (match rooms and their transcripts). Optional like 015's: applied by setupAdminToolsSchema after 016,
+ * and every guard sees the same shape with or without them.
+ */
+export const MATCH_ROOM_TABLES = ['tcg_match_room_categories', 'tcg_match_room_settings', 'tcg_match_room_transcripts',
+  'tcg_match_rooms'] as const;
+/** Tables a guard ignores (when tcg_evidence exists) because their migration may or may not have run. */
+export const OPTIONAL_TABLES: readonly string[] = [...EVIDENCE_REPLY_TABLES, ...MATCH_ROOM_TABLES];
+
 export function classifyPublicSchema(allNames: readonly string[]): PublicSchemaShape {
-  const names = allNames.includes('tcg_evidence') ? allNames.filter(name => !(EVIDENCE_REPLY_TABLES as readonly string[]).includes(name)) : allNames;
+  const names = allNames.includes('tcg_evidence') ? allNames.filter(name => !OPTIONAL_TABLES.includes(name)) : allNames;
   if (names.length === 0) return 'empty';
   if (sameTables(names, TABLES_V1)) return 'v1';
   if (sameTables(names, TABLES_V2)) return 'v2';

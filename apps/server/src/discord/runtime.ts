@@ -22,7 +22,7 @@ import { buttonId, type CardPayload } from './cards.js';
 import { readPrivateDiscordConfig, type ConfiguredRooms, type PrivateDiscordConfig } from './config.js';
 import { PrivateDiscordController, type CardTransport, type PrivateInteraction } from './controller.js';
 import { acquireAdvisoryLease, bindRoundRoom, dueSignupDrafts, getSessionState, resolvePlayers, type SessionRow, prepareSession, prepareSignupSession, type AdvisoryLease } from './session.js';
-import { baseIntents, privateDiscordClient, privateDiscordRest } from './sdk.js';
+import { baseIntents, matchRoomRenameRest, privateDiscordClient, privateDiscordRest } from './sdk.js';
 import { backupRoomOverwrites, MatchRoomReconciler, roomPlan, sameOverwrites, type Room, type RoomOverwrite, type RoomTransport } from './match-rooms.js';
 import { filenameFromThumbnail, noticeEmbed, retainedVisual, setVisualArtworkStore, visualFile, visualThumbnail } from './visuals.js';
 import { defaultArtworkStore } from '../artwork/store.js';
@@ -54,6 +54,11 @@ import { pgButtonRolePanelStore } from '../admin-tools/roles/panels.js';
 import { lfgBody, pgLfgSettingsStore } from '../admin-tools/lfg/settings.js';
 import { livePermissionMonitor, watchPermissionEvents } from '../permissions/live.js';
 import { voiceRuntimeEnabled } from '../voice/feature.js';
+import { attachMatchRoomService, currentMatchRoomService } from '../admin-tools/match-rooms/service-port.js';
+import { matchRoomChatFeature } from '../admin-tools/match-rooms/feature.js';
+import { gameLabelOf, liveMatchRoomService, MEMORY_STORAGE_HINT, voiceRoomPolicyDropper, type MatchRoomSystem } from '../admin-tools/match-rooms/service.js';
+import { MemoryMatchRoomStore, pgMatchRoomStore, type MatchRoomStore } from '../admin-tools/match-rooms/store.js';
+import { MemoryTranscriptStore, pgTranscriptStore } from '../admin-tools/match-rooms/transcripts.js';
 
 function safeError(error: unknown): string {
   return error instanceof RuleError ? error.message : 'Private Discord operation failed.';
@@ -300,8 +305,14 @@ export function discordTransport(channel: TextChannel | (() => TextChannel), mat
   };
 }
 
-export function discordRoomTransport(guild: Guild, rooms: ConfiguredRooms<VoiceChannel>, bot: GuildMember,
+export function discordRoomTransport(guild: Guild, roomChannels: Partial<Record<MatchId, VoiceChannel>>, bot: GuildMember,
   control: TextChannel | (() => TextChannel), adminId: string): RoomTransport {
+  // The pool fills this as it binds rooms; the legacy M1/M2 rooms are in it from the start.
+  const rooms = new Proxy(roomChannels, { get: (target, room: string) => {
+    const channel = target[room as MatchId];
+    if (!channel) throw new RuleError(`Public match room ${room} has no voice room yet.`);
+    return channel;
+  } }) as Record<MatchId, VoiceChannel>;
   const current = (room: Room): RoomOverwrite[] => [...rooms[room]!.permissionOverwrites.cache.values()].map(overwrite => ({
     id: overwrite.id, type: overwrite.type, allow: overwrite.allow.bitfield.toString(),
     deny: overwrite.deny.bitfield.toString()
@@ -341,15 +352,19 @@ export function discordRoomTransport(guild: Guild, rooms: ConfiguredRooms<VoiceC
   };
 }
 
+/**
+ * The legacy M1/M2 rooms (the env fixture or an older setup), when there are any, must be two distinct voice channels
+ * of the configured guild outside AFK. Public match rooms no longer need them: the pool creates its own rooms.
+ */
 export function assertPublicMatchRoomTargets(config: PrivateDiscordConfig,
-  rooms: ConfiguredRooms<{ id: string; name: string; guildId: string; type: ChannelType }>,
+  rooms: ConfiguredRooms<{ id: string; name: string; guildId: string; type: ChannelType }> | undefined,
   afkChannelId: string | null): void {
-  if (!config.publicMatchRooms) return;
-  if (!config.matchChannels || rooms.M1.id === rooms.M2.id ||
+  if (!config.publicMatchRooms || !config.matchChannels) return;
+  if (!rooms || rooms.M1.id === rooms.M2.id ||
       (['M1', 'M2'] as const).some(room => rooms[room]!.id !== config.matchChannels?.[room] ||
         rooms[room]!.type !== ChannelType.GuildVoice || rooms[room]!.guildId !== config.guildId ||
-        rooms[room]!.id === afkChannelId || !rooms[room]!.name.startsWith('TCG Match ')))
-    throw new RuleError('Public match rooms require two distinct dedicated TCG Match voice channels outside AFK in the configured guild.');
+        rooms[room]!.id === afkChannelId))
+    throw new RuleError('Public match rooms require two distinct voice channels outside AFK in the configured guild.');
 }
 
 const JUDGE_MODAL_ID = /^judge:([1-9]\d{14,21}):(p1:.*)$/;
@@ -543,7 +558,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   const artwork = defaultArtworkStore();
   setVisualArtworkStore(artwork);
   const runnerId = randomUUID();
-  const features = discordFeatures();
+  // Public match rooms archive room chat; its text needs the Message Content intent, requested like the other opt-in ones.
+  const features = [...discordFeatures(), ...(config.publicMatchRooms ? [matchRoomChatFeature()] : [])];
   // Placeholder until login: the real client is created with the planned intents (see loginWithIntentFallback).
   let client: Client = privateDiscordClient(!!config.publicMatchRooms, featureIntents(features));
   const adminToolsSettings = pgAdminToolsSettingsStore();
@@ -551,9 +567,12 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
   const featureLog = (message: string) => { process.stderr.write(`${message.replace(/[^\x20-\x7e]/g, '?').slice(0, 300)}\n`); };
   const interactions = new FeatureInteractionRouter({ applicationId: config.applicationId, guildId: config.guildId }, featureLog);
   let signupChannelId: string | null = null;
+  /** The match room pool, its rename queue and its service; created once the bot is in the server. */
+  let roomSystem: MatchRoomSystem | undefined;
   /** Channels the tournament owns: general stickies and ticket panels are refused there. */
   const reservedChannelIds = async (): Promise<string[]> => {
-    const ids = new Set<string | undefined>([config.channelId, ...Object.values(config.matchChannels ?? {}), ...Object.values(config.roundRooms ?? {})]);
+    const ids = new Set<string | undefined>([config.channelId, ...Object.values(config.matchChannels ?? {}), ...Object.values(config.roundRooms ?? {}),
+      ...(roomSystem?.channelIds() ?? [])]);
     if (signupChannelId) ids.add(signupChannelId);
     try {
       const current = await getSessionState(config);
@@ -588,7 +607,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
     },
     stores: { stickies: pgStickyStore(), panels: pgButtonRolePanelStore(), bulk: pgBulkRoleJobStore(), announcements: pgAnnouncementStore() },
     lfgSettings: async () => lfgBody(await pgLfgSettingsStore().get(config.guildId)),
-    tournamentRoles: () => tournamentRoles.get(config.guildId)
+    tournamentRoles: () => tournamentRoles.get(config.guildId),
+    matchRooms: async () => roomSystem ? roomSystem.poolIds() : null
   });
   let stopPermissionWatch: (() => void) | undefined;
   let stopRecordingWatch: (() => void) | undefined;
@@ -642,6 +662,8 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         adminToolsState.recordStopped();
         await controller?.stop();
         await roomSync?.stop();
+        await roomSystem?.stop();
+        if (roomSystem && currentMatchRoomService() === roomSystem.service) attachMatchRoomService(null);
         await client.destroy();
         await lease?.release();
         await health?.stop();
@@ -751,6 +773,7 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         (target.id === signupChannel.id || supportsSignup(target)) ? [{ id: target.id, name: target.name }] : [])
         .sort((left, right) => left.name.localeCompare(right.name));
     };
+    // The legacy M1/M2 rooms (env fixture or an older setup) stay as they were; new setups have none.
     let matches: ConfiguredRooms<VoiceChannel> | undefined;
     if (config.matchChannels) {
       const m1 = await client.channels.fetch(config.matchChannels.M1);
@@ -765,15 +788,17 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         throw new RuleError('Private Discord match channels require bot View Channel, Connect, Send Messages, Read Message History, Embed Links, and Attach Files permissions.');
       matches = { M1: m1, M2: m2 };
     }
+    /** Every voice room a match is bound to: the legacy rooms from the start, the pool's as rounds publish. */
+    const roomChannels: Partial<Record<MatchId, VoiceChannel>> = matches ?? {};
     if (config.publicMatchRooms) {
-      if (!matches) throw new RuleError('Public match rooms require both match channels.');
-      const roomTransport: RoomTransport = discordRoomTransport(guild, matches, bot, () => signupChannel, config.adminId);
-      await roomTransport.assertPermissions('M1', 'policy');
-      await roomTransport.assertPermissions('M2', 'policy');
+      const roomTransport: RoomTransport = discordRoomTransport(guild, roomChannels, bot, () => signupChannel, config.adminId);
+      if (matches) {
+        await roomTransport.assertPermissions('M1', 'policy');
+        await roomTransport.assertPermissions('M2', 'policy');
+      }
       roomSync = new MatchRoomReconciler(config, bot.id, guild.afkChannelId, roomTransport,
         () => getSessionState(config), () => !stopping && !lease?.isLost());
       admin?.attachRooms(roomSync);
-      await roomSync.trigger();
     }
     ensureActive();
     const botId = client.user!.id;
@@ -788,50 +813,47 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
         return async (messageId, slot) => { await previous.remove?.(messageId, slot); };
       };
     };
+    // The pool: numbered tables of voice rooms, reused across rounds and events (admin-tools/match-rooms). Without migration 017
+    // it lives in memory, seeded from the configuration and the session, and the dashboard says so.
+    const roomStore: MatchRoomStore = await (async () => {
+      const saved = pgMatchRoomStore();
+      try { await saved.available(); return saved; }
+      catch { process.stderr.write(`${MEMORY_STORAGE_HINT}\n`); return new MemoryMatchRoomStore(); }
+    })();
+    roomSystem = liveMatchRoomService({
+      client: () => client, guild, config, store: roomStore, audit: opsAudit, rest: matchRoomRenameRest(config.token!),
+      transcripts: roomStore.kind === 'postgres' ? pgTranscriptStore(config.guildId) : new MemoryTranscriptStore(),
+      voiceStates: !!config.publicMatchRooms,
+      recording: channelId => voicePool.live()?.rooms.find(room => room.channelId === channelId)?.status ?? null,
+      forgetVoiceRoom: voiceRoomPolicyDropper(moderationSettings, config.guildId),
+      onBound: (eventId, matchId, channelId) => featureEvents.emit({ type: 'matchRoomAssigned', eventId, matchId, channelId, occurredAtMs: Date.now() }),
+      onChange: () => { if (!stopping) permissionMonitor.schedule(); },
+      ensureActive, warn: featureLog });
+    attachMatchRoomService(roomSystem.service);
+    await roomSystem.start();
+    ensureActive();
+    if (roomSync) await roomSync.trigger();
     const roundRooms = new Map<MatchId, VoiceChannel>();
     const provisionRound = async (session: SessionRow, state: EventState) => {
-      const savedRooms = { ...session.identity_map.roundRooms };
       const players = resolvePlayers(session, state);
       if (!players) throw new RuleError('The checked-in player assignments are unavailable.');
-      let discovered: Awaited<ReturnType<typeof guild.channels.fetch>> | undefined;
-      for (const match of state.matches) {
+      const bound = await roomSystem!.pool.provision({
+        eventId: state.id, eventName: session.tournament?.name ?? null, gameLabel: gameLabelOf(session.tournament?.game ?? state.game), round: 1,
+        matches: state.matches.map(match => ({ id: match.id, pair: match.players.map(player => players[player]!) })),
+        savedRooms: { ...session.identity_map.roundRooms } });
+      const savedRooms: Partial<Record<MatchId, string>> = {};
+      for (const [matchId, channelId] of Object.entries(bound) as Array<[MatchId, string]>) {
         ensureActive();
-        const savedId = savedRooms[match.id];
-        const cached = roundRooms.get(match.id);
-        if (savedId && cached?.id === savedId) continue;
-        const saved = savedId ? await guild.channels.fetch(savedId).catch(error => {
-          if ((error as { code?: number }).code === 10003) return null;
-          throw error;
-        }) : null;
-        let voice = saved?.type === ChannelType.GuildVoice ? saved : config.matchChannels?.[match.id] ? matches?.[match.id] : undefined;
-        const desired = roomPlan(config.guildId, botId, config.adminId, match.players.map(player => players[player]!));
-        const permissionOverwrites = desired.map(overwrite => ({ ...overwrite, allow: BigInt(overwrite.allow), deny: BigInt(overwrite.deny) }));
-        if (!voice) {
-          const roomName = `TCG Match ${match.id} · ${config.applicationId}`;
-          discovered ??= await guild.channels.fetch();
-          const existing = discovered.find(room => room?.type === ChannelType.GuildVoice && room.name === roomName);
-          if (existing?.type === ChannelType.GuildVoice) voice = existing;
-          else {
-            if (!bot.permissions.has(PermissionFlagsBits.ManageChannels))
-              throw new RuleError(`The bot needs Manage Channels to create the ${match.id} voice room.`);
-            voice = await guild.channels.create({ name: roomName, type: ChannelType.GuildVoice, permissionOverwrites });
-          }
+        let voice = roundRooms.get(matchId);
+        if (voice?.id !== channelId) {
+          const fetched = await client.channels.fetch(channelId);
+          if (fetched?.type !== ChannelType.GuildVoice || fetched.guildId !== config.guildId)
+            throw new RuleError(`Match room ${matchId} is not a voice channel of this server.`);
+          voice = fetched;
         }
-        const current = [...voice.permissionOverwrites.cache.values()].map(overwrite => ({
-          id: overwrite.id, type: overwrite.type, allow: overwrite.allow.bitfield.toString(), deny: overwrite.deny.bitfield.toString()
-        }));
-        if (!sameOverwrites(current, desired)) {
-          await backupRoomOverwrites(config.guildId, voice.id, current);
-          ensureActive();
-          await voice.permissionOverwrites.set(permissionOverwrites);
-        }
-        if (voice.id !== savedId) {
-          await bindRoundRoom(config, state.id, match.id, voice.id);
-          featureEvents.emit({ type: 'matchRoomAssigned', eventId: state.id, matchId: match.id, channelId: voice.id, occurredAtMs: Date.now() });
-        }
-        savedRooms[match.id] = voice.id;
-        roundRooms.set(match.id, voice);
-        if (matches && match.id !== 'M1' && match.id !== 'M2') matches[match.id] = voice;
+        savedRooms[matchId] = channelId;
+        roundRooms.set(matchId, voice);
+        roomChannels[matchId] = voice;
       }
       config.roundRooms = savedRooms;
     };
@@ -1017,7 +1039,11 @@ export async function runPrivateDiscord(config: PrivateDiscordConfig = readPriva
       void roomSync.trigger(false, after.id).catch(reportRoomFailure);
     });
     client.on('channelUpdate', (_before, after) => {
-      if (roomSync && config.matchChannels && Object.values(config.matchChannels).includes(after.id))
+      if (stopping || lease?.isLost()) return;
+      // A rename made in Discord becomes the room's custom name; the queue ignores its own renames.
+      if ('guildId' in after && after.guildId === config.guildId && 'name' in after && roomSystem?.channelIds().includes(after.id))
+        void roomSystem.observedRename(after.id, after.name);
+      if (roomSync && (Object.values(config.matchChannels ?? {}).includes(after.id) || Object.values(config.roundRooms ?? {}).includes(after.id)))
         void roomSync.trigger().catch(reportRoomFailure);
     });
     const reconnect = () => { cleanupDeletedCards(); controller?.reconnect(); void roomSync?.trigger().catch(reportRoomFailure); };

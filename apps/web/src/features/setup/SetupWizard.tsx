@@ -1,4 +1,4 @@
-import type { SetupChannelDto, SetupCheckDto, SetupGuildDto, SetupSelectionDto, SetupStatusDto, TournamentRolesEnsureResultDto } from '@tcg-live/core';
+import type { SetupCapabilityDto, SetupChannelDto, SetupCheckDto, SetupGuildDto, SetupMatchRoomsDto, SetupSelectionDto, SetupStatusDto, TournamentRolesEnsureResultDto } from '@tcg-live/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAdminData } from '../../data';
 import { Button, Field, Input, Select, Switch } from '../../ui';
@@ -7,10 +7,13 @@ import { BotSetupGuide } from '../bot-permissions/BotSetupGuide';
 import { CreateChannelInline } from './CreateChannelInline';
 import { GRANT_EXPLANATION, GrantPermissionsLink, PermissionIssueList } from '../bot-permissions/PermissionIssues';
 import { LocalSettingsPanel } from './DashboardActionsSwitch';
-import { SetupRolesResult, WhatsNext } from './WhatsNext';
+import { SetupRoomsResult, SetupRolesResult, WhatsNext } from './WhatsNext';
 
-const EMPTY: SetupSelectionDto = { guildId: '', channelId: '', matchChannels: { M1: '', M2: '' },
+const NO_ROOMS: SetupMatchRoomsDto = { categoryId: null, createCategory: false };
+const EMPTY: SetupSelectionDto = { guildId: '', channelId: '', matchChannels: null, matchRooms: NO_ROOMS,
   adminId: '', publicMatchRooms: true };
+export const NEW_CATEGORY_LABEL = 'Create a “TCG Live — Matches” category';
+export const LEGACY_ROOMS_NOTE = 'Your current rooms join the pool and get the room naming at the next event.';
 const STEPS = ['Server', 'Channels', 'Readiness', 'What’s next'] as const;
 
 function errorText(error: unknown): string {
@@ -23,6 +26,17 @@ function channelOptions(channels: SetupChannelDto[], type: 'text' | 'voice') {
     {channels.filter(item => item.type === type && (item.category ?? 'Uncategorized') === category)
       .map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
   </optgroup>);
+}
+
+interface ReadinessRow { slot: string; name: string; missing: string[] | null }
+
+/** The signup channel, then the room rows the server reported (rooms, or M1 and M2 for a legacy selection); before a check, a rooms placeholder. */
+function readinessRows(check: SetupCheckDto | null, selection: SetupSelectionDto, channelName: (id: string) => string, categoryName: string): ReadinessRow[] {
+  const row = (item: SetupCapabilityDto): ReadinessRow => ({ slot: item.slot, name: item.channelName, missing: item.missing });
+  const signup = check?.capabilities.find(item => item.slot === 'signup');
+  const rest = check?.capabilities.filter(item => item.slot !== 'signup') ?? [];
+  return [signup ? row(signup) : { slot: 'signup', name: channelName(selection.channelId), missing: null },
+    ...(rest.length > 0 ? rest.map(row) : [{ slot: 'rooms', name: categoryName, missing: check ? [] : null }])];
 }
 
 /** First-start flow; mounted only when the authenticated server marks this a setup session. */
@@ -38,6 +52,7 @@ export function SetupWizard() {
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const [roles, setRoles] = useState<TournamentRolesEnsureResultDto | null>(null);
+  const [rooms, setRooms] = useState<{ problem: string | null } | null>(null);
 
   // Bumped by Refresh so the channel list is re-read too.
   const [refreshCount, setRefreshCount] = useState(0);
@@ -81,14 +96,11 @@ export function SetupWizard() {
   }, [api, selection.guildId, refreshCount]);
 
   const set = (patch: Partial<SetupSelectionDto>) => { setSelection(current => ({ ...current, ...patch })); setCheck(null); };
-  const setMatch = (slot: 'M1' | 'M2', id: string) => {
-    setSelection(current => ({ ...current, matchChannels: { M1: current.matchChannels?.M1 ?? '',
-      M2: current.matchChannels?.M2 ?? '', [slot]: id } }));
-    setCheck(null);
-  };
+  const setRoomsChoice = (patch: Partial<SetupMatchRoomsDto>) =>
+    set({ matchRooms: { ...(selection.matchRooms ?? NO_ROOMS), ...patch } });
   const onGuild = (guildId: string) => {
     const owner = guilds.find(item => item.id === guildId)?.ownerId ?? '';
-    set({ guildId, channelId: '', matchChannels: { M1: '', M2: '' }, adminId: owner });
+    set({ guildId, channelId: '', matchChannels: null, matchRooms: NO_ROOMS, adminId: owner });
   };
   const review = async () => {
     setBusy(true); setError(null);
@@ -98,15 +110,22 @@ export function SetupWizard() {
   };
   const finish = async () => {
     setBusy(true); setError(null);
-    try { const done = await api.finishSetup(selection); setRoles(done.roles ?? null); setOpening(true); setStep(3); }
+    try { const done = await api.finishSetup(selection); setRoles(done.roles ?? null); setRooms(done.rooms ?? null); setOpening(true); setStep(3); }
     catch (cause) { setError(errorText(cause)); setBusy(false); }
   };
-  /** A channel created from the wizard joins the list and is selected for its slot. */
-  const created = (channel: SetupChannelDto, slot: 'signup' | 'M1' | 'M2') => {
+  /** A signup channel created from the wizard joins the list and is selected. */
+  const created = (channel: SetupChannelDto) => {
     setChannels(current => [...current.filter(item => item.id !== channel.id), channel]);
-    if (slot === 'signup') set({ channelId: channel.id }); else setMatch(slot, channel.id);
+    set({ channelId: channel.id });
   };
   const frozen = status?.frozen ?? false;
+  // Selections saved before the room pool name two rooms; they join the pool as adopted tables.
+  const legacy = selection.matchChannels !== null;
+  const legacyFrozen = frozen && selection.matchChannels === null && selection.matchRooms === undefined;
+  const categories = channels.filter(item => item.type === 'category');
+  const roomsChoice = selection.matchRooms ?? NO_ROOMS;
+  const categoryName = roomsChoice.createCategory ? 'A new “TCG Live — Matches” category'
+    : categories.find(item => item.id === roomsChoice.categoryId)?.name ?? 'No category';
   const selectedGuild = guilds.find(item => item.id === selection.guildId);
   const channelName = (id: string) => channels.find(item => item.id === id)?.name ?? id;
 
@@ -117,7 +136,7 @@ export function SetupWizard() {
         <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">TCG Live</p>
           <h1 id="setup-title" className="text-xl font-semibold">Connect your tournament</h1></div>
       </div>
-      <p className="mt-3 text-sm text-fg-muted">Choose where players sign up and where each practice match happens.</p>
+      <p className="mt-3 text-sm text-fg-muted">Choose where players sign up. The bot makes a voice room for every match.</p>
       <BotSetupGuide inviteUrl={check?.permissions?.inviteUrl ?? null} defaultOpen={!!status?.prerequisite} className="mt-4" />
       <ol aria-label="Setup progress" className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
         {STEPS.map((name, index) => <li key={name} aria-current={index === step ? 'step' : undefined}
@@ -155,38 +174,38 @@ export function SetupWizard() {
             </Select>
           </Field>
           {!frozen && <CreateChannelInline guildId={selection.guildId} type="text" defaultName="tcg-signup"
-            onCreated={channel => created(channel, 'signup')} />}
-          {frozen && selection.matchChannels === null ?
-            <p className="rounded-md bg-sunken p-3 text-sm text-fg-muted">
-              This saved event uses signup-channel chat for both matches.</p> :
-            (['M1', 'M2'] as const).map(slot => <Field key={slot} label={`${slot} match voice room`} required
-            description={frozen ? 'This saved event keeps its assigned voice room.' : 'Use a dedicated voice room whose name starts with TCG Match.'}>
-              <Select value={selection.matchChannels?.[slot] ?? ''} disabled={frozen}
-                onChange={event => setMatch(slot, event.target.value)}>
-                <option value="">Choose a voice room</option>{channelOptions(channels, 'voice')}
+            onCreated={created} />}
+          {legacyFrozen ? <p className="rounded-md bg-sunken p-3 text-sm text-fg-muted">
+            This saved event uses signup-channel chat for both matches.</p> : <>
+            {legacy && <p role="note" className="rounded-md bg-sunken p-3 text-sm text-fg-muted">{LEGACY_ROOMS_NOTE}</p>}
+            <Field label="Put match rooms in" description={frozen ? 'This saved event keeps its room settings.'
+              : 'The bot creates a voice room for each match here and reuses them. Optional.'}>
+              <Select value={roomsChoice.createCategory ? '' : roomsChoice.categoryId ?? ''} disabled={frozen || roomsChoice.createCategory}
+                onChange={event => setRoomsChoice({ categoryId: event.target.value || null })}>
+                <option value="">No category</option>
+                {categories.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
               </Select>
-              {!frozen && <div className="mt-2"><CreateChannelInline guildId={selection.guildId} type="voice"
-                defaultName={`TCG Match ${slot.slice(1)}`} hint="Keep the name starting with TCG Match."
-                onCreated={channel => created(channel, slot)} /></div>}
-            </Field>)}
-          <Field label="Public match rooms" description="Everyone can enter; only the assigned pair, organizer and bot can post."
-            inline><Switch checked={selection.publicMatchRooms} disabled={frozen}
-              onCheckedChange={value => set({ publicMatchRooms: value })} /></Field>
+            </Field>
+            <Field label={NEW_CATEGORY_LABEL} inline><Switch checked={roomsChoice.createCategory} disabled={frozen}
+              onCheckedChange={value => setRoomsChoice({ createCategory: value, categoryId: value ? null : roomsChoice.categoryId })} /></Field>
+          </>}
+          {selection.matchChannels === null && !frozen
+            ? <p className="text-xs text-fg-muted"><b className="font-medium text-fg">Public match rooms.</b> Rooms the bot manages are always public:
+              everyone can enter; only the assigned pair, organizer and bot can post.</p>
+            : <Field label="Public match rooms" description="Everyone can enter; only the assigned pair, organizer and bot can post."
+              inline><Switch checked={selection.publicMatchRooms} disabled={frozen}
+                onCheckedChange={value => set({ publicMatchRooms: value })} /></Field>}
           <p className="text-xs text-fg-muted">Bot can only discover channels Discord returns. Grant View Channel and refresh if one is missing.
             Creating a channel here needs the bot’s Manage Channels permission.</p>
         </section>}
         {step === 2 && <section aria-label="Readiness" className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-3">
-            {(['signup', 'M1', 'M2'] as const).map((slot, index) => {
-              const id = slot === 'signup' ? selection.channelId : selection.matchChannels?.[slot] ?? selection.channelId;
-              const row = check?.capabilities[index];
-              return <div key={slot} className="rounded-lg border border-line bg-sunken p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-fg-subtle">{slot}</p>
-                <p className="mt-1 break-words font-medium">{row?.channelName ?? channelName(id)}</p>
-                <p className={`mt-2 text-xs ${row?.missing.length ? 'text-danger' : 'text-fg-muted'}`}>
-                  {row ? row.missing.length ? `Missing: ${row.missing.join(', ')}` : 'Ready' : 'Check permissions to see status'}</p>
-              </div>;
-            })}
+            {readinessRows(check, selection, channelName, categoryName).map(row => <div key={row.slot} className="rounded-lg border border-line bg-sunken p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-fg-subtle">{row.slot === 'rooms' ? 'Match rooms' : row.slot}</p>
+              <p className="mt-1 break-words font-medium">{row.name}</p>
+              <p className={`mt-2 text-xs ${row.missing?.length ? 'text-danger' : 'text-fg-muted'}`}>
+                {row.missing ? row.missing.length ? `Missing: ${row.missing.join(', ')}` : 'Ready' : 'Check permissions to see status'}</p>
+            </div>)}
           </div>
           {check?.permissions && <section aria-label="Bot permissions" className="space-y-3 rounded-lg border border-line p-3">
             <h2 className="text-sm font-semibold">Bot permissions</h2>
@@ -215,6 +234,7 @@ export function SetupWizard() {
         {step === 3 && <section aria-label="What’s next" className="space-y-4">
           {opening && <p role="status" className="text-sm font-medium text-accent">Setup complete. Opening dashboard…</p>}
           <SetupRolesResult roles={roles} />
+          <SetupRoomsResult rooms={rooms} />
           <WhatsNext inviteUrl={check?.permissions?.inviteUrl ?? null} />
         </section>}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5">
@@ -224,7 +244,7 @@ export function SetupWizard() {
             <Button variant="secondary" onClick={() => { setRefreshCount(count => count + 1); void refresh(); }} disabled={busy || opening}>Refresh</Button>
             {step === 0 && <Button variant="primary" onClick={() => setStep(1)} disabled={!selection.guildId || !selection.adminId}>Next: channels</Button>}
             {step === 1 && <Button variant="primary" onClick={() => void review()} loading={busy}
-              disabled={!selection.channelId || (!frozen && (!selection.matchChannels?.M1 || !selection.matchChannels?.M2))}>
+              disabled={!selection.channelId}>
               Check readiness</Button>}
             {step === 2 && <><Button variant="secondary" onClick={() => void review()} loading={busy}>Recheck</Button>
               <Button variant="primary" onClick={() => void finish()} loading={busy}

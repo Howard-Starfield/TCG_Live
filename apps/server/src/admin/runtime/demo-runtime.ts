@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { AUDIT_PAGE_LIMIT, type AdminCommandRequestDto, type AdminCommandResultDto, type AuditEntryDto,
   type EventSnapshotDto, type EventSummaryDto, type MemberDto, type PanelRefreshResultDto, type RuntimeStatusDto,
   type Snowflake } from '@tcg-live/core';
-import { ADMIN, createSignupFixture, createTournamentFirstRound, RuleError, transition, type Command, type EventState, type MatchId,
+import { ADMIN, createSignupFixture, createTournamentFirstRound, RuleError, signupTournamentComplete, transition, type Command, type EventState, type MatchId,
   type Outcome, type Player, type Transition } from '../../rehearsal/domain.js';
 import { noChangeReply, savedReply } from '../../discord/controller.js';
 import type { CardSlot } from '../../discord/session.js';
@@ -13,12 +13,20 @@ import { AdminConflictError, AdminNotFoundError, AdminRuleError, AdminUnavailabl
   type AdminRuntime, type AdminRuntimeChange, type AdminRuntimeListener } from '../runtime-types.js';
 import { defaultBuildId, ListenerSet } from './listeners.js';
 import type { PermissionSummarySource } from '../../permissions/source.js';
+import { DEMO_CHANNEL_IDS } from '../../admin-tools/demo-guild.js';
 import { mapAuditRow, mapSnapshot, type AdminAuditRow, type AdminSessionRow } from './mappers.js';
 
 export const DEMO_ADMIN_ID: Snowflake = '910000000000000001';
 export const DEMO_GUILD_ID: Snowflake = '910000000000000100';
 export const DEMO_CHANNEL_ID: Snowflake = '910000000000000101';
-export const DEMO_MATCH_CHANNELS: Record<'M1' | 'M2', Snowflake> = { M1: '910000000000000102', M2: '910000000000000103' };
+/** The legacy fixture rooms: the DemoGuild's own voice channels, so there is one set of room IDs (the demo pool starts from them). */
+export const DEMO_MATCH_CHANNELS: Record<'M1' | 'M2', Snowflake> = { M1: DEMO_CHANNEL_IDS.matchM1, M2: DEMO_CHANNEL_IDS.matchM2 };
+
+/** Where the demo's published rounds get their voice rooms from: the demo pool (see admin/demo.ts). */
+export interface DemoRoomProvider {
+  /** Table k for match Mk. Binds every match or rejects. */
+  provision(input: { eventId: string; matches: MatchId[] }): Promise<Partial<Record<MatchId, Snowflake>>>;
+}
 /** Fake people; no avatars. The fifth joins and is removed so signup removal shows up in the audit. */
 export const DEMO_MEMBERS: readonly MemberDto[] = [
   { id: DEMO_ADMIN_ID, displayName: 'Organizer', avatarUrl: null },
@@ -176,6 +184,8 @@ export interface DemoAdminRuntimeOptions {
   mode?: DemoPlayMode;
   /** Interactive: how long a finished event is held for a correction before the scenario moves on. */
   finalHoldMs?: number;
+  /** The demo pool. Without one (tests), a published round gets made-up room IDs. */
+  rooms?: DemoRoomProvider;
 }
 
 /**
@@ -197,6 +207,7 @@ export class DemoAdminRuntime implements AdminRuntime {
   private readonly finalHoldMs: number;
   private readonly script: DemoStep[];
   private readonly playerCount?: number;
+  private readonly rooms?: DemoRoomProvider;
   private readonly startedAtMs: number;
   private readonly listeners = new ListenerSet<AdminRuntimeChange>();
   private readonly members = new Map(DEMO_MEMBERS.map(member => [member.id, member]));
@@ -234,6 +245,7 @@ export class DemoAdminRuntime implements AdminRuntime {
     this.keepRetired = options.keepRetired ?? 5;
     this.finalHoldMs = options.finalHoldMs ?? DEMO_FINAL_HOLD_MS;
     this.playerCount = options.playerCount;
+    if (options.rooms) this.rooms = options.rooms;
     if (this.playerCount !== undefined) {
       const roster = Array.from({ length: this.playerCount }, (_, index) => ({
         id: (930000000000000001n + BigInt(index)).toString(), displayName: `Player ${index + 1}`, avatarUrl: null
@@ -599,7 +611,7 @@ export class DemoAdminRuntime implements AdminRuntime {
         : createTournamentFirstRound(id, this.durationMs, this.playerCount, 3),
       session: {
         event_id: id, application_id: '910000000000000000', guild_id: DEMO_GUILD_ID, channel_id: DEMO_CHANNEL_ID,
-        identity_map: { kind: 'signup', adminId: DEMO_ADMIN_ID, matchChannels: { ...DEMO_MATCH_CHANNELS } },
+        identity_map: { kind: 'signup', adminId: DEMO_ADMIN_ID, ...(this.rooms ? {} : { matchChannels: { ...DEMO_MATCH_CHANNELS } }) },
         status: 'active',
         checkin_message_id: this.nextSnowflake(), m1_message_id: this.nextSnowflake(), m2_message_id: this.nextSnowflake(),
         created_at_ms: this.clock.now(), retired_at_ms: null
@@ -710,9 +722,11 @@ export class DemoAdminRuntime implements AdminRuntime {
   private record(result: Transition, actor: string, command: Command, nowMs: number,
     principalKind: 'discord' | 'system' | 'web', principalId: string, commandId: string): void {
     this.current.state = result.state;
+    // Every published round gets its rooms from the demo pool (the scripted M1/M2 fixture as well as a first round).
+    if (command.type === 'publish' && this.rooms) this.provisionRooms(this.current, result.state);
     if (result.state.firstRound && command.type === 'publish') {
       const identity = this.current.session.identity_map;
-      identity.roundRooms = Object.fromEntries(result.state.matches.map(match => [match.id, this.nextSnowflake()]));
+      if (!this.rooms) identity.roundRooms = Object.fromEntries(result.state.matches.map(match => [match.id, this.nextSnowflake()]));
       identity.matchMessages = Object.fromEntries(result.state.matches.slice(2).map(match => [match.id, this.nextSnowflake()]));
       this.current.session.m1_message_id = this.nextSnowflake();
       this.current.session.m2_message_id = result.state.matches.length > 1 ? this.nextSnowflake() : null;
@@ -723,6 +737,21 @@ export class DemoAdminRuntime implements AdminRuntime {
       principal_kind: principalKind, principal_id: principalId
     });
     this.listeners.emit({ type: 'event', eventId: result.state.id });
+  }
+
+  /** The rooms come from the demo pool, which answers a moment later; the event shows them as soon as they are bound. */
+  private provisionRooms(event: DemoEvent, state: EventState): void {
+    void this.rooms!.provision({ eventId: state.id, matches: state.matches.map(match => match.id) })
+      .then(rooms => {
+        if (this.closed) return;
+        event.session.identity_map.roundRooms = { ...rooms };
+        this.listeners.emit({ type: 'event', eventId: state.id });
+      }, () => { /* The demo shows the round without rooms; the pool reports why in its own tab. */ });
+  }
+
+  /** What the demo room service needs to know about the running event. */
+  roomContext(): { eventId: string; finished: boolean; roundRooms: Partial<Record<MatchId, Snowflake>> } {
+    return { eventId: this.current.state.id, finished: signupTournamentComplete(this.current.state), roundRooms: { ...this.current.session.identity_map.roundRooms } };
   }
 
   /** Retires the active event and starts the next one in the same step, so an active event always exists. */

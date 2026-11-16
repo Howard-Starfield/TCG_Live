@@ -68,8 +68,8 @@ export function createDemoGuild(guildId: string): DemoGuild {
     channel(DEMO_CHANNEL_IDS.general, 'general', play, 0),
     channel(DEMO_CHANNEL_IDS.signup, 'tournament-signup', play, 1, { reserved: true }),
     channel(DEMO_CHANNEL_IDS.support, 'support', play, 2),
-    channel(DEMO_CHANNEL_IDS.matchM1, 'TCG Match M1', play, 3, { type: 'voice', reserved: true }),
-    channel(DEMO_CHANNEL_IDS.matchM2, 'TCG Match M2', play, 4, { type: 'voice', reserved: true }),
+    channel(DEMO_CHANNEL_IDS.matchM1, '🎮 M1', play, 3, { type: 'voice', reserved: true }),
+    channel(DEMO_CHANNEL_IDS.matchM2, '🎮 M2', play, 4, { type: 'voice', reserved: true }),
     channel(DEMO_CHANNEL_IDS.modLog, 'mod-log', staff, 0),
     channel(DEMO_CHANNEL_IDS.tickets, 'ticket-log', ticketCategory, 0)
   ];

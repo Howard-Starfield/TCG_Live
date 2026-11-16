@@ -2,6 +2,7 @@
 // Spec: docs/ADMIN_TOOLS_PROPOSAL.md ("Decisions"). The foundation owns this file; feature agents add
 // feature-local types in their own files and use only what is declared here on the wire.
 import type { MatchId, Snowflake } from './admin-contract.js';
+import { MATCH_ROOMS_AUDIT_KINDS } from './match-rooms-contract.js';
 
 // ---------------------------------------------------------------- shared building blocks
 
@@ -459,7 +460,8 @@ export const ADMIN_TOOLS_AUDIT_KINDS = ['admin_tools.settings', 'admin_tools.int
   'bulk_roles.queued', 'bulk_roles.finished', 'bulk_roles.cancelled',
   'announcement.saved', 'announcement.sent', 'announcement.failed', 'announcement.deleted',
   'logging.retention', 'welcome.failed', 'auto_role.failed',
-  'tournament_roles.created', 'tournament_roles.updated', 'tournament_roles.member_added', 'tournament_roles.member_removed'] as const;
+  'tournament_roles.created', 'tournament_roles.updated', 'tournament_roles.member_added', 'tournament_roles.member_removed',
+  ...MATCH_ROOMS_AUDIT_KINDS] as const;
 export type AdminToolsAuditKind = typeof ADMIN_TOOLS_AUDIT_KINDS[number];
 
 // ---------------------------------------------------------------- limits and defaults

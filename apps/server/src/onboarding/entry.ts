@@ -15,6 +15,8 @@ import { privateDiscordClient } from '../discord/sdk.js';
 import { prepareSignupSession, requireDiscordSchema, type SessionRow } from '../discord/session.js';
 import { withClient } from '../rehearsal/store.js';
 import { startServer, type RunningServer } from '../server.js';
+import type { MatchRoomSetupSink } from '../admin-tools/match-rooms/service-port.js';
+import { pgMatchRoomSetupSink } from '../admin-tools/match-rooms/service.js';
 import { discordSetupDiscovery } from './discord.js';
 import { SetupService } from './service.js';
 import { LocalSettings } from './settings.js';
@@ -71,6 +73,8 @@ export interface GuidedStartOptions {
   noBrowser?: boolean;
   openBrowser?: (url: string) => void;
   launcher?: { instanceId: string; secret: string };
+  /** Where setup sends the chosen match room category; defaults to the database-backed sink. */
+  roomSettings?: MatchRoomSetupSink;
 }
 export interface GuidedStartHandle { stop(): Promise<void> }
 
@@ -161,7 +165,9 @@ export async function runGuidedStart(options: GuidedStartOptions = {}): Promise<
     }
   };
   setup = new SetupService({ token, databaseConfigured: !!healthConfig.database,
-    active: activeSession, prepare: config => prepareSignupSession(config, false), onHandover: handover });
+    active: activeSession,
+    // Room settings are stored in Postgres even before the bot connects; tests inject their own sink.
+    roomSettings: options.roomSettings ?? pgMatchRoomSetupSink(), prepare: config => prepareSignupSession(config, false), onHandover: handover });
   try {
     await connectDiscovery();
     const ready = await setup.readyConfig();

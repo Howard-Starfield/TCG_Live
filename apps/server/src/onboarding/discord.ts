@@ -46,13 +46,19 @@ export function discordSetupDiscovery(client: Client): SetupDiscovery {
       const bot = await member(target);
       const visible = await target.channels.fetch();
       return [...visible.values()].flatMap(item => {
-        if (!item || (item.type !== ChannelType.GuildText && item.type !== ChannelType.GuildVoice)) return [];
+        if (!item || (item.type !== ChannelType.GuildText && item.type !== ChannelType.GuildVoice &&
+            item.type !== ChannelType.GuildCategory)) return [];
         return [{ id: item.id, name: item.name,
-          category: item.parent?.name ?? null,
-          type: item.type === ChannelType.GuildText ? 'text' as const : 'voice' as const,
+          category: item.type === ChannelType.GuildCategory ? null : item.parent?.name ?? null,
+          type: item.type === ChannelType.GuildText ? 'text' as const :
+            item.type === ChannelType.GuildCategory ? 'category' as const : 'voice' as const,
           permissions: permissions(item, bot), afk: item.id === target.afkChannelId }];
       })
         .filter(item => item.permissions.includes('View Channel'));
+    },
+    async serverPermissions(guildId) {
+      const bot = await member(await guild(guildId));
+      return Object.entries(FLAGS).filter(([_name, flag]) => bot.permissions.has(flag)).map(([name]) => name);
     },
     async createChannel(guildId, name, type) {
       const target = await guild(guildId);

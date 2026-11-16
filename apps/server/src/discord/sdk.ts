@@ -16,3 +16,13 @@ export function privateDiscordClient(publicMatchRooms = false, extraIntents: rea
 export function privateDiscordRest(token: string): REST {
   return new REST({ retries: 0 }).setToken(token);
 }
+
+/**
+ * The REST instance room renames use (admin-tools/match-rooms/renames.ts). Discord allows 2 renames per 10 minutes per
+ * channel, and a client REST instance would wait out a limited route for up to 10 minutes, so this one rejects at once
+ * (`rejectOnRateLimit`) and the rename queue decides when to try again. Never rename through `channel.setName` or
+ * `channel.edit({ name })`: those use the client's own REST.
+ */
+export function matchRoomRenameRest(token: string): REST {
+  return new REST({ retries: 0, rejectOnRateLimit: () => true }).setToken(token);
+}

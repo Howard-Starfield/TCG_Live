@@ -69,10 +69,21 @@ export const FEATURE_PERMISSIONS: readonly FeatureRequirement[] = [
   { id: 'tournament.publicRoom', group: 'Tournament', scope: 'channel', permissions: ['ManageRoles', 'ManageChannels', 'MoveMembers'],
     severity: 'blocking', when: 'Public match rooms',
     why: 'Public match rooms cannot set who may talk or move players into their room.' },
-  // UNCERTAIN: the room plan grants the bot Manage Permissions on rooms it creates; Discord documents that
-  // granting Manage Roles in a channel overwrite at creation may need Administrator.
-  { id: 'tournament.roundRooms', group: 'Tournament', scope: 'guild', permissions: ['ManageChannels', 'ManageRoles'], severity: 'warning',
-    when: 'Rounds with more than two matches', why: 'Rounds with more than two matches cannot create their extra voice rooms.' },
+  // The bot creates and reuses one room per table. Room overwrites are written with the bot's server-level Manage Roles
+  // (the room plan never puts Manage Roles into a channel overwrite: only administrators may do that).
+  { id: 'tournament.roundRooms', group: 'Tournament', scope: 'guild', permissions: ['ManageChannels', 'ManageRoles'], severity: 'blocking',
+    when: 'Public match rooms (the bot creates, renames and reuses a room per match)',
+    why: 'The bot cannot create its match rooms or set who may talk in them.' },
+  // Rooms go in the category chosen in setup or Settings, plus bot-made overflow categories. Creating a channel in a category
+  // needs View Channel and Manage Channels there; Manage Roles lets the bot set room overwrites; Connect lets it move players in.
+  { id: 'tournament.roomCategory', group: 'Tournament', scope: 'channel',
+    permissions: ['ViewChannel', 'ManageChannels', 'ManageRoles', 'Connect'], severity: 'blocking',
+    when: 'Match rooms category (and each overflow category)', why: 'The bot cannot create or manage match rooms in this category.' },
+  // Archiving a room's chat reads it; clearing deletes other people's messages. Reading the text also needs the Message Content intent
+  // (without it transcripts keep author, time and attachments only).
+  { id: 'tournament.roomChat', group: 'Tournament', scope: 'channel',
+    permissions: ['ViewChannel', 'ReadMessageHistory', 'ManageMessages'], severity: 'warning',
+    when: 'Each match room (+ Message Content Intent for the chat text)', why: "Room chat can't be archived or cleared." },
 
   // ---- AutoMod (Manage Server is required for every auto-moderation endpoint and execution event)
   { id: 'automod.manage', group: 'AutoMod keyword filters', scope: 'guild', permissions: ['ManageGuild'], severity: 'blocking',
@@ -192,9 +203,18 @@ export const SETUP_CHANNEL_PERMISSIONS = {
     .map(key => permissionLabel(key, 'channel'))
 } as const;
 
+/** What the rooms readiness row needs in the chosen category (or server-wide): category and chat requirements together. */
+export const SETUP_ROOMS_PERMISSIONS: readonly string[] = [...new Set([...requirement('tournament.roomCategory').permissions,
+  ...requirement('tournament.roomChat').permissions])].map(key => permissionLabel(key, 'channel'));
+
+/** The part of the rooms row that blocks setup: the category requirement (room chat is only a warning). */
+export const SETUP_ROOMS_BLOCKING: readonly string[] = requirement('tournament.roomCategory').permissions
+  .map(key => permissionLabel(key, 'channel'));
+
 /** Every channel permission the setup discovery reports, as human name -> bit. */
 export const SETUP_DISCOVERY_FLAGS: Readonly<Record<string, bigint>> = Object.fromEntries(
-  [...new Set([...requirement('tournament.matchRoom').permissions, ...requirement('tournament.publicRoom').permissions])]
+  [...new Set([...requirement('tournament.matchRoom').permissions, ...requirement('tournament.publicRoom').permissions,
+    ...requirement('tournament.roomCategory').permissions, ...requirement('tournament.roomChat').permissions])]
     .map(key => [permissionLabel(key, 'channel'), PermissionFlagsBits[key]]));
 
 export interface InviteOptions { applicationId: string; guildId?: string | null; permissions: bigint }

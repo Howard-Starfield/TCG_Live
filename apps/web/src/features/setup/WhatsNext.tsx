@@ -9,6 +9,8 @@ export const WHATS_NEXT: readonly FeatureLink[] = [
     what: 'Members and cases, stickies, tickets, button roles, announcements and logs. Its Settings tab checks the bot’s Discord permissions.' },
   { id: 'moderation', name: 'Moderation & evidence', where: 'Sidebar → Moderation & evidence',
     what: 'Keyword and volume flags, match evidence, retention and the operations audit.' },
+  { id: 'rooms', name: 'Match rooms', where: 'Admin tools → Rooms',
+    what: 'The bot creates a voice room for each match and reuses it. Rename rooms, set the name template and clean up after the tournament.' },
   { id: 'bots', name: 'Helper bots', where: 'Admin tools → Bots',
     what: 'Add helper bot tokens so several match rooms can be monitored at once. Turn on voice monitoring first.' },
   { id: 'lfg', name: 'Looking for a game (LFG)', where: 'Admin tools → LFG',
@@ -51,5 +53,15 @@ export function SetupRolesResult({ roles }: { roles: TournamentRolesEnsureResult
     {roles.problem && <p className="text-fg">{roles.problem}</p>}
     {failed && <p className="text-xs text-fg-muted">Setup is complete. Until the roles exist, only the server owner and this dashboard act as
       organizer in Discord. Create them in Admin tools &gt; Settings &gt; Tournament roles.</p>}
+  </section>;
+}
+
+/** Step 3: whether the match room settings were saved. Setup never fails because of them. */
+export function SetupRoomsResult({ rooms }: { rooms: { problem: string | null } | null }) {
+  if (!rooms?.problem) return null;
+  return <section aria-label="Match rooms" role="alert" className="space-y-1.5 rounded-lg border border-warning bg-warning-soft p-3 text-sm">
+    <h2 className="font-semibold">Match rooms</h2>
+    <p className="text-fg">{rooms.problem}</p>
+    <p className="text-xs text-fg-muted">Setup is complete. Choose the category and name template in Admin tools &gt; Rooms.</p>
   </section>;
 }

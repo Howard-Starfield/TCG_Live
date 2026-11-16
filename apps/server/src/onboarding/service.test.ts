@@ -263,3 +263,152 @@ test('a save that omits roles fails instead of erasing them when the profile can
   await writeFile(profile.file, before);
   assert.deepEqual((await profile.read()).roles, saved);
 }));
+
+// ---- bot-managed match rooms (no M1/M2 pickers)
+
+const categoryId = '999999999999999999';
+const poolSelection: SetupSelectionDto = { guildId: ids[0]!, channelId: ids[1]!, matchChannels: null,
+  adminId: ids[4]!, publicMatchRooms: true, matchRooms: { categoryId, createCategory: false } };
+const roomPermissions = [...permissions, 'Manage Messages'];
+
+function poolDiscovery(options: { category?: string[]; server?: string[] | null } = {}): SetupDiscovery {
+  const base = discovery();
+  return { ...base,
+    async channels() { return [
+      { id: ids[1]!, name: 'signup', category: null, type: 'text', permissions, afk: false },
+      { id: categoryId, name: 'Matches', category: null, type: 'category', permissions: options.category ?? roomPermissions, afk: false }
+    ]; },
+    ...(options.server === null ? {} : { async serverPermissions() { return options.server ?? roomPermissions; } }) };
+}
+
+const pooledSession = () => activeSession({ identity_map: { kind: 'signup', adminId: selection.adminId, publicMatchRooms: true } });
+
+test('a new setup needs no M1/M2: the category picker makes a valid selection with a rooms readiness row', async () => fixture(async profile => {
+  const prepared: PrivateDiscordConfig[] = [];
+  const applied: unknown[] = [];
+  const service = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    roomSettings: { async applySetup(guildId, applicationId, input) { applied.push([guildId, applicationId, input]); } },
+    active: async () => null, prepare: async config => { prepared.push(config); return pooledSession(); }, onHandover: async () => {} });
+  service.attach(poolDiscovery());
+  const checked = await service.check(poolSelection);
+  assert.equal(checked.valid, true, checked.issues.join(' '));
+  assert.deepEqual(checked.capabilities.map(row => [row.slot, row.channelId, row.missing]),
+    [['signup', ids[1], []], ['rooms', categoryId, []]]);
+  const finished = await service.finish(poolSelection);
+  assert.deepEqual(finished.rooms, { problem: null });
+  assert.deepEqual(applied, [[ids[0], ids[6], { categoryId, createCategory: false }]]);
+  assert.equal(prepared[0]?.matchChannels, undefined, 'no M1/M2 reach the saved event');
+  assert.equal(prepared[0]?.publicMatchRooms, true);
+  assert.deepEqual((await profile.read()).selection?.matchRooms, { categoryId, createCategory: false });
+}));
+
+test('a new setup without M1/M2 is saved with public rooms on, and with no category the server is checked instead', async () => fixture(async profile => {
+  const prepared: PrivateDiscordConfig[] = [];
+  const service = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    active: async () => null, prepare: async config => { prepared.push(config); return pooledSession(); }, onHandover: async () => {} });
+  service.attach(poolDiscovery({ server: ['View Channel', 'Connect'] }));
+  const bare: SetupSelectionDto = { guildId: ids[0]!, channelId: ids[1]!, matchChannels: null, adminId: ids[4]!, publicMatchRooms: false };
+  const checked = await service.check(bare);
+  const rooms = checked.capabilities.find(row => row.slot === 'rooms')!;
+  assert.deepEqual([rooms.channelId, rooms.channelName], [ids[0], 'Server']);
+  assert.deepEqual(rooms.missing, ['Manage Channels', 'Manage Permissions', 'Read Message History', 'Manage Messages']);
+  assert.equal(checked.valid, false, 'a server without Manage Channels cannot hold bot-made rooms');
+  assert.ok(checked.permissions!.issues.some(issue => issue.featureId === 'tournament.roomCategory' && issue.scope.kind === 'guild'));
+  service.attach(poolDiscovery({ server: roomPermissions.filter(name => name !== 'Manage Messages') }));
+  const warned = await service.check(bare);
+  assert.equal(warned.valid, true, 'room chat is only a warning');
+  assert.deepEqual(warned.permissions!.issues.map(issue => [issue.featureId, issue.severity]), [['tournament.roomChat', 'warning']]);
+  await service.finish(bare);
+  assert.equal(prepared[0]?.publicMatchRooms, true);
+  assert.equal((await profile.read()).selection?.publicMatchRooms, true);
+}));
+
+test('a category the bot cannot see, or a category chosen and created at once, is refused', async () => fixture(async profile => {
+  const service = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    active: async () => null, prepare: async () => pooledSession(), onHandover: async () => {} });
+  service.attach(poolDiscovery());
+  const gone = await service.check({ ...poolSelection, matchRooms: { categoryId: '888888888888888887', createCategory: false } });
+  assert.equal(gone.valid, false);
+  assert.match(gone.issues.join(' '), /category the bot can see/);
+  const notCategory = await service.check({ ...poolSelection, matchRooms: { categoryId: ids[1]!, createCategory: false } });
+  assert.equal(notCategory.valid, false);
+  await assert.rejects(() => service.check({ ...poolSelection, matchRooms: { categoryId, createCategory: true } }), /Choose a server/);
+  await assert.rejects(() => service.check({ ...poolSelection, matchRooms: { categoryId: null } as never }), /Choose a server/);
+  const created = await service.check({ ...poolSelection, matchRooms: { categoryId: null, createCategory: true } });
+  assert.equal(created.valid, true, 'a category to create needs no existing one');
+}));
+
+test('Finish reports a room settings failure without failing setup', async () => fixture(async profile => {
+  let prepared = 0;
+  const failing = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    roomSettings: { async applySetup() { throw new Error('relation does not exist'); } },
+    active: async () => null, prepare: async () => { prepared++; return pooledSession(); }, onHandover: async () => {} });
+  failing.attach(poolDiscovery());
+  const finished = await failing.finish(poolSelection);
+  assert.equal(prepared, 1);
+  assert.match(finished.rooms?.problem ?? '', /Rooms tab/);
+  assert.doesNotMatch(JSON.stringify(finished), /relation does not exist/);
+  assert.equal((await profile.read()).completed, true);
+  // No sink attached: a requested category is reported, no request is not a problem.
+  const unattached = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    active: async () => null, prepare: async () => pooledSession(), onHandover: async () => {} });
+  unattached.attach(poolDiscovery());
+  assert.match((await unattached.finish(poolSelection)).rooms?.problem ?? '', /Rooms tab/);
+  const { matchRooms: _matchRooms, ...plain } = poolSelection;
+  const again = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    active: async () => null, prepare: async () => pooledSession(), onHandover: async () => {} });
+  again.attach(poolDiscovery());
+  assert.deepEqual((await again.finish(plain)).rooms, { problem: null });
+}));
+
+test('a legacy selection with M1/M2 stays valid, needs no TCG Match names, and applies no rooms settings', async () => fixture(async profile => {
+  const applied: unknown[] = [];
+  const service = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    roomSettings: { async applySetup(...args) { applied.push(args); } },
+    active: async () => null, prepare: async () => activeSession(), onHandover: async () => {} });
+  const base = discovery();
+  service.attach({ ...base, async channels(guildId) {
+    return (await base.channels(guildId)).map(row => row.type === 'voice' ? { ...row, name: `Lounge ${row.id}` } : row);
+  } });
+  const checked = await service.check(selection);
+  assert.equal(checked.valid, true, checked.issues.join(' '));
+  assert.deepEqual(checked.capabilities.map(row => row.slot), ['signup', 'M1', 'M2']);
+  const finished = await service.finish(selection);
+  assert.deepEqual(finished.rooms, { problem: null });
+  assert.deepEqual(applied, [], 'nothing to apply without a rooms choice');
+  assert.deepEqual((await profile.read()).selection, selection, 'the saved legacy selection gains no keys');
+}));
+
+test('matchRooms never makes a frozen event look changed, and frozen events keep their identity', async () => fixture(async profile => {
+  const active = pooledSession();
+  const service = new SetupService({ token: 'TOKEN', databaseConfigured: true, profile,
+    active: async () => active, prepare: async () => { throw new Error('must not prepare'); }, onHandover: async () => {} });
+  service.attach(poolDiscovery());
+  const frozen = (await service.status()).selection!;
+  assert.equal(frozen.matchChannels, null);
+  assert.equal(frozen.publicMatchRooms, true);
+  assert.equal(frozen.matchRooms, undefined);
+  assert.equal((await service.check(poolSelection)).valid, true, 'a different category is not an identity change');
+  await service.finish(poolSelection);
+  assert.equal((await service.status()).selection?.matchRooms?.categoryId, categoryId, 'the saved choice shows on the frozen event');
+  // Identity still locks: a different organizer is refused.
+  assert.equal((await service.check({ ...poolSelection, adminId: ids[5]! })).valid, false);
+  // A saved legacy event with M1/M2 is unchanged by this feature.
+  const legacy = new SetupService({ token: 'TOKEN', databaseConfigured: true,
+    profile: new SetupProfileStore(path.join(path.dirname(profile.file), 'legacy.json')),
+    active: async () => activeSession(), prepare: async () => { throw new Error('must not prepare'); }, onHandover: async () => {} });
+  legacy.attach(discovery());
+  assert.equal((await legacy.check(selection)).valid, true);
+  assert.equal((await legacy.status()).selection?.matchRooms, undefined);
+}));
+
+test('profile validation: matchRooms is the one optional key, with a category or a create flag but not both', async () => fixture(async profile => {
+  await profile.save({ selection: poolSelection, guide: null, completed: false });
+  assert.deepEqual((await profile.read()).selection, poolSelection);
+  await profile.save({ selection: { ...poolSelection, matchRooms: { categoryId: null, createCategory: true } }, guide: null, completed: false });
+  for (const bad of [{ categoryId, createCategory: true }, { categoryId: 'x', createCategory: false }, { categoryId: null },
+    { categoryId: null, createCategory: false, extra: 1 }, null, 'category'])
+    await assert.rejects(() => profile.save({ selection: { ...poolSelection, matchRooms: bad as never }, guide: null, completed: false }),
+      /Invalid setup selection/);
+  await assert.rejects(() => profile.save({ selection: { ...poolSelection, extra: 1 } as never, guide: null, completed: false }), /Invalid setup selection/);
+}));

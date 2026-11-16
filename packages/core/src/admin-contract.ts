@@ -2,6 +2,7 @@
 // Changes during a wave go through the contract-change procedure in docs/ADMIN_DASHBOARD_PLAN.md.
 
 import type { PermissionReportDto, PermissionSummaryDto } from './permissions-contract.js';
+import type { SetupMatchRoomsDto } from './match-rooms-contract.js';
 import type { TournamentRoleKind, TournamentRolesEnsureResultDto } from './staff-contract.js';
 
 export const ADMIN_API_VERSION = 1 as const;
@@ -62,15 +63,17 @@ export interface SetupSelectionDto {
   /** Null only for a frozen legacy event that uses the signup channel for match chat. */
   matchChannels: Record<'M1' | 'M2', Snowflake> | null;
   adminId: Snowflake; publicMatchRooms: boolean;
+  /** Where the bot's match room pool goes. Absent on legacy selections. */
+  matchRooms?: SetupMatchRoomsDto;
 }
 export interface SetupGuildDto { id: Snowflake; name: string; ownerId: Snowflake }
 export interface SetupChannelDto {
-  id: Snowflake; name: string; category: string | null; type: 'text' | 'voice';
+  id: Snowflake; name: string; category: string | null; type: 'text' | 'voice' | 'category';
 }
 /** Creates a top-level text or voice channel in the chosen server during setup. */
 export interface SetupChannelCreateDto { guildId: Snowflake; name: string; type: 'text' | 'voice' }
 export interface SetupCapabilityDto {
-  slot: 'signup' | MatchId; channelId: Snowflake; channelName: string;
+  slot: 'signup' | 'rooms' | MatchId; channelId: Snowflake; channelName: string;
   missing: string[];
 }
 export interface SetupCheckDto {
@@ -86,7 +89,7 @@ export interface SetupStatusDto {
   botName: string | null; check: SetupCheckDto | null;
   openingDashboard: boolean; handoverError?: string | null;
 }
-export interface SetupFinishDto { openingDashboard: true; eventId: string; roles?: TournamentRolesEnsureResultDto }
+export interface SetupFinishDto { openingDashboard: true; eventId: string; roles?: TournamentRolesEnsureResultDto; rooms?: { problem: string | null } }
 
 export interface RuntimeStatusDto {
   mode: 'discord' | 'demo'; bootId: string; buildId: string;

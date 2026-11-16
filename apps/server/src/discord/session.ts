@@ -8,7 +8,9 @@ import { publicConfig, sameIdentityMap, type ConfiguredRooms, type PrivateDiscor
 export type CardSlot = 'checkin' | MatchId;
 type SessionMetadata = { adminId: string; matchChannels?: ConfiguredRooms<string>;
   publicMatchRooms?: boolean;
-  roundRooms?: Partial<Record<MatchId, string>>; matchMessages?: Partial<Record<MatchId, string>>; stickySuspended?: CardSlot[]; stickyPrevious?: Partial<Record<CardSlot, string[]>>; resumeReminderGeneration?: Partial<Record<MatchId, number>> };
+  roundRooms?: Partial<Record<MatchId, string>>;
+  /** When each round room was bound to this event: where a reused room's chat of that match starts (match rooms archive). */
+  roundRoomBoundAtMs?: Partial<Record<MatchId, number>>; matchMessages?: Partial<Record<MatchId, string>>; stickySuspended?: CardSlot[]; stickyPrevious?: Partial<Record<CardSlot, string[]>>; resumeReminderGeneration?: Partial<Record<MatchId, number>> };
 export type SessionIdentity = SessionMetadata & (
   | { kind: 'signup'; players?: never }
   | { kind: 'legacy'; players: Record<Player, string> }
@@ -391,8 +393,9 @@ export async function bindRoundRoom(config: PrivateDiscordConfig, eventId: strin
     assertSessionConfig(session, config);
     const identity = session.identity_map;
     const roundRooms = { ...identity.roundRooms, [matchId]: roomId };
+    const roundRoomBoundAtMs = { ...identity.roundRoomBoundAtMs, [matchId]: Date.now() };
     await client.query('UPDATE public.tcg_rehearsal_sessions SET identity_map = $2::jsonb WHERE event_id = $1',
-      [eventId, JSON.stringify({ ...identity, roundRooms })]);
+      [eventId, JSON.stringify({ ...identity, roundRooms, roundRoomBoundAtMs })]);
   }));
 }
 

@@ -5,6 +5,7 @@
 import type { ModerationSettingsDto } from '@tcg-live/core';
 import type { DiscordFeature, DiscordFeatureContext } from '../discord/features.js';
 import type { OpsActor } from '../ops/audit.js';
+import { pgTranscriptStore, sweepTranscriptRetention } from '../admin-tools/match-rooms/transcripts.js';
 import { EvidenceFiles, sharedEvidenceFiles } from './files.js';
 import { pgEvidenceRetentionSource, type EvidenceRecord, type EvidenceRetentionSource, type EvidenceStore,
   type RetentionCandidate } from './store.js';
@@ -122,6 +123,9 @@ export function evidenceRetentionFeature(options: RetentionFeatureOptions = {}):
         if (interrupted) ctx.log(`Evidence: marked ${interrupted} interrupted upload(s) failed.`);
         const result = await runRetention({ source, store: ctx.evidence, removeFile: record => files.removeFile(record),
           settings: () => ctx.moderationSettings(), isActive: () => ctx.isActive(), ...(options.now ? { now: options.now } : {}) });
+        // Match room chat transcripts follow the same retention setting; held ones are kept.
+        await sweepTranscriptRetention({ store: pgTranscriptStore(ctx.guildId), settings: () => ctx.moderationSettings(), audit: ctx.audit,
+          ...(options.now ? { now: options.now } : {}) });
         failing = false;
         if (result.deleted) ctx.log(`Evidence retention deleted ${result.deleted} item(s).`);
         return result;

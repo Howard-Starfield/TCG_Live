@@ -10,8 +10,10 @@ import { Badge, Button, Dialog, IconButton, cx, type Tone } from '../../ui';
 import { MatchActions, StaffConflictNotice } from '../commands';
 import { ModerateMembersMenu } from '../admin-tools/members/ModerateMembersMenu';
 import { MatchEvidencePanel } from '../evidence';
+import { useAdminToolsAccess } from '../admin-tools/api';
 import { JudgeRequestCard, useCanCloseIssue, type JudgeMatch } from './JudgeRequestCard';
 import { seatName } from './labels';
+import { RoomChatPanel } from './RoomChatPanel';
 import './match-drawer.css';
 
 export function matchStatusLabel(snapshot: EventSnapshotDto, match: MatchDto): string {
@@ -65,6 +67,7 @@ export function MatchDrawer({ snapshot, matchId, onClose, onOpenInTournament }: 
   const match = snapshot.matches.find(item => item.id === matchId);
   const countdown = useMatchCountdown(match?.clock);
   const canClose = useCanCloseIssue(snapshot, match);
+  const roomChat = useAdminToolsAccess();
   if (!match) return null;
   const [first, second] = match.seats;
   const readOnly = snapshot.status !== 'active';
@@ -99,6 +102,10 @@ export function MatchDrawer({ snapshot, matchId, onClose, onOpenInTournament }: 
             <h3>Evidence</h3>
             <MatchEvidencePanel eventId={snapshot.eventId} matchId={match.id} />
           </section>
+          {roomChat && <section aria-label="Room chat" className="match-drawer-section">
+            <h3>Room chat</h3>
+            <RoomChatPanel eventId={snapshot.eventId} matchId={match.id} />
+          </section>}
         </div>
       </div>
       <aside aria-label="Match properties" className="match-drawer-rail">

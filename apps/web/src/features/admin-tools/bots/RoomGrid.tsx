@@ -8,6 +8,7 @@ import { useAdminData } from '../../../data';
 import { Badge, Button, Input, Select } from '../../../ui';
 import { describeError } from '../../evidence/api';
 import { saveModerationSettings } from '../../moderation/api';
+import { useRoomNames } from '../match-rooms/api';
 
 const SNOWFLAKE = /^[1-9]\d{15,21}$/;
 const COVERAGE: Record<VoiceRoomCoverage, string> = { auto: 'Auto', always: 'Always cover', never: 'Never cover' };
@@ -18,6 +19,8 @@ export function RoomGrid({ settings, pool, disabled, onSaved }: {
   settings: ModerationSettingsDto; pool: VoiceBotPoolDto; disabled: boolean; onSaved(settings: ModerationSettingsDto): void;
 }) {
   const { api } = useAdminData();
+  // Names the bot gave the rooms; without them (or without room access) the channel ID stands alone.
+  const roomNames = useRoomNames();
   const [draft, setDraft] = useState<Record<string, VoiceRoomPolicyDto>>(() => structuredClone(settings.voice.rooms ?? {}));
   const [adding, setAdding] = useState('');
   const [busy, setBusy] = useState(false);
@@ -53,7 +56,10 @@ export function RoomGrid({ settings, pool, disabled, onSaved }: {
         const live = pool.rooms.find(room => room.channelId === channelId);
         const bot = live?.botId ? pool.bots.find(item => item.id === live.botId) : undefined;
         return <tr key={channelId} className="border-t border-line" data-room={channelId}>
-          <td className="py-1.5 pr-2 font-mono">{live ? `${live.matchId} · ` : ''}#{channelId}</td>
+          <td className="py-1.5 pr-2">
+            <span className="font-medium text-fg">{live ? `${live.matchId} · ` : ''}{roomNames.get(channelId) ?? <span className="font-mono">#{channelId}</span>}</span>
+            {roomNames.has(channelId) && <span className="ml-1.5 font-mono text-2xs text-fg-subtle">#{channelId}</span>}
+          </td>
           <td className="pr-2"><Select aria-label={`Coverage of ${channelId}`} value={policy.coverage} disabled={disabled || busy}
             onChange={event => set(channelId, { coverage: event.target.value as VoiceRoomCoverage })}>
             {Object.entries(COVERAGE).map(([value, text]) => <option key={value} value={value}>{text}</option>)}</Select></td>
