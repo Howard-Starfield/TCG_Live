@@ -8,7 +8,9 @@ import { createDemoGuild, DEMO_CHANNEL_IDS } from '../demo-guild.js';
 import type { AdminToolsRouteOptions } from '../routes.js';
 import { MemoryAdminToolsSettingsStore } from '../settings.js';
 import { AdminToolsRuntimeState } from '../status.js';
-import { auditLockLedger, purgeChannel, setChannelLock, type ChannelGateway, type PermissionBit, type RecentMessage } from './controls.js';
+import { ChannelType, type Guild } from 'discord.js';
+import { OpsInputError } from '../../ops/errors.js';
+import { auditLockLedger, channelControlError, liveChannelGateway, purgeChannel, setChannelLock, type ChannelGateway, type PermissionBit, type RecentMessage } from './controls.js';
 import { channelsRouteModule, parsePurgeRequest } from './routes.js';
 import { StickiesTicketsRuntime } from './runtime-status.js';
 import { StickyEngine, type StickyClock, type StickyPoster } from './sticky-engine.js';
@@ -349,4 +351,40 @@ test('feature: posts enabled stickies, skips reserved channels, follows messages
   } finally { await feature.stop(); }
   assert.equal(client.listenerCount('messageCreate'), 0);
   assert.equal(runtime.panelRefresher(), null);
+});
+
+test('live create: wrong-server or non-category parent is refused, Discord limits and missing access keep clear messages', async () => {
+  const created: Array<{ name: string; reason?: string }> = [];
+  let createError: unknown = null;
+  const parents: Record<string, unknown> = {
+    cat: { type: ChannelType.GuildCategory }, text: { type: ChannelType.GuildText },
+    other: Object.assign(new Error('unowned'), { code: 'GuildChannelUnowned' }), hidden: Object.assign(new Error('no access'), { code: 50001 })
+  };
+  const guild = { channels: {
+    async fetch(id: string) { const value = parents[id]; if (value instanceof Error) throw value; return value ?? null; },
+    async create(spec: { name: string; reason?: string; parent?: string | null }) {
+      if (createError) throw createError;
+      created.push(spec);
+      return { id: '300000000000000777', name: spec.name, parentId: spec.parent ?? null, position: 3 };
+    }
+  } } as unknown as Guild;
+  const live = liveChannelGateway(guild);
+  const spec = (parentId: string | null) => ({ name: 'side-events', type: 'text' as const, parentId, reason: 'r'.repeat(L.discordReasonLength + 50) });
+  const message = async (run: () => Promise<unknown>) => {
+    try { await run(); return null; } catch (error) {
+      try { channelControlError(error); } catch (mapped) { return mapped instanceof OpsInputError ? mapped.message : 'unmapped'; }
+    }
+    return 'unreachable';
+  };
+  assert.equal((await live.createChannel(spec('cat'))).parentId, 'cat');
+  assert.equal(created[0]!.reason!.length, L.discordReasonLength);
+  assert.match((await message(() => live.createChannel(spec('text'))))!, /Choose a category/);
+  assert.match((await message(() => live.createChannel(spec('other'))))!, /Choose a category/);
+  assert.match((await message(() => live.createChannel(spec('hidden'))))!, /lacks permission/);
+  createError = Object.assign(new Error('max'), { code: 30013 });
+  assert.match((await message(() => live.createChannel(spec(null))))!, /maximum of 500/);
+  createError = Object.assign(new Error('form'), { code: 50035 });
+  assert.match((await message(() => live.createChannel(spec(null))))!, /category may be full/);
+  createError = Object.assign(new Error('perm'), { code: 50013 });
+  assert.match((await message(() => live.createChannel(spec(null))))!, /Manage Channels/);
 });

@@ -148,6 +148,14 @@ export function channelControlError(error: unknown): never {
   throw error;
 }
 
+/** Limits only channel creation can hit; anything else goes through channelControlError unchanged. */
+export function createChannelError(error: unknown): unknown {
+  const code = (error as { code?: unknown })?.code;
+  if (code === 30013) return new OpsInputError('This server already has the maximum of 500 channels. Delete one in Discord first.');
+  if (code === 50035) return new OpsInputError('Discord refused the channel: the category may be full (50 channels) or the name is not allowed.');
+  return error;
+}
+
 // ---------------------------------------------------------------- live Discord gateway
 
 const TEXT_TYPES = new Set([ChannelType.GuildText, ChannelType.GuildAnnouncement]);
@@ -208,10 +216,20 @@ export function liveChannelGateway(guild: Guild): ChannelGateway {
       return deleted;
     },
     async createChannel(spec) {
-      if (spec.parentId && (await guild.channels.fetch(spec.parentId).catch(() => null))?.type !== ChannelType.GuildCategory) throw notCategory();
-      const channel = await guild.channels.create({ name: spec.name, type: spec.type === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText,
-        parent: spec.parentId, reason: spec.reason.slice(0, L.discordReasonLength) });
-      return { id: channel.id, name: channel.name, type: spec.type, parentId: channel.parentId, position: channel.position, reserved: false };
+      if (spec.parentId) {
+        // Only "not found here" means a wrong category; missing access and network errors keep their own message.
+        const parent = await guild.channels.fetch(spec.parentId).catch((error: unknown) => {
+          const code = (error as { code?: unknown })?.code;
+          if (code === 10003 || code === 'GuildChannelUnowned') return null;
+          throw error;
+        });
+        if (parent?.type !== ChannelType.GuildCategory) throw notCategory();
+      }
+      try {
+        const channel = await guild.channels.create({ name: spec.name, type: spec.type === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText,
+          parent: spec.parentId, reason: spec.reason.slice(0, L.discordReasonLength) });
+        return { id: channel.id, name: channel.name, type: spec.type, parentId: channel.parentId, position: channel.position, reserved: false };
+      } catch (error) { throw createChannelError(error); }
     }
   };
 }

@@ -169,3 +169,23 @@ it('creates missing channels from the wizard and selects them in their slots', a
   await user.click(within(text).getByRole('button', { name: 'Create' }));
   expect(await within(text).findByRole('alert')).toHaveTextContent(/Manage Channels/);
 });
+
+it('pressing Enter twice while Discord is creating a channel sends one request', async () => {
+  const user = userEvent.setup();
+  const { server } = mountSetup({ prerequisite: null, activeEventId: null, selection: null,
+    frozen: false, botName: 'BoBoAssist', check: null, openingDashboard: false });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  server.once('POST /setup/channels', async () => { await gate; return json(201, { id: '666666666666666667', name: 'tcg-signup', category: null, type: 'text' }); });
+  await user.selectOptions(await screen.findByRole('combobox', { name: /Discord server/ }), ids[0]!);
+  await user.click(screen.getByRole('button', { name: 'Next: channels' }));
+  await screen.findByRole('option', { name: 'signup' });
+  await user.click(screen.getByRole('button', { name: /New text channel/ }));
+  const group = screen.getByRole('group', { name: 'Create a text channel' });
+  const name = within(group).getByRole('textbox', { name: /New text channel name/ });
+  await user.type(name, '{Enter}{Enter}');
+  await user.click(within(group).getByRole('button', { name: 'Create' }));
+  release();
+  await waitFor(() => expect(screen.queryByRole('group', { name: 'Create a text channel' })).not.toBeInTheDocument());
+  expect(server.callsTo('POST /setup/channels')).toHaveLength(1);
+});

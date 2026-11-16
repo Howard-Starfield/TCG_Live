@@ -159,8 +159,8 @@ export const CAPABILITIES: readonly CapabilityEntry[] = [
     where: [{ kind: 'dashboard', path: 'Admin tools > Bans', link: tab('bans') }], who: 'Dashboard: members.read to view, members.moderate to unban', needs: 'Ban Members', checks: ['admin-tools', 'perm:members.ban'] },
   { id: 'at-cases', area: 'Admin tools', name: 'Cases', what: 'Numbered cases with reason and evidence, the mod-action audit trail, CSV/JSON export.',
     where: [{ kind: 'dashboard', path: 'Admin tools > Cases', link: tab('cases') }], who: 'Dashboard: members.read', needs: 'View Audit Log (optional)', checks: ['admin-tools'] },
-  { id: 'at-channels', area: 'Admin tools', name: 'Channels', what: 'Lock, unlock, slowmode and purge channels.',
-    where: [{ kind: 'dashboard', path: 'Admin tools > Channels', link: tab('channels') }], who: 'Dashboard: members.moderate', needs: 'Manage Roles, Manage Channels, Manage Messages', checks: ['admin-tools', 'perm:channels.'] },
+  { id: 'at-channels', area: 'Admin tools', name: 'Channels', what: 'Create text channels and voice rooms; lock, unlock, slowmode and purge channels.',
+    where: [{ kind: 'dashboard', path: 'Admin tools > Channels', link: tab('channels') }], who: 'Dashboard: members.moderate, server.manage to create', needs: 'Manage Roles, Manage Channels, Manage Messages', checks: ['admin-tools', 'perm:channels.'] },
   { id: 'at-stickies', area: 'Admin tools', name: 'Stickies', what: 'Messages the bot keeps at the bottom of a channel.',
     where: [{ kind: 'dashboard', path: 'Admin tools > Stickies', link: tab('stickies') }], who: 'Dashboard: server.manage', checks: ['admin-tools', 'perm:stickies.'] },
   { id: 'at-tickets', area: 'Admin tools', name: 'Tickets', what: 'A Create ticket panel, private ticket channels, transcripts (export) with close and reopen.',
@@ -208,7 +208,7 @@ export const CAPABILITIES: readonly CapabilityEntry[] = [
     where: [{ kind: 'dashboard', path: 'Admin tools > Bots > Match rooms', link: tab('bots') }], who: 'Dashboard: moderation.manage', checks: ['moderation'], wave: 'next' },
 
   // ---------------------------------------------------------------- Setup & permissions
-  { id: 'setup-wizard', area: 'Setup & permissions', name: 'Setup wizard', what: 'Pick the server, channels and admin, choose the dashboard options, check readiness and finish the first start.',
+  { id: 'setup-wizard', area: 'Setup & permissions', name: 'Setup wizard', what: 'Pick the server, channels and admin (or create a missing text channel or voice room), choose the dashboard options, check readiness and finish the first start.',
     where: [{ kind: 'dashboard', path: 'First start' }], who: ADMIN },
   { id: 'permission-checker', area: 'Setup & permissions', name: 'Permission checker and grant link', what: 'Lists what the bot is missing and why, with an invite link that grants it.',
     where: [{ kind: 'dashboard', path: 'Admin tools > Settings > Bot permissions', link: tab('settings') }], who: ADMIN, checks: ['admin-tools', 'perm:'] },

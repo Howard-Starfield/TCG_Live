@@ -102,6 +102,8 @@ export const FEATURE_PERMISSIONS: readonly FeatureRequirement[] = [
     when: 'Always (Channels)', why: 'Channel lock cannot change who may send messages.' },
   { id: 'channels.slowmode', group: 'Moderation tools', scope: 'guild', permissions: ['ManageChannels'], severity: 'warning',
     when: 'Always (Channels)', why: 'Slowmode cannot be changed.' },
+  { id: 'channels.create', group: 'Moderation tools', scope: 'guild', permissions: ['ManageChannels'], severity: 'warning',
+    when: 'Always (Channels > Create, setup wizard)', why: 'New text channels and voice rooms cannot be created from the dashboard.' },
   { id: 'channels.purge', group: 'Moderation tools', scope: 'guild', permissions: ['ManageMessages', 'ReadMessageHistory'], severity: 'warning',
     when: 'Always (Channels)', why: 'Purge cannot read or delete messages.' },
 
